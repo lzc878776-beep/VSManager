@@ -1,0 +1,29 @@
+# Build output
+bin/
+obj/
+dist/
+publish/
+*.exe
+*.dll
+*.pdb
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.rsuser
+
+# Local runtime data (never commit: contains encrypted keys, tokens, task history)
+settings.json
+settings.json.bak
+settings.json.corrupt-*
+tasks.json
+tasks.json.bak
+*.log
+logs/
+archive/
+Archive/
+*.jsonl
+
+# Keep the example config
+!settings.example.json

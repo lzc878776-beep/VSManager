@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16161c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="referrer" content="no-referrer">
+<title>VS 遥控</title>
+<style>
+:root{--bg:#121216;--side:#18181e;--surf:#1f1f27;--elev:#2a2a34;--bd:#30303b;--tx:#ececf1;--tx2:#a3a3b2;--mut:#6f6f7e;
+--ac:#8b5cf6;--ac2:#a78bfa;--busy:#f59e0b;--idle:#10b981;--none:#6b7280;--err:#f87171}
+html{color-scheme:dark}*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--tx);font:15px/1.55 -apple-system,"PingFang SC","Microsoft YaHei UI",sans-serif}
+body{display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:hidden;width:100%;max-width:100vw}
+button{font:inherit;color:inherit;border:0;background:none;cursor:pointer}
+header{background:var(--side);border-bottom:1px solid var(--bd);padding:calc(env(safe-area-inset-top) + 8px) 10px 8px}
+.brand{display:flex;align-items:center;gap:8px;padding:0 4px 8px}
+.brand b{font-size:16px}.brand .conn{margin-left:auto;font-size:12px;color:var(--mut)}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex:none}
+.busy{background:var(--busy)}.idle{background:var(--idle)}.none{background:var(--none)}
+#vsList{display:flex;gap:8px;overflow-x:auto;scrollbar-width:none;padding-bottom:2px}
+#vsList::-webkit-scrollbar{display:none}
+.vs{flex:none;display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:10px;background:var(--surf);border:1px solid var(--bd);max-width:210px}
+.vs span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:13.5px}
+.vs.sel{border-color:var(--ac);background:#2a2340}
+.vs .n{color:var(--mut);font-size:12px;flex:none}.vs .dot{flex:none}
+#tools{display:flex;gap:6px;align-items:center;padding:8px 10px;background:var(--side);border-bottom:1px solid var(--bd);overflow-x:auto;scrollbar-width:none}
+#tools::-webkit-scrollbar{display:none}
+.tb{flex:none;padding:6px 11px;border-radius:8px;background:var(--elev);font-size:13px;white-space:nowrap}
+.tb:active{filter:brightness(1.3)}
+.tb.go{background:#1f5f47;color:#d1fae5}.tb.stop{background:#5b2330;color:#fecdd3}
+.tb[hidden]{display:none}
+#prof{flex:none;background:var(--elev);color:var(--tx);border:0;border-radius:8px;padding:6px 8px;font:inherit;font-size:13px;max-width:130px}
+#info{padding:6px 14px;font-size:12.5px;color:var(--tx2);display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--bd);background:var(--bg)}
+#info .t{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#info label{display:flex;align-items:center;gap:4px;color:var(--mut)}
+main{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:12px 12px 20px;-webkit-overflow-scrolling:touch}
+.empty{color:var(--mut);text-align:center;margin-top:30vh;white-space:pre-line}
+.msg{margin:10px 0;display:flex;flex-direction:column;min-width:0}.msg>*{min-width:0}
+.msg.u{align-items:flex-end}
+.bub{max-width:92%;padding:9px 13px;border-radius:14px;word-wrap:break-word;overflow-wrap:anywhere;white-space:pre-wrap}
+.u .bub{background:#3b2d63;border-bottom-right-radius:4px}
+.a .bub{background:var(--surf);border:1px solid var(--bd);border-bottom-left-radius:4px;max-width:100%}
+.who{font-size:11.5px;color:var(--mut);margin:0 4px 3px}
+.step{font-size:12.5px;color:var(--mut);padding:2px 0 2px 10px;border-left:2px solid var(--bd);margin:3px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.bub pre{background:#15151b;border:1px solid var(--bd);border-radius:8px;padding:8px 10px;overflow-x:auto;white-space:pre;font:12.5px/1.45 Consolas,Menlo,monospace;margin:6px 0}
+.bub code{background:#15151b;border-radius:4px;padding:1px 4px;font:13px Consolas,Menlo,monospace}
+.bub pre code{background:none;padding:0}
+.typing{color:var(--busy);font-size:13px;margin:8px 4px}
+footer{background:var(--side);border-top:1px solid var(--bd);padding:8px 10px calc(env(safe-area-inset-bottom) + 8px)}
+.row{display:flex;gap:8px;align-items:flex-end}
+#input{flex:1;min-width:0;width:0;resize:none;overflow-y:auto;scrollbar-width:thin;max-height:40vh;min-height:42px;background:var(--elev);color:var(--tx);border:1px solid var(--bd);border-radius:12px;padding:10px 12px;font:inherit;outline:none}
+#input:focus{border-color:var(--ac)}
+#send{flex:none;height:42px;min-width:64px;border-radius:12px;background:var(--ac);color:#fff;font-weight:600}
+#send:disabled{opacity:.5}
+#send.stopping{background:#7f1d1d}
+.sub{display:flex;gap:14px;padding:6px 4px 0;font-size:12.5px;color:var(--tx2)}
+.sub button{padding:2px 0}
+#toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);background:#000c;color:#fff;padding:9px 16px;border-radius:10px;font-size:13.5px;max-width:86%;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9;text-align:center}
+#toast.on{opacity:1}
+#auth{position:fixed;inset:0;background:var(--bg);display:none;align-items:center;justify-content:center;flex-direction:column;padding:30px;text-align:center;z-index:10}
+#auth h2{margin:0 0 10px}#auth p{color:var(--tx2)}
+#auth input{width:100%;max-width:320px;margin-top:14px;background:var(--elev);border:1px solid var(--bd);color:var(--tx);border-radius:10px;padding:10px 12px;font:inherit}
+#auth button{margin-top:12px;background:var(--ac);color:#fff;border-radius:10px;padding:10px 26px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><b>VS 遥控</b><span class="conn" id="conn">连接中…</span></div>
+  <div id="vsList"></div>
+</header>
+<div id="tools">
+  <button class="tb go" data-a="go" id="bGo">▶ 调试</button>
+  <button class="tb" data-a="run" id="bRun">运行</button>
+  <button class="tb" data-a="break" id="bBreak" hidden>⏸ 中断</button>
+  <button class="tb stop" data-a="stop" id="bStop" hidden>■ 停止</button>
+  <button class="tb" data-a="restart" id="bRestart" hidden>↻ 重启</button>
+  <button class="tb" data-a="stepover" id="bOver" hidden>逐过程</button>
+  <button class="tb" data-a="stepinto" id="bInto" hidden>逐语句</button>
+  <button class="tb" data-a="stepout" id="bOut" hidden>跳出</button>
+  <button class="tb" data-a="build" id="bBuild">生成</button>
+  <button class="tb" data-a="rebuild" id="bRebuild">重新生成</button>
+  <button class="tb stop" data-a="cancelbuild" id="bCancel" hidden>取消生成</button>
+  <select id="prof" hidden></select>
+</div>
+<div id="info"><span class="dot none" id="iDot"></span><span class="t" id="iTitle">未选择 VS</span><label><input type="checkbox" id="steps">步骤</label></div>
+<main id="chat"><div class="empty">正在加载…</div></main>
+<footer>
+  <div class="row">
+    <textarea id="input" rows="1" placeholder="发送给 Copilot…"></textarea>
+    <button id="send">发送</button>
+  </div>
+  <div class="sub"><button id="bNew">＋ 新线程</button><button id="bTop">↑ 顶部</button><span id="dbgState" style="margin-left:auto;color:var(--mut)"></span></div>
+</footer>
+<div id="toast"></div>
+<div id="auth"><h2>需要访问密钥</h2><p>请在电脑上打开 VSManager →「⚙ 属性 → 手机网页遥控」，用手机扫描二维码打开本页面。</p>
+  <input id="keyIn" placeholder="或手动粘贴访问密钥"><button id="keyBtn">确定</button></div>
+<script>
+(function(){
+"use strict";
+var $=function(id){return document.getElementById(id)};
+var key=null,m=/[#&]k=([^&]+)/.exec(location.hash);
+if(m){key=decodeURIComponent(m[1]);try{localStorage.setItem("vsm_key",key)}catch(e){}history.replaceState(null,"",location.pathname)}
+if(!key){try{key=localStorage.getItem("vsm_key")}catch(e){}}
+var sel=null,list=[],sig=null,sending=false,lastProfPid=null,showSteps=false,failCount=0;
+try{sel=+localStorage.getItem("vsm_sel")||null;showSteps=localStorage.getItem("vsm_steps")==="1"}catch(e){}
+$("steps").checked=showSteps;
+
+function api(path,body){
+  var o={method:body?"POST":"GET",headers:{"X-Key":key||""},cache:"no-store"};
+  if(body){o.headers["Content-Type"]="application/json";o.body=JSON.stringify(body)}
+  return fetch(path,o).then(function(r){
+    if(r.status===401){showAuth();throw new Error("auth")}
+    return r.json()
+  }).then(function(j){failCount=0;setConn(true);return j},function(e){if(e.message!=="auth"){failCount++;if(failCount>1)setConn(false)}throw e});
+}
+function setConn(ok){var c=$("conn");c.textContent=ok?"已连接":"连接断开，重试中…";c.style.color=ok?"var(--mut)":"var(--err)"}
+function showAuth(){$("auth").style.display="flex"}
+$("keyBtn").onclick=function(){var v=$("keyIn").value.trim();var mm=/k=([^&]+)/.exec(v);if(mm)v=decodeURIComponent(mm[1]);if(!v)return;key=v;try{localStorage.setItem("vsm_key",v)}catch(e){}$("auth").style.display="none";tick()};
+var tt;function toast(s){var t=$("toast");t.textContent=s;t.classList.add("on");clearTimeout(tt);tt=setTimeout(function(){t.classList.remove("on")},2600)}
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]})}
+function md(s){
+  var out="",parts=String(s).split(/```/);
+  for(var i=0;i<parts.length;i++){
+    if(i%2){var p=parts[i].replace(/^[\w+#.-]*\n/,"");out+="<pre><code>"+esc(p.replace(/\n$/,""))+"</code></pre>"}
+    else out+=esc(parts[i]).replace(/`([^`\n]+)`/g,"<code>$1</code>").replace(/\*\*([^*\n]+)\*\*/g,"<b>$1</b>");
+  }
+  return out;
+}
+function cur(){for(var i=0;i<list.length;i++)if(list[i].pid===sel)return list[i];return null}
+
+function renderList(){
+  var h="";
+  list.forEach(function(v){h+='<button class="vs'+(v.pid===sel?" sel":"")+'" data-pid="'+v.pid+'"><i class="dot '+v.copilot+'"></i><span class="n">'+v.idx+'</span><span>'+esc(v.name)+'</span></button>'});
+  if(!list.length)h='<span style="color:var(--mut);font-size:13px;padding:6px">没有正在运行的 Visual Studio</span>';
+  $("vsList").innerHTML=h;
+  var v=cur();
+  $("iDot").className="dot "+(v?v.copilot:"none");
+  var mode=v?v.mode:"design";
+  var dbg=mode==="run"||mode==="break";
+  $("bGo").hidden=mode==="run"||mode==="build";$("bGo").textContent=mode==="break"?"▶ 继续":"▶ 调试";
+  $("bRun").hidden=dbg||mode==="build";
+  $("bBreak").hidden=mode!=="run";$("bStop").hidden=!dbg;$("bRestart").hidden=!dbg;
+  ["bOver","bInto","bOut"].forEach(function(id){$(id).hidden=mode!=="break"});
+  $("bBuild").hidden=$("bRebuild").hidden=dbg||mode==="build";$("bCancel").hidden=mode!=="build";
+  $("prof").hidden=dbg||!$("prof").options.length;
+  $("dbgState").textContent=v?(v.dbg||""):"";
+  var busy=v&&v.copilot==="busy";
+  var s=$("send");s.textContent=busy?"停止":"发送";s.classList.toggle("stopping",!!busy);s.disabled=sending||!v;
+}
+$("vsList").onclick=function(e){var b=e.target.closest(".vs");if(!b)return;select(+b.dataset.pid)};
+function select(pid){
+  if(pid===sel)return;sel=pid;sig=null;try{localStorage.setItem("vsm_sel",pid)}catch(e){}
+  $("chat").innerHTML='<div class="empty">正在读取对话…</div>';renderList();loadChat();loadProfiles();
+}
+
+function renderChat(j){
+  var c=$("chat"),near=c.scrollHeight-c.scrollTop-c.clientHeight<120;
+  var v=cur();$("iTitle").textContent=(v?v.idx+". "+v.name:"")+(j.title?" · "+j.title:"");
+  if(!j.synced){c.innerHTML='<div class="empty">尚未同步该 VS 的对话，请稍候…</div>';return}
+  if(!j.found){c.innerHTML='<div class="empty">该 VS 未打开 Copilot 对话窗格\n发送消息时会自动打开</div>';return}
+  if(!j.messages.length){c.innerHTML='<div class="empty">当前对话为空，发送一条消息开始吧</div>';return}
+  var h="";
+  j.messages.forEach(function(msg){
+    var steps="",text=[];
+    msg.parts.forEach(function(p){if(p.s)steps+='<div class="step">'+esc(p.t)+'</div>';else text.push(p.t)});
+    h+='<div class="msg '+msg.role+'"><div class="who">'+(msg.role==="u"?"你":"Copilot")+'</div>';
+    if(msg.role==="a"){
+      h+='<div class="bub">'+(showSteps?steps:"")+(text.length?md(text.join("\n\n")):(showSteps?"":'<span style="color:var(--mut)">'+(msg.parts.length?"（"+msg.parts.length+" 个步骤，勾选「步骤」查看）":"…")+'</span>'))+'</div>';
+    } else h+='<div class="bub">'+esc(text.join("\n"))+'</div>';
+    h+='</div>';
+  });
+  if(j.copilot==="busy")h+='<div class="typing">● Copilot 正在处理…</div>';
+  c.innerHTML=h;
+  if(near||!c.dataset.loaded)c.scrollTop=c.scrollHeight;
+  c.dataset.loaded="1";
+}
+var chatBusy=false,lastJ=null;
+function loadChat(){
+  if(!sel||chatBusy)return;chatBusy=true;var pid=sel;
+  api("/api/chat?pid="+pid+"&sig="+(sig||"")).then(function(j){
+    if(pid!==sel)return;
+    if(!j.ok){$("chat").innerHTML='<div class="empty">'+esc(j.msg||"读取失败")+'</div>';return}
+    sig=j.sig;if(!j.same){lastJ=j;$("chat").dataset.loaded=$("chat").dataset.loaded||"";renderChat(j)}
+  }).catch(function(){}).then(function(){chatBusy=false});
+}
+function loadState(){
+  return api("/api/state").then(function(j){
+    list=j.vs||[];
+    if(!cur()&&list.length){sel=null;select(list[0].pid);return}
+    if(!list.length)$("chat").innerHTML='<div class="empty">没有正在运行的 Visual Studio</div>';
+    renderList();
+  }).catch(function(){});
+}
+function loadProfiles(){
+  var pid=sel;if(!pid)return;lastProfPid=pid;
+  api("/api/profiles?pid="+pid).then(function(j){
+    if(pid!==sel)return;var p=$("prof");p.innerHTML="";
+    if(j.ok&&j.names&&j.names.length){j.names.forEach(function(n){var o=document.createElement("option");o.value=o.textContent=n;if(n===j.active)o.selected=true;p.appendChild(o)})}
+    renderList();
+  }).catch(function(){});
+}
+$("prof").onchange=function(){var n=this.value;api("/api/profile",{pid:sel,name:n}).then(function(j){toast(j.msg);loadProfiles()}).catch(function(){})};
+$("tools").onclick=function(e){
+  var b=e.target.closest(".tb");if(!b||!sel)return;var a=b.dataset.a;
+  if((a==="stop"||a==="rebuild")&&!confirm(b.textContent.trim()+"？"))return;
+  api("/api/debug",{pid:sel,action:a}).then(function(j){toast(j.msg);setTimeout(loadState,600)}).catch(function(){toast("操作失败")});
+};
+var inp=$("input");
+function grow(){inp.style.height="auto";inp.style.height=Math.min(inp.scrollHeight,window.innerHeight*0.4)+"px"}
+inp.addEventListener("input",function(){grow();try{localStorage.setItem("vsm_draft_"+sel,inp.value)}catch(e){}});
+$("send").onclick=function(){
+  var v=cur();if(!v||sending)return;
+  if(v.copilot==="busy"){api("/api/button",{pid:sel,id:"CancelButton"}).then(function(j){toast(j.msg);setTimeout(tick,800)});return}
+  var t=inp.value.trim();if(!t){inp.focus();return}
+  sending=true;renderList();$("send").textContent="发送中";
+  api("/api/send",{pid:sel,text:t}).then(function(j){
+    toast(j.msg);if(j.ok){inp.value="";grow();try{localStorage.removeItem("vsm_draft_"+sel)}catch(e){}sig=null}
+  }).catch(function(){toast("发送失败，请检查连接")}).then(function(){sending=false;renderList();setTimeout(tick,500)});
+};
+$("bNew").onclick=function(){if(!sel||!confirm("新建对话线程？"))return;api("/api/button",{pid:sel,id:"createNewThread"}).then(function(j){toast(j.msg);sig=null;setTimeout(loadChat,800)})};
+$("bTop").onclick=function(){$("chat").scrollTop=0};
+$("steps").onchange=function(){showSteps=this.checked;try{localStorage.setItem("vsm_steps",showSteps?"1":"0")}catch(e){}if(lastJ)renderChat(lastJ)};
+function tick(){if(document.hidden)return;loadState().then(loadChat)}
+if(!key)showAuth();else{tick();}
+setInterval(function(){if(!document.hidden&&key)loadChat()},2000);
+setInterval(function(){if(!document.hidden&&key)loadState()},3000);
+document.addEventListener("visibilitychange",function(){if(!document.hidden)tick()});
+var restoreDraft=function(){try{inp.value=localStorage.getItem("vsm_draft_"+sel)||"";grow()}catch(e){}};
+var _sel=select;select=function(p){_sel(p);restoreDraft()};
+if(sel)setTimeout(function(){loadProfiles();restoreDraft()},300);
+})();
+</script>
+</body>
+</html>
