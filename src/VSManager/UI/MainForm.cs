@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-	public class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost
+	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost
 	{
 		private readonly AppSettings _settings = AppSettings.Load();
 		private volatile List<VsInstance> _instances = new List<VsInstance>();
@@ -337,7 +337,7 @@ namespace VSManager
 			statusBar.Controls.Add(_status);
 			statusBar.Controls.Add(version);
 
-			_taskPanel.Bind(_tasks, () => _externals, () => _settings.TaskListClearedAt);
+			_taskPanel.Bind(_tasks, () => _externals, () => _settings.TaskListClearedAt, () => _settings.HiddenResentTasks);
 			_taskPanel.ExternalActionRequested += OnExternalAction;
 			_taskPanel.SetCollapsed(_settings.TaskPanelCollapsed);
 			_taskPanel.CollapsedChanged += c => { _settings.TaskPanelCollapsed = c; _settings.Save(); };
@@ -377,6 +377,8 @@ namespace VSManager
 			ctx.Items.Add("激活到前台", null, (s, e) => { if (Selected != null) ActivateVs(Selected); });
 			ctx.Items.Add("重命名 (F2)", null, (s, e) => RenameSelected());
 			ctx.Items.Add("职责描述（AI 自动分派）…", null, (s, e) => EditNote());
+			ctx.Items.Add("登记此解决方案 / Register this solution", null, (s, e) => RegisterSelectedSolution());
+			ctx.Items.Add("解决方案登记… / Solution registry…", null, (s, e) => OpenSolutionRegistry(this));
 			ctx.Items.Add(new ToolStripSeparator());
 			ctx.Items.Add("打开 Copilot 对话助手", null, (s, e) => OpenPane());
 			ctx.Items.Add("Copilot 切换为工具窗模式（全部 VS）", null, (s, e) => DockAllPanes());
@@ -1141,10 +1143,11 @@ namespace VSManager
 				}
 				// 正忙时不再拒绝：记入任务清单，空闲后自动发布
 				var q = _tasks.Add(v.Key, NameOf(v), text.Trim(), "用户");
+				string hidden = HideResentFailed(q);
 				_drafts.Remove(v.Pid);
 				_chat.ClearInput();
 				if (_taskPanel.Collapsed) { _taskPanel.SetCollapsed(false); _settings.TaskPanelCollapsed = false; _settings.Save(); }
-				SetStatus($"「{NameOf(v)}」正忙，已加入任务清单（#{q.Id}，前面 {_tasks.Ahead(q)} 个），空闲后自动发布");
+				SetStatus($"「{NameOf(v)}」正忙，已加入任务清单（#{q.Id}，前面 {_tasks.Ahead(q)} 个），空闲后自动发布" + (hidden == null ? "" : "；" + hidden));
 				return;
 			}
 			if (!string.IsNullOrWhiteSpace(text))
@@ -1278,19 +1281,21 @@ namespace VSManager
 			var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items, v.Key, text);
 			if (dup != null) return $"「{name}」的任务清单中已有相同任务 #{dup.Id}（{StatusText(dup)}），未重复添加。";
 			var q = _tasks.Add(v.Key, name, text, "AI");
+			string hidden = HideResentFailed(q);
+			string note = hidden == null ? "" : "\n" + hidden;
 			await PumpTasksAsync();
 			switch (q.Status)
 			{
 				case QueueStatus.Running:
-					return $"已发送（任务 #{q.Id}）到「{name}」。完成后会自动通知你，无需调用 wait_for_vs。";
+					return $"已发送（任务 #{q.Id}）到「{name}」。完成后会自动通知你，无需调用 wait_for_vs。" + note;
 				case QueueStatus.Waiting:
-					return q.Attempts > 0
+					return (q.Attempts > 0
 						? $"发送暂未成功（{q.Error}），任务 #{q.Id} 已留在任务清单，30 秒后自动重试。"
-						: $"「{name}」正忙，任务已加入任务清单（#{q.Id}，前面 {_tasks.Ahead(q)} 个），空闲后自动发布，完成后通知你。";
+						: $"「{name}」正忙，任务已加入任务清单（#{q.Id}，前面 {_tasks.Ahead(q)} 个），空闲后自动发布，完成后通知你。") + note;
 				case QueueStatus.Failed:
-					return $"任务 #{q.Id} 发布失败：{q.Error}";
+					return $"任务 #{q.Id} 发布失败：{q.Error}" + note;
 				default:
-					return $"任务 #{q.Id}：{StatusText(q)}";
+					return $"任务 #{q.Id}：{StatusText(q)}" + note;
 			}
 		});
 
@@ -1307,6 +1312,9 @@ namespace VSManager
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
 				if (!string.IsNullOrEmpty(t.Result) && t.Status == QueueStatus.Done) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
 				if (!string.IsNullOrEmpty(t.Error) && t.Status != QueueStatus.Done) sb.Append(" | 错误：").Append(t.Error);
+				if (TaskHideList.IsHidden(_settings.HiddenResentTasks, t))
+					sb.Append(" | 已被 #").Append(TaskHideList.ReplacedBy(_settings.HiddenResentTasks, t.Id)).Append(" 重新排队取代（界面已隐藏）/ superseded by #")
+						.Append(TaskHideList.ReplacedBy(_settings.HiddenResentTasks, t.Id)).Append(" (hidden in the UI)");
 				sb.AppendLine();
 			}
 			return sb.ToString().TrimEnd();
@@ -1507,7 +1515,8 @@ namespace VSManager
 				WebUrls = () => _web.Urls(),
 				WebResetToken = () => { _settings.WebToken = AppSettings.NewToken(); _settings.Save(); },
 				VoiceTest = (key, res, spk, text, en) => _voice.TestAsync(key, res, spk, text, en),
-				AgentTest = AgentService.TestAsync
+				AgentTest = AgentService.TestAsync,
+				OpenSolutions = () => OpenSolutionRegistry(Form.ActiveForm ?? this)
 			};
 			using (var f = new SettingsForm(_settings, v == null ? null : NameOf(v), acts))
 			{
@@ -1739,20 +1748,81 @@ namespace VSManager
 					_taskPanel.RefreshItems();
 					return;
 				case "unclear":
+					// 撤销清除：同时恢复「已重新排队」而隐藏的失败条目 / Undo clear: also restores failed entries hidden as "requeued"
 					_settings.TaskListClearedAt = null;
+					if (_settings.HiddenResentTasks.Count > 0)
+						AppLog.Write(AppLog.TasksFile, $"撤销清除：恢复显示 {_settings.HiddenResentTasks.Count} 条已重新排队的失败条目 / undo clear: {_settings.HiddenResentTasks.Count} requeued failed entries shown again");
+					_settings.HiddenResentTasks.Clear();
 					_settings.Save();
 					_taskPanel.RefreshItems();
 					return;
+				case "unhide":
+					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id))
+					{
+						_settings.Save();
+						AppLog.Write(AppLog.TasksFile, $"恢复显示失败条目 #{t.Id} / failed entry #{t.Id} shown again");
+						_taskPanel.RefreshItems();
+						SetStatus($"已恢复显示失败任务 #{t.Id} / Failed task #{t.Id} is shown again");
+					}
+					return;
 				case "open":
 					var v = FindVs(t.VsKey);
+					if (v == null && t.Status == QueueStatus.WaitingVs)
+					{
+						// 暂存任务：打开登记的解决方案，打开后自动推送 / Parked task: open the registered solution; the task is pushed once it opens
+						var entry = _solutions.FindByPath(t.VsKey);
+						if (entry != null) { OpenSolutionFromUi(entry); return; }
+					}
 					if (v == null) { SetStatus($"「{t.VsName}」当前未打开"); return; }
 					_list.SelectedItem = v;
 					return;
 				case "cancel": CancelQueued(t); return;
-				case "remove": _tasks.Remove(t.Id); return;
-				case "retry": _dispatcher.Retry(t); return;
+				case "remove":
+					if (_tasks.Remove(t.Id) && TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
+					return;
+				case "retry":
+					// 手动重新排队复用原条目，不再隐藏 / A manual requeue reuses the entry, which is no longer hidden
+					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
+					_dispatcher.Retry(t);
+					return;
 				case "dispatch": _dispatcher.DispatchNow(t); return;
 			}
+		}
+
+		/// <summary>
+		/// 新任务列入排队后调用：若它是某条失败任务的重新发布，则把原失败条目从界面隐藏（记入 settings.json，不改 tasks.json 与归档）。
+		/// 返回附加到提示中的说明；未隐藏时返回 null。无法可靠判定的条目保留不动，并写入任务日志。
+		/// Call after a new task is queued: if it republishes a failed task, the original failed entry is hidden in the UI
+		/// (recorded in settings.json; tasks.json and the archive stay untouched). Returns a note for the status text, or null
+		/// when nothing was hidden. Entries that cannot be identified reliably are kept and explained in the task log.
+		/// </summary>
+		private string HideResentFailed(QueuedTask q)
+		{
+			if (q == null) return null;
+			ResendMatch m;
+			try { m = ResentTaskMatcher.Find(_tasks.Items, q); }
+			catch (Exception ex) { AppLog.Write(AppLog.TasksFile, $"重新发布判定失败，保留原条目 / resend check failed, entries kept: {ex.Message}"); return null; }
+			foreach (var k in m.Kept)
+				AppLog.Write(AppLog.TasksFile, $"新任务 #{q.Id} 与失败任务 #{k.Task.Id} 内容相同，但未隐藏：{k.Reason} / new task #{q.Id} matches failed task #{k.Task.Id} but it was kept");
+			if (m.ReferencedId.HasValue && !m.Hide.Any(x => x.Id == m.ReferencedId.Value) && !m.Kept.Any(x => x.Task.Id == m.ReferencedId.Value))
+				AppLog.Write(AppLog.TasksFile, $"新任务 #{q.Id} 引用了 #{m.ReferencedId}，但它不是内容相同的失败任务，未隐藏 / new task #{q.Id} references #{m.ReferencedId}, which is not a failed task with the same content; nothing hidden");
+			if (m.Hide.Count == 0) return null;
+			string ids = string.Join(", ", m.Hide.Select(x => "#" + x.Id));
+			if (!_settings.AutoHideResentFailedTasks)
+			{
+				AppLog.Write(AppLog.TasksFile, $"新任务 #{q.Id} 重新发布了失败任务 {ids}，自动隐藏已关闭，保留原条目 / new task #{q.Id} republishes failed {ids}; auto-hide is off, entries kept");
+				return null;
+			}
+			var now = DateTime.Now;
+			foreach (var x in m.Hide) TaskHideList.Add(_settings.HiddenResentTasks, x.Id, q.Id, now);
+			_settings.Save();
+			AppLog.Write(AppLog.TasksFile, $"新任务 #{q.Id} 重新发布了失败任务 {ids}（指纹 {ResentTaskMatcher.Fingerprint(ResentTaskMatcher.StripMarker(q.Text, out _))}），原条目已在界面隐藏 / new task #{q.Id} republishes failed {ids}; the original entries are hidden in the UI");
+			SendLog.Event(q.VsName, $"任务清单：#{q.Id} 已重新排队，原失败条目 {ids} 已隐藏 / task #{q.Id} requeued, original failed entry {ids} hidden");
+			_taskPanel.RefreshItems();
+			string zh = $"已重新排队，原失败条目 {ids} 已隐藏";
+			string en = $"Requeued; the original failed entry {ids} is hidden";
+			if (_settings.AutoHideResentFailedNotify) NotifyTask(q, zh, en);
+			return $"{zh}（可在任务清单「历史」中查看或撤销）/ {en} (view or undo via History in the task list)";
 		}
 
 		#endregion
@@ -1950,6 +2020,16 @@ namespace VSManager
 			UpdateRow(v);
 			string name = NameOf(v);
 			string msg = $"用时 {FormatDuration(dur)}，点击切换到该 VS";
+			if (queued != null)
+			{
+				// 该任务是失败任务的重新发布：在完成通知中注明 / The task republished failed ones: say so in the completion notice
+				var replaced = TaskHideList.Replaced(_settings.HiddenResentTasks, queued.Id);
+				if (replaced.Count > 0)
+				{
+					string ids = string.Join(", ", replaced.Select(x => "#" + x));
+					msg += $"\n任务 #{queued.Id} 是失败任务 {ids} 的重新排队（原条目已隐藏）/ Task #{queued.Id} requeued failed {ids} (original entry hidden)";
+				}
+			}
 			SetStatus($"[{DateTime.Now:HH:mm:ss}] 「{name}」Copilot 已完成任务（{FormatDuration(dur)}）");
 			if (v == Selected) _chatSvc.Poke();
 			if (_settings.Sound) PlaySound();

@@ -127,7 +127,7 @@ namespace VSManager
             {
                 Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Source = S("Source"),
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
-                Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts"))
+                Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target")
             };
             if (string.IsNullOrWhiteSpace(t.Text)) return null;
             t.Created = ParseDate(S("Created")) ?? t.Started ?? t.Finished ?? DateTime.Now;

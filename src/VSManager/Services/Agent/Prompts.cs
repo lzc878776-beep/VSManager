@@ -81,12 +81,12 @@ namespace VSManager
         /// 构建 AI 总控助手的系统提示词（整套中文或整套英文）。
         /// Builds the AI assistant system prompt (entirely Chinese or entirely English).
         /// </summary>
-        public static string AgentSystem(bool english, DateTime now, string vsList, string extra)
+        public static string AgentSystem(bool english, DateTime now, string vsList, string extra, string solutions = null)
         {
-            return english ? AgentSystemEn(now, vsList, extra) : AgentSystemZh(now, vsList, extra);
+            return english ? AgentSystemEn(now, vsList, extra, solutions) : AgentSystemZh(now, vsList, extra, solutions);
         }
 
-        private static string AgentSystemZh(DateTime now, string vsList, string extra)
+        private static string AgentSystemZh(DateTime now, string vsList, string extra, string solutions)
         {
             var sb = new StringBuilder();
             sb.AppendLine("你是「多 VS 管理工具」内置的总控 AI 助手。用户在本机同时打开了多个 Visual Studio，每个 VS 内都有 GitHub Copilot 对话助手。");
@@ -96,6 +96,12 @@ namespace VSManager
             sb.AppendLine("当前 VS 实例（编号与侧边栏一致）：");
             sb.AppendLine(vsList);
             sb.AppendLine();
+            if (!string.IsNullOrWhiteSpace(solutions))
+            {
+                sb.AppendLine("已登记的解决方案（别名 → 路径 | 是否已打开）：");
+                sb.AppendLine(solutions.Trim());
+                sb.AppendLine();
+            }
             sb.AppendLine("工作原则：");
             sb.AppendLine("1. 行动优先：能合理推断的直接执行，并在回复中用一句话说明你的假设；不要把简单请求拆成多个问题反复确认。");
             sb.AppendLine("   确实需要确认时，一次只问一个关键问题，并给出你推荐的默认做法。用户回复“是 / 好 / 可以 / 确认 / 按你说的”等，即视为同意你上一轮提出的全部方案，立即执行，不要再次确认。");
@@ -115,6 +121,8 @@ namespace VSManager
             sb.AppendLine("9. 始终使用简体中文（包括调用工具前的简短说明），回复用简洁的 Markdown，先给结论，不要复述工具的原始输出。");
             sb.AppendLine("10. 长期约束（始终遵守）：" + AgentService.OpenSourcePolicy);
             sb.AppendLine("    向打开 VSManager 项目的 VS 发布任务时，本工具会自动在任务末尾附加该约束；你撰写的提交信息、发布说明等对外文字也必须遵守。");
+            sb.AppendLine("11. 解决方案登记：用户用口语名称（如「订单项目」）指代解决方案时，用 list_solutions 查看登记表，open_solution 打开（已打开则只激活），close_vs 关闭（有未保存修改时会拒绝，如实转告用户，不要设法强制关闭）。");
+            sb.AppendLine("    send_task 的 vs 参数也可以填登记的别名：目标未打开时任务会暂存为「等待目标 VS」，对应 VS 打开后自动推送；用户希望马上执行时再调用 open_solution。别名匹配到多条时请用户选择。");
             if (!string.IsNullOrWhiteSpace(extra))
             {
                 sb.AppendLine();
@@ -124,7 +132,7 @@ namespace VSManager
             return sb.ToString();
         }
 
-        private static string AgentSystemEn(DateTime now, string vsList, string extra)
+        private static string AgentSystemEn(DateTime now, string vsList, string extra, string solutions)
         {
             var sb = new StringBuilder();
             sb.AppendLine("You are the built-in AI assistant of \"VSManager\" (multi-VS manager). The user has several Visual Studio instances open on this machine, each with a GitHub Copilot chat assistant.");
@@ -134,6 +142,12 @@ namespace VSManager
             sb.AppendLine("Current VS instances (numbers match the sidebar; names, notes and states may be in Chinese):");
             sb.AppendLine(vsList);
             sb.AppendLine();
+            if (!string.IsNullOrWhiteSpace(solutions))
+            {
+                sb.AppendLine("Registered solutions (alias → path | open or not; may be in Chinese):");
+                sb.AppendLine(solutions.Trim());
+                sb.AppendLine();
+            }
             sb.AppendLine("Working principles:");
             sb.AppendLine("1. Act first: when you can reasonably infer what to do, do it and state your assumption in one sentence; do not split a simple request into several confirmation questions.");
             sb.AppendLine("   If you really need confirmation, ask one key question at a time and propose your recommended default. When the user replies \"yes / OK / sure / confirm / go ahead\" (in any language), treat it as approval of everything you proposed last turn and execute immediately without asking again.");
@@ -153,6 +167,8 @@ namespace VSManager
             sb.AppendLine("9. Always reply in English (including the short notes before tool calls), using concise Markdown with the conclusion first; do not repeat raw tool output. Tool results may be in Chinese - translate what you report.");
             sb.AppendLine("10. Permanent constraint (always follow): " + AgentService.OpenSourcePolicyEn);
             sb.AppendLine("    When dispatching tasks to the VS with the VSManager project, this tool automatically appends this constraint to the task; commit messages, release notes and any other public text you write must follow it as well.");
+            sb.AppendLine("11. Solution registry: when the user refers to a solution by a spoken name (e.g. \"the order project\"), use list_solutions to see the registry, open_solution to open it (it only activates the VS if already open) and close_vs to close it (it refuses when there are unsaved changes - tell the user; never try to force it).");
+            sb.AppendLine("    The vs parameter of send_task may also be a registered alias: when the target is not open the task is parked as \"waiting for target VS\" and pushed automatically once that VS opens; call open_solution only when the user wants it to run now. When an alias matches several entries, ask the user to choose.");
             if (!string.IsNullOrWhiteSpace(extra))
             {
                 sb.AppendLine();

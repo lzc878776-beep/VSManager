@@ -19,6 +19,8 @@ namespace VSManager
             public Func<string, string, string, string, bool, System.Threading.Tasks.Task<VoiceResult>> VoiceTest;
             /// <summary>(endpoint, model, key) → 错误信息或 null。</summary>
             public Func<string, string, string, System.Threading.Tasks.Task<string>> AgentTest;
+            /// <summary>打开解决方案登记窗口。/ Opens the solution registry window.</summary>
+            public Action OpenSolutions;
         }
 
         private readonly AppSettings _s;
@@ -107,6 +109,12 @@ namespace VSManager
                     _s.RestoreCopilotPane, v => _s.RestoreCopilotPane = v),
                 Toggle("在任务清单中显示 VS 手动对话", "可停止、打开、复制；启用「归档」时会保存并在重启后恢复，关闭归档则仅保存在内存中",
                     _s.WatchConversations, v => _s.WatchConversations = v),
+                Toggle("重新排队后隐藏原失败条目 / Hide the failed entry after requeue",
+                    "同一任务重新发布时，只在任务清单界面隐藏原失败条目；tasks.json 与归档不变，可在「历史」查看或撤销 / When the same task is published again the original failed entry is only hidden in the task list; tasks.json and the archive stay untouched; view or undo via History",
+                    _s.AutoHideResentFailedTasks, v => _s.AutoHideResentFailedTasks = v),
+                Toggle("隐藏原失败条目时通知 / Notify when a failed entry is hidden",
+                    "弹出通知，开启语音播报时同时播报 / Shows a notification, and announces it when voice is on",
+                    _s.AutoHideResentFailedNotify, v => _s.AutoHideResentFailedNotify = v),
                 Toggle("完成时播放提示音", null, _s.Sound, v => _s.Sound = v),
                 Toggle("完成时弹出通知", null, _s.Popup, v => _s.Popup = v),
             });
@@ -125,8 +133,10 @@ namespace VSManager
             var voiceCard = BuildVoiceCard(actions);
             var agentCard = BuildAgentCard(actions);
             var archiveCard = BuildArchiveCard();
+            var sendCard = BuildSendCard();
+            var solutionCard = BuildSolutionCard(actions);
 
-            var cards = new[] { screenCard, actCard, agentCard, chatCard, voiceCard, webCard, archiveCard, winCard };
+            var cards = new[] { screenCard, actCard, agentCard, solutionCard, chatCard, sendCard, voiceCard, webCard, archiveCard, winCard };
             for (int i = cards.Length - 1; i >= 0; i--)
             {
                 cards[i].Dock = DockStyle.Top;
@@ -145,7 +155,7 @@ namespace VSManager
                 TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, BackColor = Theme.Sidebar
             };
             AppSettings.Saved += OnSaved;
-            _autoSave.Tick += (s, e) => { _autoSave.Stop(); CommitVoice(); CommitAgent(); CommitAgentQuota(); CommitArchive(); };
+            _autoSave.Tick += (s, e) => { _autoSave.Stop(); CommitVoice(); CommitAgent(); CommitAgentQuota(); CommitArchive(); CommitSend(); CommitSolutions(); };
             bottom.Controls.Add(path);
             bottom.Controls.Add(done);
 
@@ -159,7 +169,7 @@ namespace VSManager
             _cbTool.SelectedIndexChanged += (s, e) => Commit();
             _cbLayout.SelectedIndexChanged += (s, e) => Commit();
             // 输入过程中也自动保存，避免未离开输入框就关闭 / 结束进程导致丢失
-            foreach (var box in new[] { _agentEndpoint, _agentModel, _agentKey, _agentExtra, _voiceKey, _voiceSpeaker, _voiceSpeakerEn, _archiveDays, _restoreLimit, _restoreHours }.Concat(_quotaBoxes.Values))
+            foreach (var box in new[] { _agentEndpoint, _agentModel, _agentKey, _agentExtra, _voiceKey, _voiceSpeaker, _voiceSpeakerEn, _archiveDays, _restoreLimit, _restoreHours, _sendTimeout, _sendRetries, _locateTimeout, _locateRetries, _openWait, _settle }.Concat(_quotaBoxes.Values))
                 if (box != null) box.TextChanged += (s, e) => { if (_loading) return; _autoSave.Stop(); _autoSave.Start(); };
             _loading = false;
         }
@@ -180,6 +190,8 @@ namespace VSManager
             CommitAgent();
             CommitAgentQuota();
             CommitArchive();
+            CommitSend();
+            CommitSolutions();
             _qr.Image?.Dispose();
             base.OnFormClosing(e);
         }
@@ -899,6 +911,158 @@ namespace VSManager
         }
 
         private readonly ToolTip _tipArchive = new ToolTip();
+
+        #endregion
+
+        #region 发送确认 / Send confirmation
+
+        private TextBox _sendTimeout, _sendRetries, _locateTimeout, _locateRetries;
+
+        private Card BuildSendCard()
+        {
+            var grid = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Dpi.S(150)));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            var rows = new List<int>();
+            void Row(Control label, Control value, int h, bool span = false)
+            {
+                int r = rows.Count;
+                rows.Add(h);
+                grid.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+                if (span) { grid.Controls.Add(value, 0, r); grid.SetColumnSpan(value, 2); }
+                else { grid.Controls.Add(label, 0, r); grid.Controls.Add(value, 1, r); }
+            }
+            Control NumberRow(TextBox box, Control host, string unit)
+            {
+                box.Leave += (s2, e2) => CommitSend();
+                var row = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+                host.Dock = DockStyle.Left;
+                host.Width = Dpi.S(80);
+                row.Controls.Add(new Label { Dock = DockStyle.Fill, Text = unit, ForeColor = Theme.TextMuted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(Dpi.S(10), 0, 0, 0) });
+                row.Controls.Add(host);
+                return row;
+            }
+
+            Control timeoutHost, retriesHost;
+            (timeoutHost, _sendTimeout) = NewTextBox(_s.SendConfirmTimeoutSeconds.ToString(), false);
+            Row(NewLabel("确认超时 / Timeout"), NumberRow(_sendTimeout, timeoutHost,
+                "秒（2–120，默认 " + AppSettings.DefaultSendConfirmTimeoutSeconds + "）/ seconds (2–120, default " + AppSettings.DefaultSendConfirmTimeoutSeconds + ")"), Dpi.S(42));
+
+            Row(null, Toggle("粘贴未确认 / 输入框未找到时自动重试 / Auto-retry an unconfirmed paste or a missing input box",
+                "重新定位输入框并再试一次；不影响任务清单每 30 秒的发布重试 / Locates the input again and tries once more; the task list's 30-second publish retry is unchanged",
+                _s.SendAutoRetry, v => _s.SendAutoRetry = v), Dpi.S(56), true);
+
+            (retriesHost, _sendRetries) = NewTextBox(_s.SendRetryCount.ToString(), false);
+            Row(NewLabel("重试次数 / Retries"), NumberRow(_sendRetries, retriesHost,
+                "次（0–5，默认 " + AppSettings.DefaultSendRetryCount + "）/ times (0–5, default " + AppSettings.DefaultSendRetryCount + ")"), Dpi.S(42));
+
+            Control locateTimeoutHost, locateRetriesHost;
+            (locateTimeoutHost, _locateTimeout) = NewTextBox(_s.SendLocateTimeoutSeconds.ToString(), false);
+            Row(NewLabel("定位超时 / Locate timeout"), NumberRow(_locateTimeout, locateTimeoutHost,
+                "秒，查找输入框的每轮等待（1–60，默认 " + AppSettings.DefaultSendLocateTimeoutSeconds + "）/ seconds per round to find the input box (1–60, default " + AppSettings.DefaultSendLocateTimeoutSeconds + ")"), Dpi.S(42));
+
+            (locateRetriesHost, _locateRetries) = NewTextBox(_s.SendLocateRetryCount.ToString(), false);
+            Row(NewLabel("定位重试 / Locate retries"), NumberRow(_locateRetries, locateRetriesHost,
+                "次，刷新窗格后再找（0–5，默认 " + AppSettings.DefaultSendLocateRetryCount + "）/ times, after refreshing the pane (0–5, default " + AppSettings.DefaultSendLocateRetryCount + ")"), Dpi.S(42));
+
+            grid.RowCount = rows.Count + 1;
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            grid.Height = rows.Sum();
+            return NewCard("发送确认 / Send confirmation", "消息写入 Copilot 输入框后的确认方式 / How a message written to the Copilot input box is confirmed", grid);
+        }
+
+        private void CommitSend()
+        {
+            if (_loading || _sendTimeout == null) return;
+            int timeout = int.TryParse(_sendTimeout.Text.Trim(), out var t) && t > 0 ? t : _s.SendConfirmTimeoutSeconds;
+            int retries = int.TryParse(_sendRetries.Text.Trim(), out var r) && r >= 0 ? r : _s.SendRetryCount;
+            int locTimeout = int.TryParse(_locateTimeout.Text.Trim(), out var lt) && lt > 0 ? lt : _s.SendLocateTimeoutSeconds;
+            int locRetries = int.TryParse(_locateRetries.Text.Trim(), out var lr) && lr >= 0 ? lr : _s.SendLocateRetryCount;
+            int oldTimeout = _s.SendConfirmTimeoutSeconds, oldRetries = _s.SendRetryCount, oldLocTimeout = _s.SendLocateTimeoutSeconds, oldLocRetries = _s.SendLocateRetryCount;
+            _s.SendConfirmTimeoutSeconds = timeout;
+            _s.SendRetryCount = retries;
+            _s.SendLocateTimeoutSeconds = locTimeout;
+            _s.SendLocateRetryCount = locRetries;
+            _s.ClampSend();
+            if (!_sendTimeout.Focused) _sendTimeout.Text = _s.SendConfirmTimeoutSeconds.ToString();
+            if (!_sendRetries.Focused) _sendRetries.Text = _s.SendRetryCount.ToString();
+            if (!_locateTimeout.Focused) _locateTimeout.Text = _s.SendLocateTimeoutSeconds.ToString();
+            if (!_locateRetries.Focused) _locateRetries.Text = _s.SendLocateRetryCount.ToString();
+            if (oldTimeout != _s.SendConfirmTimeoutSeconds || oldRetries != _s.SendRetryCount ||
+                oldLocTimeout != _s.SendLocateTimeoutSeconds || oldLocRetries != _s.SendLocateRetryCount) Changed?.Invoke();
+        }
+
+        #endregion
+
+        #region 解决方案登记 / Solution registry
+
+        private TextBox _openWait, _settle;
+
+        private Card BuildSolutionCard(Actions actions)
+        {
+            var grid = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Dpi.S(150)));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            var rows = new List<int>();
+            void Row(Control label, Control value, int h, bool span = false)
+            {
+                int r = rows.Count;
+                rows.Add(h);
+                grid.RowStyles.Add(new RowStyle(SizeType.Absolute, h));
+                if (span) { grid.Controls.Add(value, 0, r); grid.SetColumnSpan(value, 2); }
+                else { grid.Controls.Add(label, 0, r); grid.Controls.Add(value, 1, r); }
+            }
+            Control NumberRow(TextBox box, Control host, string unit)
+            {
+                box.Leave += (s2, e2) => CommitSolutions();
+                var row = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty };
+                host.Dock = DockStyle.Left;
+                host.Width = Dpi.S(80);
+                row.Controls.Add(new Label { Dock = DockStyle.Fill, Text = unit, ForeColor = Theme.TextMuted, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(Dpi.S(10), 0, 0, 0) });
+                row.Controls.Add(host);
+                return row;
+            }
+
+            var manage = NewButton("管理登记表… / Manage registry…", actions.OpenSolutions, true);
+            manage.Enabled = actions.OpenSolutions != null;
+            Row(null, manage, Dpi.S(42), true);
+
+            Row(null, Toggle("AI 关闭 VS 前弹窗确认 / Confirm before the AI closes a VS",
+                "关闭前总会检查未保存的修改，有则拒绝；从不强制结束进程 / Unsaved changes are always checked first and block the close; the process is never killed",
+                _s.SolutionCloseConfirm, v => _s.SolutionCloseConfirm = v), Dpi.S(56), true);
+
+            Row(null, Toggle("任务暂存 / 自动推送时通知 / Notify when tasks are parked / pushed",
+                "弹出通知，开启语音播报时同时播报 / Shows a notification, and announces it when voice is on",
+                _s.PendingVsNotify, v => _s.PendingVsNotify = v), Dpi.S(56), true);
+
+            Control waitHost, settleHost;
+            (waitHost, _openWait) = NewTextBox(_s.SolutionOpenWaitSeconds.ToString(), false);
+            Row(NewLabel("打开等待 / Open wait"), NumberRow(_openWait, waitHost,
+                "秒（10–600，默认 " + AppSettings.DefaultSolutionOpenWaitSeconds + "）/ seconds (10–600, default " + AppSettings.DefaultSolutionOpenWaitSeconds + ")"), Dpi.S(42));
+
+            (settleHost, _settle) = NewTextBox(_s.PendingVsSettleSeconds.ToString(), false);
+            Row(NewLabel("推送延迟 / Push delay"), NumberRow(_settle, settleHost,
+                "秒，目标 VS 打开后等待加载（0–300，默认 " + AppSettings.DefaultPendingVsSettleSeconds + "）/ seconds after the VS opens (0–300, default " + AppSettings.DefaultPendingVsSettleSeconds + ")"), Dpi.S(42));
+
+            grid.RowCount = rows.Count + 1;
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            grid.Height = rows.Sum();
+            return NewCard("解决方案登记 / Solution registry", "按常用名称打开 / 关闭 VS，目标未打开时暂存任务 / Open / close VS by name; park tasks until the target opens", grid);
+        }
+
+        private void CommitSolutions()
+        {
+            if (_loading || _openWait == null) return;
+            int wait = int.TryParse(_openWait.Text.Trim(), out var w) && w > 0 ? w : _s.SolutionOpenWaitSeconds;
+            int settle = int.TryParse(_settle.Text.Trim(), out var st) && st >= 0 ? st : _s.PendingVsSettleSeconds;
+            int oldWait = _s.SolutionOpenWaitSeconds, oldSettle = _s.PendingVsSettleSeconds;
+            _s.SolutionOpenWaitSeconds = wait;
+            _s.PendingVsSettleSeconds = settle;
+            _s.ClampSolutions();
+            if (!_openWait.Focused) _openWait.Text = _s.SolutionOpenWaitSeconds.ToString();
+            if (!_settle.Focused) _settle.Text = _s.PendingVsSettleSeconds.ToString();
+            if (oldWait != _s.SolutionOpenWaitSeconds || oldSettle != _s.PendingVsSettleSeconds) Changed?.Invoke();
+        }
 
         #endregion
 

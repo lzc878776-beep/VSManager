@@ -208,6 +208,18 @@ namespace VSManager
         /// Time of the last "Clear completed": items completed before it are only hidden in the UI; tasks.json and the archive are untouched. null = never cleared.
         /// </summary>
         [DataMember] public DateTime? TaskListClearedAt;
+        /// <summary>
+        /// 同一任务被重新发布（重新排队）时，自动把原失败条目从任务清单界面隐藏（不删除 tasks.json 记录），默认开启。
+        /// When the same task is published again (requeued), hide the original failed entry in the task list UI (tasks.json is untouched); on by default.
+        /// </summary>
+        [DataMember] public bool AutoHideResentFailedTasks;
+        /// <summary>隐藏原失败条目时弹出通知并语音播报（语音还需开启语音播报），默认开启。/ Show a notification and announce by voice when an original failed entry is hidden (voice also needs voice announcements on); on by default.</summary>
+        [DataMember] public bool AutoHideResentFailedNotify;
+        /// <summary>
+        /// 因「已重新排队」而在界面隐藏的失败任务（编号、取代它的新任务编号、隐藏时间）；「撤销清除」会清空。
+        /// Failed tasks hidden in the UI as "requeued" (id, id of the superseding task, time); cleared by "Undo clear".
+        /// </summary>
+        [DataMember] public List<HiddenTaskMark> HiddenResentTasks;
         [DataMember] public int AgentHeight;
         /// <summary>历史记录统一归档（任务流水、AI 助手对话、各 VS 对话、发送日志）。</summary>
         [DataMember] public bool ArchiveEnabled;
@@ -276,6 +288,58 @@ namespace VSManager
             AgentFailureThreshold = AgentFailureThreshold <= 0 ? DefaultAgentFailureThreshold : Math.Min(AgentFailureThreshold, 20);
             AutoRestartMaxCount = AutoRestartMaxCount <= 0 ? DefaultAutoRestartMaxCount : Math.Min(AutoRestartMaxCount, 20);
             AutoRestartWindowMinutes = AutoRestartWindowMinutes <= 0 ? DefaultAutoRestartWindowMinutes : Math.Min(AutoRestartWindowMinutes, 1440);
+        }
+
+        // ---- 发送确认 / Send confirmation ----
+        /// <summary>
+        /// 粘贴 / 写入 Copilot 输入框后等待确认的超时（秒），默认 10，范围 2–120。
+        /// Seconds to wait for the pasted / typed text to be confirmed in the Copilot input box (default 10, range 2–120).
+        /// </summary>
+        [DataMember] public int SendConfirmTimeoutSeconds;
+        /// <summary>粘贴未能确认时是否在本次发送内自动重试，默认开启。/ Retry automatically within the same send when the paste cannot be confirmed (on by default).</summary>
+        [DataMember] public bool SendAutoRetry;
+        /// <summary>自动重试次数，默认 1，范围 0–5。/ Number of automatic retries (default 1, range 0–5).</summary>
+        [DataMember] public int SendRetryCount;
+        /// <summary>
+        /// 定位 Copilot 输入框的每轮超时（秒），默认 6，范围 1–60；超时前按 150 → 300 → 600 → 1000 毫秒退避轮询。
+        /// Per-round timeout (seconds) for locating the Copilot input box (default 6, range 1–60); polls with 150 → 300 → 600 → 1000 ms back-off.
+        /// </summary>
+        [DataMember] public int SendLocateTimeoutSeconds;
+        /// <summary>定位失败后刷新窗格并重试的次数，默认 1，范围 0–5（SendAutoRetry 关闭时不重试）。/ Retries after a failed locate, refreshing the pane (default 1, range 0–5; none when SendAutoRetry is off).</summary>
+        [DataMember] public int SendLocateRetryCount;
+
+        public const int DefaultSendConfirmTimeoutSeconds = PasteVerifier.DefaultTimeoutSeconds, DefaultSendRetryCount = 1;
+        public const int DefaultSendLocateTimeoutSeconds = InputLocator.DefaultTimeoutSeconds, DefaultSendLocateRetryCount = InputLocator.DefaultRetryCount;
+
+        /// <summary>把发送确认配置拉回有效区间（0 / 负数超时恢复默认）。/ Clamps the send confirmation settings (0 / negative timeout restores the default).</summary>
+        public void ClampSend()
+        {
+            SendConfirmTimeoutSeconds = SendConfirmTimeoutSeconds <= 0 ? DefaultSendConfirmTimeoutSeconds : Math.Min(Math.Max(2, SendConfirmTimeoutSeconds), 120);
+            SendRetryCount = Math.Min(Math.Max(0, SendRetryCount), 5);
+            SendLocateTimeoutSeconds = SendLocateTimeoutSeconds <= 0 ? DefaultSendLocateTimeoutSeconds : Math.Min(SendLocateTimeoutSeconds, 60);
+            SendLocateRetryCount = Math.Min(Math.Max(0, SendLocateRetryCount), 5);
+        }
+
+        // ---- 解决方案登记与 VS 开关 / Solution registry and VS open / close ----
+        /// <summary>AI 关闭 VS（close_vs）前是否弹窗确认，默认开启。/ Ask for confirmation before the AI closes a VS (close_vs); on by default.</summary>
+        [DataMember] public bool SolutionCloseConfirm;
+        /// <summary>open_solution 等待新 VS 窗口出现的最长秒数，默认 90，范围 10–600。/ Max seconds open_solution waits for the new VS window (default 90, range 10–600).</summary>
+        [DataMember] public int SolutionOpenWaitSeconds;
+        /// <summary>
+        /// 目标 VS 打开后，等待多少秒（让解决方案加载完成）再推送暂存任务，默认 20，范围 0–300。
+        /// Seconds to wait after the target VS opens (so the solution can finish loading) before pushing parked tasks (default 20, range 0–300).
+        /// </summary>
+        [DataMember] public int PendingVsSettleSeconds;
+        /// <summary>任务暂存 / 自动推送时是否弹出通知并语音播报（语音还需开启语音播报），默认开启。/ Show a notification and announce by voice when a task is parked / pushed (voice also needs voice announcements on); on by default.</summary>
+        [DataMember] public bool PendingVsNotify;
+
+        public const int DefaultSolutionOpenWaitSeconds = 90, DefaultPendingVsSettleSeconds = 20;
+
+        /// <summary>把解决方案相关配置拉回有效区间。/ Clamps the solution-related settings.</summary>
+        public void ClampSolutions()
+        {
+            SolutionOpenWaitSeconds = SolutionOpenWaitSeconds <= 0 ? DefaultSolutionOpenWaitSeconds : Math.Min(Math.Max(10, SolutionOpenWaitSeconds), 600);
+            PendingVsSettleSeconds = Math.Min(Math.Max(0, PendingVsSettleSeconds), 300);
         }
 
         // ---- 发布到 GitHub / Publish to GitHub ----
@@ -394,6 +458,18 @@ namespace VSManager
             ProcessWatchdogEnabled = false;
             AutoRestartMaxCount = DefaultAutoRestartMaxCount;
             AutoRestartWindowMinutes = DefaultAutoRestartWindowMinutes;
+            SendConfirmTimeoutSeconds = DefaultSendConfirmTimeoutSeconds;
+            SendAutoRetry = true;
+            SendRetryCount = DefaultSendRetryCount;
+            SendLocateTimeoutSeconds = DefaultSendLocateTimeoutSeconds;
+            SendLocateRetryCount = DefaultSendLocateRetryCount;
+            SolutionCloseConfirm = true;
+            SolutionOpenWaitSeconds = DefaultSolutionOpenWaitSeconds;
+            PendingVsSettleSeconds = DefaultPendingVsSettleSeconds;
+            PendingVsNotify = true;
+            AutoHideResentFailedTasks = true;
+            AutoHideResentFailedNotify = true;
+            HiddenResentTasks = new List<HiddenTaskMark>();
             PublishRepoPath = "";
             PublishOwner = "";
             PublishRepoName = "VSManager";
@@ -420,6 +496,7 @@ namespace VSManager
                 }
                 if (s.Aliases == null) s.Aliases = new List<AliasEntry>();
                 if (s.VsNotes == null) s.VsNotes = new List<AliasEntry>();
+                if (s.HiddenResentTasks == null) s.HiddenResentTasks = new List<HiddenTaskMark>();
                 NormalizeTitleKeys(s.Aliases);
                 NormalizeTitleKeys(s.VsNotes);
                 s.Migrate();
@@ -429,6 +506,8 @@ namespace VSManager
                 s.AgentChatMaxRecords = Math.Min(Math.Max(0, s.AgentChatMaxRecords), 1000000);
                 s.VsMemoryThresholdMB = VsMemory.ClampThreshold(s.VsMemoryThresholdMB);
                 s.ClampRestart();
+                s.ClampSend();
+                s.ClampSolutions();
                 // 非法或缺失的语言值按中文处理 / Invalid or missing language values fall back to Chinese
                 s.VoiceLanguage = VoiceLanguages.Normalize(s.VoiceLanguage);
                 return s;

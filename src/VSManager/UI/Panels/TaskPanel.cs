@@ -14,6 +14,7 @@ namespace VSManager
         private readonly FlatButton _btnClear = new FlatButton { Text = "清除已完成", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
         private Func<DateTime?> _clearedAt;
+        private Func<IList<HiddenTaskMark>> _hiddenMarks;
         private bool _showHistory;
         private int _hiddenCount;
         private const string DefaultEmptyText = "暂无任务\r\n\r\nAI 助手发布任务时，若目标 VS 正忙\r\n会在这里排队，空闲后自动发布\r\n完成后自动通知 AI 助手";
@@ -25,7 +26,7 @@ namespace VSManager
         private bool _loadWarningSeen;
         private string _tip;
 
-        /// <summary>请求对任务执行操作：dispatch / cancel / retry / remove / clear / open。</summary>
+        /// <summary>请求对任务执行操作：dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
         public event Action<QueuedTask, string> ActionRequested;
         public event Action<bool> CollapsedChanged;
 
@@ -126,12 +127,16 @@ namespace VSManager
 
         private Func<IReadOnlyList<ExternalChat>> _externals;
 
-        /// <summary>clearedAt：「清除已完成」的时间点，此前完成的条目只在界面隐藏。</summary>
-        public void Bind(TaskQueue queue, Func<IReadOnlyList<ExternalChat>> externals = null, Func<DateTime?> clearedAt = null)
+        /// <summary>
+        /// clearedAt：「清除已完成」的时间点，此前完成的条目只在界面隐藏；hiddenMarks：因「已重新排队」而隐藏的失败条目。
+        /// clearedAt: time of "Clear completed" (items completed before it are hidden in the UI only); hiddenMarks: failed entries hidden as "requeued".
+        /// </summary>
+        public void Bind(TaskQueue queue, Func<IReadOnlyList<ExternalChat>> externals = null, Func<DateTime?> clearedAt = null, Func<IList<HiddenTaskMark>> hiddenMarks = null)
         {
             _queue = queue;
             _externals = externals;
             _clearedAt = clearedAt;
+            _hiddenMarks = hiddenMarks;
             _queue.Changed += Reload;
             Reload();
         }
@@ -139,6 +144,9 @@ namespace VSManager
         /// <summary>该任务是否已被「清除已完成」从界面隐藏：只针对清除时已完成的任务（重新排队后再次完成的会重新显示）。</summary>
         public static bool IsCleared(QueuedTask t, DateTime? clearedAt) =>
             clearedAt.HasValue && t != null && t.Status == QueueStatus.Done && (t.Finished ?? t.Created) <= clearedAt.Value;
+
+        /// <summary>该失败任务是否因「已重新排队」而在界面隐藏。/ Whether this failed task is hidden in the UI as "requeued".</summary>
+        private bool IsResentHidden(QueuedTask t) => TaskHideList.IsHidden(_hiddenMarks?.Invoke(), t);
 
         /// <summary>该手动对话是否已被隐藏：只针对清除时已完成（非生成中 / 已停止 / 中断）的对话。</summary>
         public static bool IsCleared(ExternalChat c, DateTime? clearedAt) =>
@@ -195,22 +203,22 @@ namespace VSManager
             DateTime? cleared = _clearedAt?.Invoke();
             var finishedTasks = _queue.Items.Where(t => !QueueStatus.Active(t.Status)).ToList();
             var finishedChats = ext.Where(c => !c.Generating).ToList();
-            _hiddenCount = finishedTasks.Count(t => IsCleared(t, cleared)) + finishedChats.Count(c => IsCleared(c, cleared));
+            _hiddenCount = finishedTasks.Count(t => IsCleared(t, cleared) || IsResentHidden(t)) + finishedChats.Count(c => IsCleared(c, cleared));
             if (!_showHistory)
             {
-                finishedTasks.RemoveAll(t => IsCleared(t, cleared));
+                finishedTasks.RemoveAll(t => IsCleared(t, cleared) || IsResentHidden(t));
                 finishedChats.RemoveAll(c => IsCleared(c, cleared));
             }
             // 生成中的对话、执行中与排队的任务在前；已结束的（任务与对话混合）按完成时间倒序
             var items = ext.Where(c => c.Generating).OrderByDescending(c => c.Started).Cast<object>()
                 .Concat(_queue.Items.Where(t => QueueStatus.Active(t.Status))
-                    .OrderBy(t => t.Status == QueueStatus.Waiting ? 1 : 0).ThenBy(t => t.Id))
+                    .OrderBy(t => t.Status == QueueStatus.WaitingVs ? 2 : t.Status == QueueStatus.Waiting ? 1 : 0).ThenBy(t => t.Id))
                 .Concat(finishedTasks.Select(t => (Item: (object)t, At: t.Finished ?? t.Created))
                     .Concat(finishedChats.Select(c => (Item: (object)c, At: c.Finished ?? c.Started)))
                     .OrderByDescending(x => x.At).Select(x => x.Item))
                 .ToArray();
             _list.EmptyText = _hiddenCount > 0 && !_showHistory
-                ? "已清除 " + _hiddenCount + " 条已完成记录\r\n\r\n历史仍保留在 tasks.json 与归档中\r\n点击上方「历史」查看"
+                ? "已隐藏 " + _hiddenCount + " 条记录（已完成 / 已重新排队的失败任务）\r\n" + _hiddenCount + " item(s) hidden (completed / requeued failed)\r\n\r\n历史仍保留在 tasks.json 与归档中\r\nHistory stays in tasks.json and the archive\r\n点击上方「历史」查看 / Click History to view"
                 : DefaultEmptyText;
             if (_hiddenCount == 0) _showHistory = false;
             _btnHistory.Visible = !_collapsed && (_hiddenCount > 0 || _showHistory);
@@ -250,6 +258,7 @@ namespace VSManager
             var history = new ToolStripMenuItem("显示已清除的历史", null, (s, e) => { _showHistory = !_showHistory; Reload(); });
             m.Items.Add(history);
             var unclear = m.Items.Add("撤销清除（恢复显示全部历史）", null, (s, e) => { _showHistory = false; ActionRequested?.Invoke(null, "unclear"); });
+            var unhide = m.Items.Add("恢复显示该失败条目 / Show this failed entry again", null, (s, e) => Do("unhide"));
             m.Opening += (s, e) =>
             {
                 clear.Enabled = _btnClear.Enabled;
@@ -260,6 +269,7 @@ namespace VSManager
                 bool isChat = c != null;
                 dispatch.Visible = retry.Visible = cancel.Visible = !isChat;
                 stop.Visible = isChat;
+                unhide.Visible = !isChat && _list.SelectedItem is QueuedTask ht && IsResentHidden(ht);
                 if (isChat)
                 {
                     stop.Enabled = c.Generating;
@@ -275,9 +285,9 @@ namespace VSManager
                 var t = _list.SelectedItem as QueuedTask;
                 bool has = t != null;
                 open.Enabled = copy.Enabled = has;
-                dispatch.Enabled = has && t.Status == QueueStatus.Waiting;
+                dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
                 retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled);
-                cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.Running);
+                cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
                 cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
                 remove.Enabled = has && t.Status != QueueStatus.Sending;
             };
@@ -298,6 +308,7 @@ namespace VSManager
             g.Clear(Theme.Sidebar);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             int waiting = _queue?.Items.Count(t => t.Status == QueueStatus.Waiting) ?? 0;
+            int parked = _queue?.Items.Count(t => t.Status == QueueStatus.WaitingVs) ?? 0;
             int running = _queue?.Items.Count(t => t.Status == QueueStatus.Running || t.Status == QueueStatus.Sending) ?? 0;
             int chatting = _externals?.Invoke().Count(c => c.Generating) ?? 0;
             if (_collapsed)
@@ -305,7 +316,7 @@ namespace VSManager
                 int y = Dpi.S(56);
                 var sf = new StringFormat(StringFormatFlags.DirectionVertical);
                 using (var b = new SolidBrush(Theme.TextSecondary)) g.DrawString("任务清单", Theme.SemiBold, b, (_top.Width - Dpi.S(16)) / 2f, y, sf);
-                int n = waiting + running + chatting;
+                int n = waiting + parked + running + chatting;
                 bool saveFailed = _queue?.SaveError != null;
                 _tip = "";
                 _tips.SetToolTip(_top, saveFailed ? "任务清单保存失败：" + _queue.SaveError + "\r\n内存中的任务不会丢失，每 10 秒自动重试。" : "");
@@ -320,8 +331,9 @@ namespace VSManager
             }
             TextRenderer.DrawText(g, "任务清单", Theme.SemiBold, new Point(Dpi.S(16), Dpi.S(12)), Theme.Text, TextFormatFlags.NoPadding);
             string sub = running + waiting == 0 ? "空闲" : $"执行 {running} · 排队 {waiting}";
-            if (chatting > 0) sub = (running + waiting == 0 ? "" : sub + " · ") + $"对话 {chatting}";
-            Color subColor = running > 0 || chatting > 0 ? Theme.BusyFg : waiting > 0 ? Theme.AccentText : Theme.TextMuted;
+            if (parked > 0) sub = (running + waiting == 0 ? "" : sub + " · ") + $"待打开 {parked}";
+            if (chatting > 0) sub = (running + waiting + parked == 0 ? "" : sub + " · ") + $"对话 {chatting}";
+            Color subColor = running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
             string tip = null;
             if (_queue?.SaveError != null)
             {
@@ -406,11 +418,19 @@ namespace VSManager
 
             var flags = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
             y += Dpi.S(28);
-            TextRenderer.DrawText(g, "→ " + t.VsName, Theme.SemiBold, new Rectangle(x, y, right - x, Dpi.S(18)), active ? Theme.AccentText : Theme.TextSecondary, flags | TextFormatFlags.SingleLine);
+            string vsLine = t.Status == QueueStatus.WaitingVs ? "→ " + (t.Target ?? t.VsName) + "（等待打开 / waiting to open）" : "→ " + t.VsName;
+            TextRenderer.DrawText(g, vsLine, Theme.SemiBold, new Rectangle(x, y, right - x, Dpi.S(18)), active ? Theme.AccentText : Theme.TextSecondary, flags | TextFormatFlags.SingleLine);
             y += Dpi.S(20);
             string body = OneLine(t.Text);
             string tail = t.Status == QueueStatus.Done && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
-                : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error) : null;
+                : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error)
+                : t.Status == QueueStatus.WaitingVs ? "⏳ 「" + (t.Target ?? t.VsName) + "」打开后自动推送 / pushed once it opens" : null;
+            if (IsResentHidden(t))
+            {
+                // 历史模式下显示的已隐藏失败条目：注明被哪条任务取代 / A hidden failed entry shown in history mode: say which task superseded it
+                int? by = TaskHideList.ReplacedBy(_hiddenMarks?.Invoke(), t.Id);
+                tail = "⤴ 已重新排队为 #" + by + "，已隐藏 / requeued as #" + by + ", hidden" + (tail == null ? "" : " · " + tail);
+            }
             int bodyH = tail == null ? Dpi.S(34) : Dpi.S(17);
             TextRenderer.DrawText(g, body, Theme.Small, new Rectangle(x, y, right - x, bodyH), active ? Theme.Text : Theme.TextSecondary, flags | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
             if (tail != null)
@@ -424,6 +444,8 @@ namespace VSManager
             {
                 case QueueStatus.Waiting:
                     text = t.Attempts > 0 ? "等待重试" : "排队中"; fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
+                case QueueStatus.WaitingVs:
+                    text = "等待目标 VS / Waiting for VS"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; break;
                 case QueueStatus.Sending:
                     text = "发送中…"; fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Running:

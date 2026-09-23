@@ -129,12 +129,22 @@ namespace VSManager
 
         public QueuedTask Find(int id) => _items.FirstOrDefault(t => t.Id == id);
 
-        public QueuedTask Add(string vsKey, string vsName, string text, string source)
+        public QueuedTask Add(string vsKey, string vsName, string text, string source) =>
+            Add(vsKey, vsName, text, source, QueueStatus.Waiting, null);
+
+        /// <summary>
+        /// 暂存任务：目标解决方案未打开，状态为「等待目标 VS」，<paramref name="vsKey"/> 为解决方案完整路径。
+        /// Parks a task whose target solution is not open: status "waiting for target VS", <paramref name="vsKey"/> is the full solution path.
+        /// </summary>
+        public QueuedTask AddParked(string vsKey, string alias, string text, string source) =>
+            Add(vsKey, alias, text, source, QueueStatus.WaitingVs, alias);
+
+        private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target)
         {
             var t = new QueuedTask
             {
                 Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
-                Status = QueueStatus.Waiting, Created = _clock()
+                Status = status, Created = _clock(), Target = target
             };
             _items.Add(t);
             // 编号计数同时记在设置中，清除历史后新任务也不会复用旧编号
@@ -206,6 +216,7 @@ namespace VSManager
         {
             if (prev == null) return "created";
             if (prev.Status == t.Status && prev.Attempts == t.Attempts && prev.Result == t.Result && prev.Error == t.Error && prev.Text == t.Text && prev.VsKey == t.VsKey) return null;
+            if (prev.Status == QueueStatus.WaitingVs && t.Status == QueueStatus.Waiting) return "target_opened";
             if (t.Status == QueueStatus.Waiting && prev.Status != QueueStatus.Waiting) return "retry";
             if (prev.Status == t.Status) return "update";
             return t.Status;

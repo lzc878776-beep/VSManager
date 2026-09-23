@@ -29,6 +29,15 @@ namespace VSManager
         void NotifyAgent(string title, string body);
         /// <summary>每轮调度结束后调用：是否仍有未完成任务（用于开关调度计时器）。/ Called after each round: whether unfinished tasks remain.</summary>
         void QueueActivityChanged(bool anyActive);
+        /// <summary>
+        /// 查找暂存任务的目标 VS（按解决方案路径 / 登记表别名），尚未打开时返回 null。
+        /// Finds the target VS of a parked task (by solution path / registry alias); null while it is not open.
+        /// </summary>
+        VsInstance FindTargetVs(QueuedTask t);
+        /// <summary>目标 VS 打开后延迟多久再推送暂存任务。/ Delay after the target VS opens before parked tasks are pushed.</summary>
+        TimeSpan TargetSettleDelay { get; }
+        /// <summary>暂存 / 推送等新状态的弹窗与语音播报（中文与英文文案）。/ Notification and voice announcement of new states such as parked / pushed (Chinese and English text).</summary>
+        void AnnounceTask(QueuedTask t, string zh, string en);
     }
 
     /// <summary>
@@ -66,6 +75,7 @@ namespace VSManager
             try
             {
                 var now = _clock();
+                PushParked(now);
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
                     if (now < _host.TrackingReadyAt) break;
@@ -105,6 +115,31 @@ namespace VSManager
             }
             finally { _pumping = false; }
             _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
+        }
+
+        /// <summary>
+        /// 暂存任务的目标 VS 已打开：转为排队（延迟 <see cref="ITaskDispatchHost.TargetSettleDelay"/> 后发布），记录日志并通知。
+        /// The target VS of a parked task has opened: back to waiting (published after <see cref="ITaskDispatchHost.TargetSettleDelay"/>),
+        /// logged and announced.
+        /// </summary>
+        private void PushParked(DateTime now)
+        {
+            foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.WaitingVs).ToList())
+            {
+                var v = _host.FindTargetVs(t);
+                if (v == null) continue;
+                string target = t.Target ?? t.VsName;
+                var delay = _host.TargetSettleDelay;
+                if (!TaskStateMachine.TargetOpened(t, v.Key, _host.NameOf(v), now + delay)) continue;
+                _tasks.Commit();
+                int secs = (int)Math.Max(0, delay.TotalSeconds);
+                _host.LogEvent(t.VsName, $"任务清单：目标「{target}」已打开，暂存任务 #{t.Id} 转为排队，{secs} 秒后自动推送 / target opened, parked task #{t.Id} queued, pushed in {secs} s");
+                _host.SetStatus($"任务清单：「{target}」已打开，暂存任务 #{t.Id} 将在 {secs} 秒后自动推送 / \"{target}\" opened, parked task #{t.Id} will be pushed in {secs} s");
+                _host.AnnounceTask(t, $"{target}已打开，暂存任务即将自动推送", $"{target} is open, the parked task will be pushed shortly");
+                if (t.FromAgent)
+                    _host.NotifyAgent($"📋 任务 #{t.Id} 目标已打开 · {t.VsName}",
+                        $"[任务通知] 暂存任务 #{t.Id} 的目标「{target}」已打开（VS：{t.VsName}），任务将在 {secs} 秒后自动推送，完成后会再通知你。仅供知悉，无需重复发布。");
+            }
         }
 
         /// <summary>任务失败：记录错误并通知 AI 助手（仅 AI 发布的任务）。/ Fails a task and notifies the AI assistant (AI tasks only).</summary>
@@ -164,6 +199,13 @@ namespace VSManager
         public void DispatchNow(QueuedTask t)
         {
             t.NextTry = DateTime.MinValue;
+            if (t.Status == QueueStatus.WaitingVs)
+            {
+                if (_host.FindTargetVs(t) == null)
+                    _host.SetStatus($"「{t.Target ?? t.VsName}」尚未打开，任务 #{t.Id} 已暂存，打开后自动推送 / not open yet; task #{t.Id} is parked and pushed once it opens");
+                Pump();
+                return;
+            }
             var target = _host.FindVs(t.VsKey);
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))

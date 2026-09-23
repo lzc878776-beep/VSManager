@@ -19,6 +19,9 @@ settings.json.bak
 settings.json.corrupt-*
 tasks.json
 tasks.json.bak
+solutions.json
+solutions.json.bak
+solutions.json.corrupt-*
 *.log
 logs/
 archive/

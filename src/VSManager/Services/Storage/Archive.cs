@@ -253,6 +253,7 @@ namespace VSManager
                 ["result"] = t.Result,
                 ["error"] = t.Error,
                 ["attempts"] = t.Attempts,
+                ["target"] = t.Target,
                 ["created"] = Time(t.Created),
                 ["started"] = Time(t.Started),
                 ["finished"] = Time(t.Finished)
@@ -265,6 +266,7 @@ namespace VSManager
             switch (s)
             {
                 case QueueStatus.Waiting: return "排队中";
+                case QueueStatus.WaitingVs: return "等待目标 VS";
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中";
                 case QueueStatus.Done: return "已完成";

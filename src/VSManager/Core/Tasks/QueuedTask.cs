@@ -11,8 +11,15 @@ namespace VSManager
     {
         public const string Waiting = "waiting", Sending = "sending", Running = "running", Done = "done", Failed = "failed", Cancelled = "cancelled";
 
-        /// <summary>未结束（排队 / 发送中 / 执行中）。/ Not finished yet (waiting / sending / running).</summary>
-        public static bool Active(string s) => s == Waiting || s == Sending || s == Running;
+        /// <summary>
+        /// 等待目标 VS：目标解决方案尚未打开，任务已暂存；对应 VS 打开后转为排队并自动推送。
+        /// Waiting for the target VS: the target solution is not open yet and the task is parked; once that VS opens the task
+        /// goes back to waiting and is pushed automatically.
+        /// </summary>
+        public const string WaitingVs = "waiting_vs";
+
+        /// <summary>未结束（排队 / 等待目标 VS / 发送中 / 执行中）。/ Not finished yet (waiting / waiting for VS / sending / running).</summary>
+        public static bool Active(string s) => s == Waiting || s == WaitingVs || s == Sending || s == Running;
 
         public static bool Known(string s) => Active(s) || s == Done || s == Failed || s == Cancelled;
     }
@@ -37,6 +44,12 @@ namespace VSManager
         [DataMember] public string Result;
         [DataMember] public string Error;
         [DataMember] public int Attempts;
+        /// <summary>
+        /// 目标解决方案别名（按登记表别名分派时记录，用于显示等待原因）；普通任务为 null，不写入 tasks.json。
+        /// Target solution alias (recorded when dispatched by a registry alias, used to show the waiting reason); null for
+        /// ordinary tasks and then not written to tasks.json.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string Target;
 
         /// <summary>运行期：执行中是否观察到 Copilot 忙碌。/ Runtime only: whether Copilot was seen busy while running.</summary>
         [IgnoreDataMember] public bool SawBusy;
@@ -49,7 +62,7 @@ namespace VSManager
         public QueuedTask Clone() => new QueuedTask
         {
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
-            Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts
+            Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target
         };
     }
 }

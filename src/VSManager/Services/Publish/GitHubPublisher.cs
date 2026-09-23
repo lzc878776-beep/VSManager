@@ -195,7 +195,7 @@ namespace VSManager
         /// they bypass .gitignore.
         /// </summary>
         private static readonly Regex PrivateFile = new Regex(
-            @"(^|/)(settings\.json(\.bak|\.corrupt-.*)?|tasks\.json(\.bak)?|agent-chat[^/]*|publish-scan-terms\.txt|[^/]+\.jsonl)$",
+            @"(^|/)(settings\.json(\.bak|\.corrupt-.*)?|tasks\.json(\.bak)?|solutions\.json(\.bak|\.corrupt-.*)?|agent-chat[^/]*|publish-scan-terms\.txt|[^/]+\.jsonl)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
         /// <summary>是否为不得提交的本机私有数据文件。/ Whether the path is a local private data file that must never be committed.</summary>
@@ -246,6 +246,7 @@ namespace VSManager
         {
             "bin/", "obj/", "dist/", "publish/", ".vs/", "*.user",
             "settings.json", "settings.json.bak", "settings.json.corrupt-*", "tasks.json", "tasks.json.bak",
+            "solutions.json", "solutions.json.bak", "solutions.json.corrupt-*",
             "*.log", "logs/", "archive/", "Archive/", "*.jsonl", "agent-chat*"
         };
 

@@ -22,10 +22,11 @@ namespace VSManager
     /// 任务状态机：集中定义任务状态的全部流转，界面与调度器只调用这里的方法修改状态。
     /// 排队(waiting) → 发送中(sending) → 执行中(running) → 已完成(done)；
     /// 发送失败 → 排队（等待重试）或 失败(failed)；排队 / 执行中 → 已取消(cancelled)；失败 / 已取消 → 重新排队。
+    /// 等待目标 VS(waiting_vs) → 目标打开后转为排队(waiting)，或 → 已取消。
     /// Task state machine: the single place that defines every status transition; the UI and the dispatcher only change
     /// status through these methods.
     /// waiting → sending → running → done; send failure → waiting (retry) or failed; waiting / running → cancelled;
-    /// failed / cancelled → waiting again (retry).
+    /// failed / cancelled → waiting again (retry); waiting_vs → waiting once the target VS opens, or → cancelled.
     /// </summary>
     public static class TaskStateMachine
     {
@@ -92,12 +93,27 @@ namespace VSManager
             return true;
         }
 
-        /// <summary>排队 / 执行中 → 已取消。/ waiting / running → cancelled.</summary>
+        /// <summary>排队 / 等待目标 VS / 执行中 → 已取消。/ waiting / waiting_vs / running → cancelled.</summary>
         public static bool Cancel(QueuedTask t, DateTime now)
         {
-            if (t == null || (t.Status != QueueStatus.Waiting && t.Status != QueueStatus.Running)) return false;
+            if (t == null || (t.Status != QueueStatus.Waiting && t.Status != QueueStatus.WaitingVs && t.Status != QueueStatus.Running)) return false;
             t.Status = QueueStatus.Cancelled;
             t.Finished = now;
+            return true;
+        }
+
+        /// <summary>
+        /// 等待目标 VS → 排队：改用已打开 VS 的键与名称，并在 <paramref name="notBefore"/> 之后才发布（等待解决方案加载）。
+        /// waiting_vs → waiting: switches to the opened VS's key and name, publishable only after <paramref name="notBefore"/>
+        /// (lets the solution finish loading).
+        /// </summary>
+        public static bool TargetOpened(QueuedTask t, string vsKey, string vsName, DateTime notBefore)
+        {
+            if (t == null || t.Status != QueueStatus.WaitingVs) return false;
+            t.Status = QueueStatus.Waiting;
+            if (!string.IsNullOrEmpty(vsKey)) t.VsKey = vsKey;
+            if (!string.IsNullOrEmpty(vsName)) t.VsName = vsName;
+            t.NextTry = notBefore;
             return true;
         }
 
@@ -137,10 +153,10 @@ namespace VSManager
         /// <summary>
         /// 本轮可发布的任务：每个没有发送中 / 执行中任务的 VS，取编号最小的排队任务（且已到重试时间），按编号排序。
         /// Tasks to publish in this round: for every VS without a sending / running task, its lowest-numbered waiting task
-        /// (whose retry time has come), ordered by id.
+        /// (whose retry time has come), ordered by id. Tasks waiting for their target VS are not considered.
         /// </summary>
         public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now) =>
-            items.Where(x => QueueStatus.Active(x.Status)).GroupBy(x => x.VsKey)
+            items.Where(x => QueueStatus.Active(x.Status) && x.Status != QueueStatus.WaitingVs).GroupBy(x => x.VsKey)
                 .Where(g => !g.Any(x => x.Status != QueueStatus.Waiting))
                 .Select(g => g.OrderBy(x => x.Id).First())
                 .Where(x => x.NextTry <= now)
@@ -156,6 +172,7 @@ namespace VSManager
             switch (t.Status)
             {
                 case QueueStatus.Waiting: return t.Attempts > 0 ? "等待重试" : "排队中";
+                case QueueStatus.WaitingVs: return "等待目标 VS（等待打开「" + (t.Target ?? t.VsName) + "」）";
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中（" + TextUtil.FormatDuration(now - (t.Started ?? now)) + "）";
                 case QueueStatus.Done: return "已完成";

@@ -109,5 +109,10 @@ namespace VSManager.Tests
         public void LogEvent(string vsName, string text) { }
         public void NotifyAgent(string title, string body) => Notices.Add(title);
         public void QueueActivityChanged(bool anyActive) => LastActivity = anyActive;
+        public TimeSpan Settle = TimeSpan.Zero;
+        public readonly List<string> Announced = new List<string>();
+        public VsInstance FindTargetVs(QueuedTask t) => FindVs(t.VsKey);
+        public TimeSpan TargetSettleDelay => Settle;
+        public void AnnounceTask(QueuedTask t, string zh, string en) => Announced.Add(zh + " / " + en);
     }
 }

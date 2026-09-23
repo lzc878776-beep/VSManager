@@ -9,6 +9,7 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 - **调试控制**：开始 / 停止 / 中断 / 重新启动调试，生成 / 重新生成，读取错误列表。
 - **AI 总控助手**：接入任意 OpenAI 兼容接口（默认 DeepSeek），通过函数调用查看各 VS 状态、分派任务、等待结果。
 - **任务清单**：助手或用户发布的任务在 VS 忙碌时自动排队，空闲后自动发布；同时显示各 VS 中手动进行的 Copilot 对话。
+- **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，打开后自动推送。
 - **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换），并支持按住说话输入。
 - **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
@@ -134,6 +135,12 @@ VSManager/
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | 识别 Copilot 窗格与「忙碌」按钮 |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | 后台发送、后台同步对话、自动打开对话窗格 |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | 窗格被切走时自动切回、显示对话步骤 |
+| | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | 写入 Copilot 输入框后的确认超时（秒，2–120）、粘贴未确认或未找到输入框时是否自动重试及粘贴重试次数（0–5） |
+| | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | 每轮定位 Copilot 输入框的轮询超时（秒，1–60）、未找到时重新打开窗格并重试的次数（0–5，`SendAutoRetry=false` 时不重试） |
+| 解决方案登记 | `SolutionCloseConfirm` | true | AI 关闭 VS 前总是弹窗确认（关闭时仍会检查未保存修改） |
+| | `SolutionOpenWaitSeconds` | 90 | AI 打开解决方案后等待 VS 出现的最长时间（秒，10–600） |
+| | `PendingVsSettleSeconds` | 20 | 暂存任务在目标 VS 出现后再等待的秒数，让解决方案与 Copilot 加载完成（0–300） |
+| | `PendingVsNotify` | true | 任务暂存 / 自动推送时弹出通知并语音播报（语音需另行开启） |
 | | `WatchConversations` / `ExternalRestoreLimit` / `ExternalRestoreHours` | true / 50 / 24 | 监听各 VS 中的手动对话及启动时恢复的数量与时间范围 |
 | | `Aliases` / `VsNotes` | [] / [] | VS 别名与职责描述 |
 | AI 总控助手 | `AgentEnabled` | true | 启用 AI 助手 |
@@ -148,6 +155,7 @@ VSManager/
 | | `ProcessWatchdogEnabled` | false | 进程看门狗 |
 | | `AutoRestartMaxCount` / `AutoRestartWindowMinutes` | 3 / 5 | 防重启风暴 |
 | 任务清单 | `TaskHistoryLimit` / `TaskNextId` | 0 / 自动 | 历史条数上限（0＝全部保留）、下一个任务编号 |
+| | `AutoHideResentFailedTasks` / `AutoHideResentFailedNotify` | true / true | 同一任务重新发布（重新排队）时只在界面隐藏原失败条目、隐藏时是否弹出通知并播报；隐藏记录在 `HiddenResentTasks`（默认 []，最多 2000 条），`tasks.json` 与归档不变 |
 | 语音 | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | 完成播报、AI 摘要、按语言翻译、播报 VS 名称 |
 | | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | 语音语言与资源 |
 | | `VoiceSpeaker` / `VoiceSpeakerEn` | 内置中文 / 英文声音描述 | 音色 |
@@ -188,6 +196,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 |---|---|
 | `%APPDATA%\VSManager\settings.json` | 配置（含加密的 Key 与 Web 令牌） |
 | `%APPDATA%\VSManager\tasks.json` | 任务清单 |
+| `%APPDATA%\VSManager\solutions.json` | 解决方案登记表（含本机路径，仅存本机） |
 | `%APPDATA%\VSManager\agent-chat.jsonl` | AI 助手对话记录（每行一条 JSON，仅存本机） |
 | `%APPDATA%\VSManager\logs\` | 程序日志 |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | 发布自检的自定义词表 |
@@ -216,6 +225,50 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 - **防重启风暴**：`AutoRestartWindowMinutes` 分钟内最多自动重启 `AutoRestartMaxCount` 次（默认 5 分钟 3 次，AI 助手与进程分别计数），超过后停止自动重启并提示查看日志。
 - **手动入口**：主窗口顶部「⟳ 重启」菜单与托盘菜单提供「重启 AI 助手」「重启 VSManager…」（需确认；正在发送时拒绝，任务清单与配置先保存），菜单内还可切换上述两个开关、打开日志目录。
 - 日志：`%APPDATA%\VSManager\logs\agent.log`（AI 助手故障与重启）、`watchdog.log`（看门狗）、`crash.log`（未处理异常）。
+
+### 解决方案登记与 VS 开关
+
+**登记表**保存在 `%APPDATA%\VSManager\solutions.json`（独立于 settings.json，写入时保留 `.bak` 备份，主文件损坏时自动回退到备份并另存 `.corrupt-时间` 副本）。格式：
+
+```json
+{
+  "_comment": "…",
+  "Solutions": [
+    {
+      "Alias": "订单项目",
+      "Path": "%USERPROFILE%\\source\\repos\\OrderSystem\\OrderSystem.sln",
+      "Synonyms": [ "订单", "下单", "order" ],
+      "Description": "可选说明",
+      "DefaultVs": 0
+    }
+  ]
+}
+```
+
+> 示例中的路径仅为示意，请填写真实的 `.sln` / `.slnx` 完整路径（环境变量不会自动展开）。`DefaultVs` 为可选的 VS 编号（0 = 未设置），仅在读不到某个 VS 的解决方案路径时，用来判断该解决方案是否已在该编号的 VS 中打开。
+
+**界面入口**：「属性 → 解决方案登记」卡片的「管理登记表…」、实例列表右键菜单「登记此解决方案」（一键登记已打开的 VS）与「解决方案登记…」。登记窗口支持新增 / 修改 / 删除、浏览选择解决方案、「从已打开的 VS 登记」、直接打开所选解决方案，并显示每条是否已打开及对应 VS 编号。
+
+**别名匹配规则**（不区分大小写与全角半角，忽略空白与标点）：
+
+1. 完整路径一致、别名完全一致 → 命中；同义词完全一致、文件名（不含扩展名）一致次之；
+2. 去掉「解决方案 / 项目 / 工程 / 方案 / 代码 / solution / project / repo / 仓库」等通用后缀后一致（如「下单项目」→「下单」）；
+3. 互相包含（至少 2 个字符）、按顺序出现的字符、说明中包含、二元组相似度等模糊规则得分较低；
+4. 最高分唯一 → 直接使用；多条得分接近 → 列出候选让用户或 AI 选择；无匹配 → 报错并列出全部已登记别名。
+
+**AI 工具**：
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `list_solutions` | 无 | 列出登记的别名、同义词、路径，以及是否已打开、对应 VS 编号 |
+| `open_solution` | `solution`：别名或完整路径 | 已打开则只激活该 VS 窗口；否则确认后启动 VS 打开，并等待其出现（`SolutionOpenWaitSeconds`） |
+| `close_vs` | `target`：VS 编号 / 名称或登记别名 | 先检查：Copilot 忙、有执行中任务、正在生成 / 调试、存在未保存修改或无法检查时拒绝并说明原因；通过后确认，再发送普通关闭请求（等同点击关闭按钮），绝不强制结束进程 |
+| `list_vs` | 无 | 列出已打开的 VS、其解决方案及对应的登记别名 |
+| `send_task` | `vs` 可填登记别名 | 目标 VS 未打开时任务进入「等待目标 VS」并暂存 |
+
+**暂存与自动推送**：`send_task` 的目标是登记别名且对应 VS 未打开时，任务以 `waiting_vs`（等待目标 VS）状态写入 tasks.json（重启后仍保留），任务清单显示「⏳ 「别名」打开后自动推送」，并弹出通知 / 播报「任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open」。调度器每 2 秒检查一次；无论 VS 由 `open_solution` 还是用户手动打开，只要检测到对应解决方案，就把任务转为排队（`waiting`），再等待 `PendingVsSettleSeconds` 秒后按正常流程发布。状态流转：`waiting_vs → waiting → sending → running → done`；`waiting_vs` 也可直接取消（`cancelled`）。
+
+> 兼容性：旧版本 VSManager 读取到 `waiting_vs` 状态会把该任务视为已取消。
 
 ## 发布到 GitHub
 
@@ -251,11 +304,14 @@ git push -u origin feature/memory-panel   # 然后在 GitHub 上向 develop 发�
 
 - **看不到某个 VS 实例？** VSManager 与 VS 需以相同权限运行（都以管理员或都不以管理员运行），并且 VS 已完全加载解决方案。
 - **Copilot 状态一直是「未知」？** 确认已安装 GitHub Copilot 并打开过 Copilot 对话窗格；若窗格标题不同，可在「属性」中修改 `CopilotPaneKeyword`。
+- **发送失败并提示粘贴未确认？** 右键 VS →「查看发送日志」，每次失败都会记录「粘贴确认诊断」（目标 VS、窗口状态、窗格 / 输入框位置与焦点、读取到的文本片段、剪贴板与耗时）。常见原因：VS 被模态对话框阻挡、剪贴板被同步工具改写、超长消息粘贴较慢（可在「属性 → 发送确认」调大超时）。
+- **发送失败并提示「未找到 Copilot 输入框 / 对话窗格 / 输入框不可编辑」？** 输入框按 L1（WpfTextViewHost）→ L2（对话列表外最靠下的 WpfTextView）→ L3（最靠下的可编辑文本元素）→ L4（旧方式，需可编辑）→ L5（位置命中测试）逐级降级定位，每级的候选数量、名称、AutomationId、是否可编辑与耗时都写入发送日志，最终失败时还会记录窗格结构。长时间的 Copilot 回合刚结束时窗格的 UI Automation 树可能暂未刷新，程序会带退避轮询并重新打开窗格重试；仍失败时请切换到该 VS 单击一次输入框，或在「属性 → 发送确认」调大定位超时 / 重试次数。「不可编辑」通常表示 Copilot 正等待你确认操作。
 - **AI 助手没有回复 / 提示未配置？** 在「属性 → AI 总控助手」中填写 API Key（或设置 `VSMANAGER_AGENT_API_KEY`），并确认接口支持函数调用。
 - **`dotnet restore` 失败？** 本机 NuGet 配置中可能有不可用的源，执行 `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`。
 - **生成时提示 VSManager.exe 被占用？** 程序正在运行时，请先退出（托盘 → 退出），或把输出指定到临时目录：`dotnet build VSManager.slnx "-p:OutputPath=%TEMP%\vsm-build\"`。
 - **推送到 GitHub 失败？** 检查 Token 权限（classic：`repo` 或仅公开仓库的 `public_repo`；fine-grained：Contents 读写）与网络；远程有新提交时先 `git pull`，工具不会强制推送。
 - **配置或任务丢失？** 配置在 `%APPDATA%\VSManager\settings.json`，损坏时另存为 `settings.json.corrupt-*`；任务清单在 `tasks.json`，历史归档在 `<ArchiveRoot>\tasks\`。
+- **重新发布失败任务后，原失败条目不见了？** 这是 `AutoHideResentFailedTasks`（默认开启）的行为：新任务正文规范化（统一换行、去掉每行首尾空白与空行、合并连续空格、去掉零宽字符）后的 SHA-256 指纹与某条更早的失败任务相同、且目标 VS 相同时，原条目只在界面隐藏。正文过短（少于 12 字符）或目标不同时不会隐藏，原因写入任务日志；正文以「重发 #26：」开头或以「（重试 #26）」结尾时去掉标记后比对，不受长度限制。点任务清单顶部「历史」可查看，右键「恢复显示该失败条目」或「撤销清除」可恢复。
 
 ## 安全提示
 
@@ -303,6 +359,7 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 - **Debug control**: start / stop / break / restart debugging, build / rebuild, read the error list.
 - **AI assistant**: works with any OpenAI-compatible endpoint (DeepSeek by default) and uses function calling to inspect instances, dispatch tasks and wait for results.
 - **Task list**: tasks from the assistant or the user are queued while the target instance is busy and sent automatically when it becomes idle; manual Copilot chats in each instance are listed as well.
+- **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a solution that is not open are parked and pushed automatically once it opens.
 - **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it), plus push-to-talk input.
 - **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents.
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
@@ -428,6 +485,12 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | How the Copilot pane and its "busy" button are recognized |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | Send in the background, sync chats in the background, open the chat pane automatically |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | Switch back to the pane when it is replaced, show chat steps |
+| | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | Confirmation timeout after writing to the Copilot input box (seconds, 2–120), whether an unconfirmed paste or a missing input box is retried automatically, and how often a paste is retried (0–5) |
+| | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | Polling timeout of each round locating the Copilot input box (seconds, 1–60) and how often the pane is reopened and the lookup retried when it is not found (0–5; no retry when `SendAutoRetry=false`) |
+| Solution registry | `SolutionCloseConfirm` | true | Always ask before the AI closes a VS (unsaved changes are checked regardless) |
+| | `SolutionOpenWaitSeconds` | 90 | How long the AI waits for VS to appear after opening a solution (seconds, 10–600) |
+| | `PendingVsSettleSeconds` | 20 | Extra seconds a parked task waits after its VS appears so the solution and Copilot can load (0–300) |
+| | `PendingVsNotify` | true | Show a notification and speak when a task is parked / pushed (voice must be enabled separately) |
 | | `WatchConversations` / `ExternalRestoreLimit` / `ExternalRestoreHours` | true / 50 / 24 | Watch manual chats in each VS, and how many / how recent to restore at start |
 | | `Aliases` / `VsNotes` | [] / [] | VS aliases and role descriptions |
 | AI assistant | `AgentEnabled` | true | Enable the assistant |
@@ -442,6 +505,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `ProcessWatchdogEnabled` | false | Process watchdog |
 | | `AutoRestartMaxCount` / `AutoRestartWindowMinutes` | 3 / 5 | Restart-storm guard |
 | Task list | `TaskHistoryLimit` / `TaskNextId` | 0 / automatic | History limit (0 = keep all), next task id |
+| | `AutoHideResentFailedTasks` / `AutoHideResentFailedNotify` | true / true | When the same task is published again (requeued), hide the original failed entry in the UI only, and whether to notify / speak when doing so; marks are kept in `HiddenResentTasks` (default [], at most 2000); `tasks.json` and the archive are untouched |
 | Voice | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | Completion announcement, AI summary, translate to the voice language, include the VS name |
 | | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | Voice language and resource |
 | | `VoiceSpeaker` / `VoiceSpeakerEn` | built-in Chinese / English voice descriptions | Voices |
@@ -482,6 +546,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 |---|---|
 | `%APPDATA%\VSManager\settings.json` | Settings (including encrypted keys and the web token) |
 | `%APPDATA%\VSManager\tasks.json` | Task list |
+| `%APPDATA%\VSManager\solutions.json` | Solution registry (contains local paths, local only) |
 | `%APPDATA%\VSManager\agent-chat.jsonl` | AI assistant chat history (one JSON object per line, local only) |
 | `%APPDATA%\VSManager\logs\` | Application logs |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | Custom terms for the publish scan |
@@ -510,6 +575,50 @@ Click "🧠 内存" (Memory) at the top of the main window to open the memory pa
 - **Restart-storm guard**: at most `AutoRestartMaxCount` automatic restarts per `AutoRestartWindowMinutes` minutes (default 3 per 5 minutes, counted separately for the assistant and the process); beyond that automatic restarts stop and you are asked to check the logs.
 - **Manual entries**: the "⟳ 重启" (Restart) menu at the top of the main window and the tray menu provide "Restart AI assistant" and "Restart VSManager…" (asks for confirmation; refused while a message is being sent; tasks and settings are saved first). The menu also toggles both switches and opens the log folder.
 - Logs: `%APPDATA%\VSManager\logs\agent.log` (assistant faults and restarts), `watchdog.log` (watchdog), `crash.log` (unhandled exceptions).
+
+### Solution registry & VS open/close
+
+**The registry** lives in `%APPDATA%\VSManager\solutions.json` (separate from settings.json; a `.bak` backup is kept on every write, and a damaged main file falls back to the backup and is copied to `.corrupt-<time>`). Format:
+
+```json
+{
+  "_comment": "…",
+  "Solutions": [
+    {
+      "Alias": "订单项目",
+      "Path": "%USERPROFILE%\\source\\repos\\OrderSystem\\OrderSystem.sln",
+      "Synonyms": [ "订单", "下单", "order" ],
+      "Description": "optional note",
+      "DefaultVs": 0
+    }
+  ]
+}
+```
+
+> The path above is only an illustration; enter the real full path of the `.sln` / `.slnx` (environment variables are not expanded). `DefaultVs` is an optional VS number (0 = unset), used only when the solution path of a VS cannot be read, to decide whether the solution is already open in that VS.
+
+**UI entries**: "Manage registry…" in the Settings → Solution registry card, and "Register this solution" (one-click registration of an open VS) / "Solution registry…" in the instance list context menu. The registry window supports add / edit / delete, browsing for a solution, "Register from an open VS", opening the selected solution, and shows whether each entry is open and in which VS.
+
+**Alias matching** (case, full/half width, whitespace and punctuation are ignored):
+
+1. Same full path or exact alias → hit; exact synonym or file name (without extension) comes next;
+2. Equal after removing generic suffixes such as 解决方案 / 项目 / 工程 / solution / project / repo (e.g. "下单项目" → "下单");
+3. Fuzzy rules (containment of at least 2 characters, characters in order, description contains, bigram similarity) score lower;
+4. A single best score is used directly; several close scores are listed as candidates for the user or the AI to pick; no match is an error that lists all registered aliases.
+
+**AI tools**:
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `list_solutions` | none | Lists aliases, synonyms and paths, whether each is open, and the VS number |
+| `open_solution` | `solution`: alias or full path | Activates the VS if already open; otherwise asks for confirmation, launches VS and waits for it to appear (`SolutionOpenWaitSeconds`) |
+| `close_vs` | `target`: VS number / name or registered alias | Refuses with a reason when Copilot is busy, a task is running, a build / debug session is active, or there are unsaved changes (or they cannot be checked); otherwise asks for confirmation and sends a normal close request (like clicking the close button); the process is never killed |
+| `list_vs` | none | Lists open VS instances, their solutions and matching registry aliases |
+| `send_task` | `vs` may be a registered alias | If that VS is not open, the task is parked as "waiting for target VS" |
+
+**Parking and auto push**: when `send_task` targets a registered alias whose VS is not open, the task is saved in tasks.json with status `waiting_vs` (kept across restarts), the task list shows "⏳ pushed once it opens", and a notification / voice message says "任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open". The dispatcher checks every 2 seconds; as soon as the solution is detected — whether opened by `open_solution` or manually — the task moves to `waiting` and is published through the normal flow after `PendingVsSettleSeconds`. Transitions: `waiting_vs → waiting → sending → running → done`; `waiting_vs` can also be cancelled (`cancelled`).
+
+> Compatibility: older VSManager versions treat a `waiting_vs` task as cancelled.
 
 ## Publish to GitHub
 
@@ -545,11 +654,13 @@ git push -u origin feature/memory-panel   # then open a pull request into develo
 
 - **A VS instance is missing?** VSManager and VS must run with the same privileges (both elevated or both not), and the solution must be fully loaded.
 - **Copilot state stays "unknown"?** Make sure GitHub Copilot is installed and its chat pane has been opened; if the pane title differs, change `CopilotPaneKeyword` in Settings.
+- **Sending fails because the paste could not be confirmed?** Right-click the VS → "查看发送日志" (send log); every failure records "paste diagnostics" (target VS, window state, pane / input position and focus, the text snippet read back, clipboard and elapsed time). Common causes: a modal dialog blocks VS, a clipboard sync tool rewrites the clipboard, or a very long message pastes slowly (increase the timeout in Settings → Send confirmation).
 - **The AI assistant does not answer / says it is not configured?** Enter the API key in Settings → AI assistant (or set `VSMANAGER_AGENT_API_KEY`) and make sure the endpoint supports function calling.
 - **`dotnet restore` fails?** The local NuGet configuration may list an unavailable source; run `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`.
 - **Build says VSManager.exe is in use?** Exit the running app first (tray → 退出 / Exit) or build to a temporary folder: `dotnet build VSManager.slnx "-p:OutputPath=%TEMP%\vsm-build\"`.
 - **Pushing to GitHub fails?** Check the token permissions (classic: `repo`, or `public_repo` for public repositories only; fine-grained: Contents read & write) and the network; if the remote has new commits run `git pull` first — the tool never force-pushes.
 - **Settings or tasks lost?** Settings live in `%APPDATA%\VSManager\settings.json` (a corrupted file is kept as `settings.json.corrupt-*`); the task list is `tasks.json` and the history archive is under `<ArchiveRoot>\tasks\`.
+- **The failed entry disappeared after I republished the task?** That is `AutoHideResentFailedTasks` (on by default): when the SHA-256 fingerprint of the new task's normalized text (unified line breaks, per-line trimming, blank lines dropped, repeated spaces collapsed, zero-width characters removed) equals that of an earlier failed task for the same target VS, the original entry is hidden in the UI only. Texts shorter than 12 characters or a different target are never hidden, and the reason is written to the task log; a leading "resend #26:" or trailing "(retry #26)" marker is stripped before comparing and lifts the length limit. Click History at the top of the task list to see hidden entries; right-click "Show this failed entry again" or "Undo clear" to restore them.
 
 ## Security notes
 

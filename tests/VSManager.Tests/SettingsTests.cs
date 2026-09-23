@@ -139,6 +139,68 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void SendConfirmation_DefaultsAndClamp()
+        {
+            var s = AppSettings.Load();
+            Assert.AreEqual(10, s.SendConfirmTimeoutSeconds);
+            Assert.IsTrue(s.SendAutoRetry);
+            Assert.AreEqual(1, s.SendRetryCount);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"SendConfirmTimeoutSeconds\":1,\"SendRetryCount\":9,\"SendAutoRetry\":false}");
+            s = AppSettings.Load();
+            Assert.AreEqual(2, s.SendConfirmTimeoutSeconds);
+            Assert.AreEqual(5, s.SendRetryCount);
+            Assert.IsFalse(s.SendAutoRetry);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"SendConfirmTimeoutSeconds\":0,\"SendRetryCount\":-1}");
+            s = AppSettings.Load();
+            Assert.AreEqual(AppSettings.DefaultSendConfirmTimeoutSeconds, s.SendConfirmTimeoutSeconds);
+            Assert.AreEqual(0, s.SendRetryCount);
+        }
+
+        /// <summary>重新排队后隐藏原失败条目：默认开启，隐藏标记可持久化。/ Hiding requeued failed entries: on by default, marks persist.</summary>
+        [TestMethod]
+        public void AutoHideResentFailed_DefaultsAndPersist()
+        {
+            var s = AppSettings.Load();
+            Assert.IsTrue(s.AutoHideResentFailedTasks);
+            Assert.IsTrue(s.AutoHideResentFailedNotify);
+            Assert.IsNotNull(s.HiddenResentTasks);
+            Assert.AreEqual(0, s.HiddenResentTasks.Count);
+
+            TaskHideList.Add(s.HiddenResentTasks, 26, 34, new DateTime(2026, 1, 2, 3, 4, 5));
+            s.AutoHideResentFailedTasks = false;
+            s.Save();
+            s = AppSettings.Load();
+            Assert.IsFalse(s.AutoHideResentFailedTasks);
+            Assert.AreEqual(34, TaskHideList.ReplacedBy(s.HiddenResentTasks, 26));
+
+            File.WriteAllText(AppSettings.FilePath, "{\"HiddenResentTasks\":null}");
+            s = AppSettings.Load();
+            Assert.IsNotNull(s.HiddenResentTasks);
+            Assert.IsTrue(s.AutoHideResentFailedTasks);
+        }
+
+        /// <summary>输入框定位超时与重试的默认值与夹取。/ Defaults and clamping of the input locate timeout and retries.</summary>
+        [TestMethod]
+        public void SendLocate_DefaultsAndClamp()
+        {
+            var s = AppSettings.Load();
+            Assert.AreEqual(6, s.SendLocateTimeoutSeconds);
+            Assert.AreEqual(1, s.SendLocateRetryCount);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"SendLocateTimeoutSeconds\":999,\"SendLocateRetryCount\":9}");
+            s = AppSettings.Load();
+            Assert.AreEqual(60, s.SendLocateTimeoutSeconds);
+            Assert.AreEqual(5, s.SendLocateRetryCount);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"SendLocateTimeoutSeconds\":0,\"SendLocateRetryCount\":-1}");
+            s = AppSettings.Load();
+            Assert.AreEqual(AppSettings.DefaultSendLocateTimeoutSeconds, s.SendLocateTimeoutSeconds);
+            Assert.AreEqual(0, s.SendLocateRetryCount);
+        }
+
+        [TestMethod]
         public void VoiceLanguage_Normalize()
         {
             Assert.AreEqual("zh", VoiceLanguages.Normalize(null));

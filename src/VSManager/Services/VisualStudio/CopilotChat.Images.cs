@@ -83,7 +83,7 @@ namespace VSManager
                 clipboardChanged = true;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送图片";
                 Combo(VK_CONTROL, VK_V);
-                if (!WaitText(edit, value => Normalize(value) == Normalize(prompt), 2500))
+                if (!WaitText(edit, value => PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, value)), ConfirmTimeoutMs))
                     return "未能确认文字已粘贴，未发送（请检查 VS 草稿后重试）";
 
                 var addedIds = new HashSet<string>();
@@ -118,7 +118,7 @@ namespace VSManager
 
                 var finalIds = AttachmentIds(pane);
                 if (!ForegroundIs(vs) || !HasFocus(edit) || !addedIds.All(finalIds.Contains) ||
-                    Normalize(GetEditText(edit)) != Normalize(prompt))
+                    !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
 
                 // Invoke only once; a delayed acknowledgement must not cause a duplicate prompt.

@@ -537,9 +537,29 @@ namespace VSManager
             return p;
         }
 
-        private static AutomationElement FindEdit(AutomationElement pane)
+        /// <summary>
+        /// 查找 Copilot 输入框（分层降级，见 CopilotChat.Locate.cs）。对话列表中的代码块同样是 WpfTextView 且排在输入框之前，必须排除。
+        /// Finds the Copilot input box (layered fallback, see CopilotChat.Locate.cs). Code blocks in the conversation are
+        /// WpfTextViews too and come before the input box, so they are excluded.
+        /// </summary>
+        private static AutomationElement FindEdit(AutomationElement pane, int pid = 0)
         {
-            try { return pane?.FindFirst(TreeScope.Descendants, IdCond("WpfTextView")); } catch { return null; }
+            if (pane == null) return null;
+            var r = LocateEdit(pane, pid);
+            T(r.Edit != null ? "重新定位输入框 / input re-located：" + r.Level : "重新定位输入框失败 / re-locating the input failed：" + r.Outcome);
+            return r.Edit;
+        }
+
+        /// <summary>元素是否位于 <paramref name="container"/> 内（向上查找到 <paramref name="stop"/> 为止）。/ Whether the element is inside <paramref name="container"/> (walking up to <paramref name="stop"/>).</summary>
+        private static bool IsInside(AutomationElement e, AutomationElement container, AutomationElement stop)
+        {
+            var walker = TreeWalker.RawViewWalker;
+            for (var a = walker.GetParent(e); a != null; a = walker.GetParent(a))
+            {
+                if (Automation.Compare(a, container)) return true;
+                if (Automation.Compare(a, stop)) return false;
+            }
+            return false;
         }
 
         /// <summary>
@@ -645,6 +665,8 @@ namespace VSManager
             if (string.IsNullOrWhiteSpace(text) && !hasImages) return "消息为空";
             if (vs == null || !Native.IsWindow(vs.MainHwnd)) return "该 VS 已关闭";
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+            // 在任何 DTE 命令（可能把 VS 带到前台）之前记录 / Record before any DTE command (which may bring VS to the front)
+            bool fgBefore = ForegroundIs(vs);
 
             var pane = FindPane(vs);
             if (pane == null || SafeOffscreen(pane))
@@ -653,15 +675,10 @@ namespace VSManager
                 pane = OpenPane(vs, 6000) ?? pane;
                 if (pane != null) T("打开后窗格 " + Describe(pane));
             }
-            if (pane == null) return "未找到 Copilot 对话窗格，自动打开失败（请确认该 VS 已安装并登录 GitHub Copilot）";
-            var edit = FindEdit(pane);
-            if (edit == null)
-            {
-                T("窗格中未找到输入框（WpfTextView），重新打开窗格");
-                pane = OpenPane(vs, 3000) ?? pane;
-                edit = FindEdit(pane);
-            }
-            if (edit == null) return "未找到 Copilot 输入框";
+            if (pane == null) return InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
+            var loc = LocateWithRetry(vs, ref pane, out int locateAttempts);
+            var edit = loc.Edit;
+            if (edit == null) return InputLocator.FailureMessage(loc.Outcome, locateAttempts);
             T("输入框 " + Describe(edit) + " 焦点=" + HasFocus(edit) + " 现有草稿「" + Short(GetEditText(edit)) + "」 前台=" + ForegroundIs(vs));
 
             bool busyBefore = HasCancel(pane);
@@ -669,7 +686,6 @@ namespace VSManager
             T($"发送前：对话条目 {itemsBefore}，停止按钮={busyBefore}");
             if (busyBefore) return "Copilot 仍在处理上一条消息（VS 中存在停止按钮），请等待完成或先停止后再发送";
 
-            bool fgBefore = ForegroundIs(vs);
             string r = null;
             if (hasImages) r = SendImages(vs, pane, edit, text, images, returnTo);
             else
@@ -735,15 +751,16 @@ namespace VSManager
             }
         }
 
+        /// <summary>带退避地轮询输入框文本直到满足条件或超时。/ Polls the input text with back-off until the predicate holds or the timeout expires.</summary>
         private static bool WaitText(AutomationElement e, Func<string, bool> pred, int ms)
         {
             var until = DateTime.Now.AddMilliseconds(ms);
-            while (true)
+            for (int step = 0; ; step++)
             {
                 var t = GetEditText(e);
                 if (t != null && pred(t)) return true;
                 if (DateTime.Now >= until) return false;
-                Thread.Sleep(80);
+                Thread.Sleep(PasteVerifier.NextDelayMs(step));
             }
         }
 
@@ -818,8 +835,7 @@ namespace VSManager
                 }
 
                 foreach (char c in text) PostMessageW(target, WM_CHAR, (IntPtr)c, (IntPtr)1);
-                string want = Normalize(text);
-                if (!WaitText(edit, t => Normalize(t) == want, 2500 + text.Length * 3))
+                if (!WaitText(edit, t => PasteVerifier.IsConfirmed(PasteVerifier.Classify(text, null, t)), Math.Max(ConfirmTimeoutMs, 2500 + text.Length * 3)))
                 {
                     T("后台：写入后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
                     return "未能把消息完整写入 Copilot 输入框，已取消发送（内容保留在 VS 输入框中）";
@@ -883,37 +899,60 @@ namespace VSManager
             return pid == (uint)vs.Pid;
         }
 
-        /// <summary>短暂激活 VS，通过剪贴板粘贴后回车发送，再切回本工具。</summary>
+        /// <summary>
+        /// 短暂激活 VS，通过剪贴板粘贴并确认（见 CopilotChat.Paste.cs，可自动重试）后回车发送，再切回本工具。
+        /// Briefly activates VS, pastes through the clipboard and confirms it (see CopilotChat.Paste.cs, with automatic retries),
+        /// presses Enter, then switches back to this tool.
+        /// </summary>
         private string SendForeground(VsInstance vs, AutomationElement pane, AutomationElement edit, string text, IntPtr returnTo)
         {
             string oldClip = null;
             try { if (Clipboard.ContainsText()) oldClip = Clipboard.GetText(); } catch { }
-            try { Clipboard.SetDataObject(text.Replace("\n", "\r\n"), true, 10, 50); }
-            catch (Exception ex) { return "写入剪贴板失败: " + ex.Message; }
+            string clip = text.Replace("\n", "\r\n");
 
             try
             {
-                // 松开可能仍按住的修饰键，避免组合成其他快捷键
-                Key(VK_SHIFT, true); Key(VK_MENU, true); Key(VK_CONTROL, true);
-
-                T("前台：激活 VS 窗口");
-                Native.Activate(vs.MainHwnd);
-                for (int i = 0; i < 10 && !ForegroundIs(vs); i++) Thread.Sleep(50);
-                if (!ForegroundIs(vs)) { T("前台：激活失败，前台窗口=0x" + Native.GetForegroundWindow().ToString("X")); return "无法激活该 VS 窗口，发送已取消"; }
-
-                try { edit.SetFocus(); } catch (Exception ex) { T("前台：SetFocus 异常 " + ex.Message); }
-                if (!WaitFocus(edit, 600) || !ForegroundIs(vs)) { T("前台：输入框未获得焦点"); return "无法聚焦 Copilot 输入框，发送已取消"; }
-
-                Combo(VK_CONTROL, VK_A);
-                Thread.Sleep(60);
-                Combo(VK_CONTROL, VK_V);
-                string want = Normalize(text);
-                // 粘贴未生效时不能回车：空输入框回车会被误判为“已发送”
-                if (!WaitText(edit, t => Normalize(t) == want, 2500))
+                int retries = ConfirmRetries;
+                PasteReport rep = null;
+                for (int attempt = 0; attempt <= retries; attempt++)
                 {
-                    T("前台：粘贴后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
-                    return "未能确认消息已粘贴到 Copilot 输入框，发送已取消（请检查 VS 输入框）";
+                    bool last = attempt == retries;
+                    if (attempt > 0)
+                    {
+                        // 自动重试：丢弃缓存的窗格并重新定位输入框（元素可能已失效或取错）
+                        // Auto retry: drop the cached pane and locate the input again (the element may be stale or wrong)
+                        T($"前台：自动重试 {attempt}/{retries}，重新定位窗格与输入框 / auto retry, locating the pane and input again");
+                        lock (_lock) _panes.Remove(vs.Pid);
+                        var p = FindPane(vs);
+                        if (p == null || SafeOffscreen(p)) p = OpenPane(vs, 4000) ?? p;
+                        if (p != null) { pane = p; edit = FindEdit(pane, vs.Pid) ?? edit; }
+                        T("前台：重试使用输入框 / retry uses input " + Describe(edit));
+                    }
+
+                    string err = SetClipboardText(clip);
+                    if (err == null) err = FocusForPaste(vs, edit);
+                    if (err != null)
+                    {
+                        if (last) return err;
+                        Thread.Sleep(300);
+                        continue;
+                    }
+
+                    // 粘贴未生效时不能回车：空输入框回车会被误判为“已发送”
+                    rep = PasteAndVerify(vs, pane, ref edit, text, ConfirmTimeoutMs);
+                    T("前台：" + rep);
+                    if (PasteVerifier.IsConfirmed(rep.Check) || rep.LikelyWritten) break;
                 }
+                if (rep == null) return "无法聚焦 Copilot 输入框，发送已取消 / Could not focus the Copilot input box; send cancelled";
+                if (!PasteVerifier.IsConfirmed(rep.Check) && !rep.LikelyWritten)
+                {
+                    T(Diagnose(vs, pane, edit, rep));
+                    return PasteFailureMessage(rep, retries + 1);
+                }
+                if (rep.LikelyWritten)
+                    T("前台：无法读取输入框文本，但水印已隐藏、剪贴板内容正确且焦点在输入框，继续发送并以送达确认为准 / " +
+                      "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
+
                 if (!ForegroundIs(vs) || !HasFocus(edit)) { T("前台：回车前焦点已改变"); return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）"; }
                 T("前台：内容已粘贴，发送 Enter");
                 Key(VK_RETURN, false); Key(VK_RETURN, true);
@@ -938,7 +977,7 @@ namespace VSManager
             }
         }
 
-        private static string Normalize(string s) => new string((s ?? "").Where(c => !char.IsWhiteSpace(c)).ToArray());
+        private static string Normalize(string s) => PasteVerifier.Normalize(s);
 
         private static bool TryInvokeSend(AutomationElement pane)
         {

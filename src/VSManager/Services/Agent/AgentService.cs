@@ -33,6 +33,18 @@ namespace VSManager
         /// <summary>审批模式下请求用户确认。</summary>
         Task<bool> Confirm(string title, string detail);
         Task<string> DockPanes();
+        /// <summary>解决方案登记表。/ The solution registry.</summary>
+        SolutionRegistry Solutions { get; }
+        /// <summary>已打开该登记解决方案的 VS，未打开时返回 null。/ The VS that has the registered solution open; null when not open.</summary>
+        VsInstance FindOpenSolution(SolutionEntry e);
+        /// <summary>暂存任务（目标未打开，状态「等待目标 VS」），打开后自动推送。返回给模型的说明文字。/ Parks a task until the target opens; returns text for the model.</summary>
+        Task<string> ParkTask(SolutionEntry e, string text);
+        /// <summary>启动 VS 打开解决方案，返回错误信息（null 表示已启动）。/ Starts VS with the solution; returns the error (null = started).</summary>
+        Task<string> LaunchSolution(string path);
+        /// <summary>关闭前检查，返回拒绝原因（null 表示可以关闭）。/ Pre-close check; returns the refusal reason (null = can close).</summary>
+        Task<string> CheckCanClose(VsInstance v);
+        /// <summary>温和关闭 VS（不强制结束进程），返回结果文字。/ Closes VS gently (never kills the process); returns the result text.</summary>
+        Task<string> CloseVs(VsInstance v);
     }
 
     public sealed class AgentPreset
@@ -258,6 +270,9 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, Task<string>>)ReadVsFile, "read_vs_file"),
+                AIFunctionFactory.Create((Func<string>)ListSolutions, "list_solutions"),
+                AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)OpenSolution, "open_solution"),
+                AIFunctionFactory.Create((Func<string, Task<string>>)CloseVs, "close_vs"),
             };
         }
 
@@ -626,6 +641,9 @@ namespace VSManager
                 case "scan_vs_code": return "扫描" + target + "的代码结构";
                 case "read_vs_file": return "查看" + target + "的 " + OneLine(Arg("path"), 60);
                 case "set_vs_note": return "记录" + target + "的职责：" + OneLine(Arg("note"), 40);
+                case "list_solutions": return "查看解决方案登记表 / List registered solutions";
+                case "open_solution": return "打开解决方案「" + OneLine(Arg("solution"), 60) + "」/ Open solution";
+                case "close_vs": return "关闭 VS「" + OneLine(Arg("target"), 60) + "」/ Close VS";
                 default: return fc.Name;
             }
         }
@@ -657,14 +675,14 @@ namespace VSManager
         private string SystemPrompt()
         {
             var s = _settings();
-            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions);
+            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null);
         }
 
         #endregion
 
         #region 工具
 
-        [Description("列出所有正在运行的 Visual Studio 实例：编号、名称、职责描述、解决方案、Copilot 状态、调试 / 生成状态。")]
+        [Description("列出所有正在运行的 Visual Studio 实例：编号、名称、职责描述、打开的解决方案（及登记别名）、Copilot 状态、调试 / 生成状态。")]
         private string ListVs()
         {
             var list = _host.Instances.ToList();
@@ -677,6 +695,8 @@ namespace VSManager
                 string note = _host.NoteOf(v);
                 if (!string.IsNullOrEmpty(note)) sb.Append(" | 职责：").Append(OneLine(note, MaxNoteText));
                 if (!string.IsNullOrEmpty(v.SolutionPath)) sb.Append(" | 解决方案：").Append(v.SolutionPath);
+                var reg = _host.Solutions.Items.FirstOrDefault(e => _host.FindOpenSolution(e) == v);
+                if (reg != null) sb.Append(" | 登记别名：").Append(reg.Alias);
                 sb.Append(" | Copilot：").Append(CopilotText(v));
                 sb.Append(" | 调试：").Append(DebugText(v));
                 if (v.Building) sb.Append(" | 正在生成");
@@ -720,12 +740,21 @@ namespace VSManager
             return Format(t, MaxToolText, MaxMessageText);
         }
 
-        [Description("向指定 VS 的 GitHub Copilot 发布一项任务。任务记入任务清单：VS 空闲时立即发送；正忙时自动排队，空闲后自动发布；完成后会通知你。")]
+        [Description("向指定 VS 的 GitHub Copilot 发布一项任务。任务记入任务清单：VS 空闲时立即发送；正忙时自动排队，空闲后自动发布；完成后会通知你。vs 也可以是解决方案登记表中的别名：目标未打开时任务暂存为「等待目标 VS」，打开后自动推送。")]
         private async Task<string> SendTask(
-            [Description("VS 编号（如 \"1\"）或名称")] string vs,
+            [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("发给 Copilot 的完整任务描述")] string task)
         {
-            if (!Resolve(vs, out var v, out var err)) return err;
+            SolutionEntry parkFor = null;
+            if (!Resolve(vs, out var v, out var err))
+            {
+                // 不是正在运行的 VS：按登记表别名解析，已打开则直接使用，未打开则暂存
+                // Not a running VS: resolve it as a registry alias; use the VS if open, otherwise park the task
+                var hit = LookupSolution(vs, out string lookupError);
+                if (hit == null) return _host.Solutions.Count > 0 ? err + "\n" + lookupError : err;
+                v = _host.FindOpenSolution(hit);
+                if (v == null) parkFor = hit;
+            }
             task = (task ?? "").Trim();
             if (task.Length == 0) return "任务内容为空";
             int maxTask = MaxTaskText;
@@ -734,10 +763,13 @@ namespace VSManager
             // 多行消息只能前台粘贴（会短暂切到 VS）；后台模式下合并为一行，保持用户当前界面
             if (_settings().BackgroundSend && task.IndexOf('\n') >= 0)
                 task = string.Join(" ", task.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0));
-            if (IsVsManager(v) && task.IndexOf("【开源约束】", StringComparison.Ordinal) < 0 && task.IndexOf("[Open-source constraint]", StringComparison.Ordinal) < 0)
+            bool isVsManager = parkFor != null ? IsVsManagerPath(parkFor.Path) : IsVsManager(v);
+            if (isVsManager && task.IndexOf("【开源约束】", StringComparison.Ordinal) < 0 && task.IndexOf("[Open-source constraint]", StringComparison.Ordinal) < 0)
                 task += _settings().IsEnglishVoice ? OpenSourceTaskSuffixEn : OpenSourceTaskSuffix;
-            if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + _host.NameOf(v) + "」", task))
+            string targetName = parkFor != null ? parkFor.Alias : _host.NameOf(v);
+            if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task))
                 return "用户拒绝了该操作。";
+            if (parkFor != null) return await _host.ParkTask(parkFor, task);
             return await _host.QueueTask(v, task);
         }
 
@@ -856,6 +888,128 @@ namespace VSManager
             return string.Equals(name, "VSManager", StringComparison.OrdinalIgnoreCase) ||
                    (string.IsNullOrEmpty(v.SolutionPath) && VsService.TitleName(v.Title).Equals("VSManager", StringComparison.OrdinalIgnoreCase));
         }
+
+        private static bool IsVsManagerPath(string path)
+        {
+            string name;
+            try { name = System.IO.Path.GetFileNameWithoutExtension((path ?? "").Trim()); } catch { name = ""; }
+            return string.Equals(name, "VSManager", StringComparison.OrdinalIgnoreCase);
+        }
+
+        #region 解决方案登记与 VS 开关 / Solution registry and VS open / close
+
+        /// <summary>
+        /// 按别名 / 同义词 / 路径解析登记表：唯一命中返回条目；多条候选或未命中时返回 null，并在 <paramref name="error"/> 中给出候选或已登记别名列表。
+        /// Resolves the registry by alias / synonym / path: returns the entry on a unique hit; otherwise null with the
+        /// candidates or the registered aliases in <paramref name="error"/>.
+        /// </summary>
+        private SolutionEntry LookupSolution(string query, out string error)
+        {
+            error = null;
+            var reg = _host.Solutions;
+            var r = reg.Resolve(query);
+            if (r.Found) return r.Hit;
+            if (r.Ambiguous)
+            {
+                error = $"「{query}」匹配到 {r.Candidates.Count} 个已登记的解决方案，请让用户选择其一，并用完整别名重试：\n" +
+                        string.Join("\n", r.Candidates.Select(c => $"- 「{c.Entry.Alias}」→ {c.Entry.Path}（{c.Reason}）"));
+                return null;
+            }
+            error = $"解决方案登记表中找不到「{query}」。已登记的别名：{reg.AliasListText()}";
+            return null;
+        }
+
+        [Description("列出解决方案登记表：每条的别名、同义词、说明、解决方案路径、是否已打开及对应的 VS 编号。用户用口语名称（如「订单项目」）指代解决方案时先查这里。")]
+        private string ListSolutions()
+        {
+            var items = _host.Solutions.Items;
+            if (items.Count == 0) return "解决方案登记表为空（用户可在「属性 → 解决方案登记」或 VS 列表右键「登记此解决方案」中添加）。";
+            var list = _host.Instances.ToList();
+            var sb = new StringBuilder();
+            foreach (var e in items)
+            {
+                sb.Append("「").Append(e.Alias).Append("」 → ").Append(e.Path);
+                if (e.Synonyms.Count > 0) sb.Append(" | 同义词：").Append(e.SynonymText);
+                if (!string.IsNullOrEmpty(e.Description)) sb.Append(" | 说明：").Append(OneLine(e.Description, MaxNoteText));
+                var v = _host.FindOpenSolution(e);
+                if (v != null) sb.Append(" | 已打开：#").Append(list.IndexOf(v) + 1).Append(' ').Append(_host.NameOf(v)).Append("（Copilot：").Append(CopilotText(v)).Append('）');
+                else sb.Append(" | 未打开");
+                if (e.DefaultVs > 0) sb.Append(" | 默认 VS #").Append(e.DefaultVs);
+                sb.AppendLine();
+            }
+            return sb.ToString().TrimEnd();
+        }
+
+        [Description("按登记别名（支持同义词与模糊匹配）或解决方案完整路径（.sln / .slnx）打开解决方案。已打开时只激活对应的 VS 窗口，不会重复打开；否则启动 Visual Studio 并等待其窗口出现。打开后，等待该解决方案的暂存任务会自动推送。")]
+        private async Task<string> OpenSolution(
+            [Description("登记的别名 / 同义词，或解决方案完整路径")] string solution,
+            CancellationToken cancellationToken = default)
+        {
+            string q = (solution ?? "").Trim().Trim('"');
+            if (q.Length == 0) return "请提供要打开的解决方案别名或路径。已登记的别名：" + _host.Solutions.AliasListText();
+            SolutionEntry entry = LookupSolution(q, out string lookupError);
+            string path, label;
+            if (entry != null) { path = entry.Path; label = entry.Alias; }
+            else if (SolutionMatcher.LooksLikePath(q))
+            {
+                path = Environment.ExpandEnvironmentVariables(q);
+                label = System.IO.Path.GetFileNameWithoutExtension(path);
+                entry = new SolutionEntry { Alias = label, Path = path };
+            }
+            else return lookupError;
+
+            var open = _host.FindOpenSolution(entry);
+            if (open != null)
+            {
+                await _host.Activate(open);
+                return $"「{label}」已在 #{Index(open) + 1} {_host.NameOf(open)} 中打开，已激活该 VS 窗口（未重复打开）。";
+            }
+            if (!System.IO.File.Exists(path)) return $"解决方案文件不存在：{path}。请确认登记表中的路径（「属性 → 解决方案登记」）。";
+            if (_settings().AgentConfirm && !await ConfirmAsync("打开解决方案「" + label + "」", path))
+                return "用户拒绝了该操作。";
+            string err = await _host.LaunchSolution(path);
+            if (err != null) return err;
+
+            int waitSeconds = Math.Max(10, _settings().SolutionOpenWaitSeconds);
+            var deadline = DateTime.Now.AddSeconds(waitSeconds);
+            while (DateTime.Now < deadline)
+            {
+                Touch();
+                await Task.Delay(1500, cancellationToken).ConfigureAwait(false);
+                var v = _host.FindOpenSolution(entry);
+                if (v != null)
+                    return $"已打开「{label}」（#{Index(v) + 1} {_host.NameOf(v)}）。解决方案可能仍在加载；等待它的暂存任务会在加载后自动推送。";
+            }
+            return $"已启动 Visual Studio 打开「{label}」，但 {waitSeconds} 秒内尚未识别到它的窗口（可能仍在启动或弹出了提示）。窗口出现后会自动识别，暂存任务也会自动推送。";
+        }
+
+        [Description("关闭指定的 Visual Studio（按登记别名或 VS 编号 / 名称）。关闭前会请用户确认（可在设置中关闭确认），并检查未保存的修改：有未保存修改、Copilot 正在运行、有执行中的任务、正在调试或生成时拒绝关闭并说明原因；只发送正常关闭请求，绝不强制结束进程。")]
+        private async Task<string> CloseVs(
+            [Description("登记的别名 / 同义词，或 VS 编号（如 \"2\"）/ 名称")] string target)
+        {
+            string q = (target ?? "").Trim();
+            if (q.Length == 0) return "请指定要关闭的 VS（编号或登记别名）。\n" + ListVs();
+            VsInstance v;
+            if (!Resolve(q, out v, out var err))
+            {
+                var entry = LookupSolution(q, out string lookupError);
+                if (entry == null) return err + (_host.Solutions.Count > 0 ? "\n" + lookupError : "");
+                v = _host.FindOpenSolution(entry);
+                if (v == null) return $"「{entry.Alias}」当前没有打开，无需关闭。";
+            }
+            string name = _host.NameOf(v);
+            string refuse = await _host.CheckCanClose(v);
+            if (refuse != null) return refuse;
+            if (_settings().SolutionCloseConfirm || _settings().AgentConfirm)
+            {
+                if (!await ConfirmAsync("关闭 VS「" + name + "」/ Close VS",
+                        $"确定关闭「{name}」吗？已检查：没有未保存的修改。\n{v.SolutionPath}\n\nClose \"{name}\"? No unsaved changes were found."))
+                    return "用户拒绝了该操作。";
+            }
+            return await _host.CloseVs(v);
+        }
+
+        #endregion
 
         [Description("扫描指定 VS 的解决方案目录，返回代码结构概要：项目及目标框架 / 引用、目录分布、README 摘要、主要代码文件与类型。用于了解该 VS 负责什么。")]
         private async Task<string> ScanVsCode(
