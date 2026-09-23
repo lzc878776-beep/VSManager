@@ -1,0 +1,151 @@
+using System;
+using System.IO;
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+
+namespace VSManager.Tests
+{
+    /// <summary>settings.json：默认值、读写往返、损坏恢复与取值规范化。/ settings.json: defaults, round trip, recovery and normalization.</summary>
+    [TestClass]
+    public class SettingsTests
+    {
+        private TempDataFolder _data;
+
+        [TestInitialize]
+        public void Init() => _data = new TempDataFolder();
+
+        [TestCleanup]
+        public void Cleanup() => _data.Dispose();
+
+        [TestMethod]
+        public void FilePath_IsInsideDataFolder()
+        {
+            Assert.AreEqual(_data.File("settings.json"), AppSettings.FilePath);
+        }
+
+        [TestMethod]
+        public void Load_WithoutFile_ReturnsDefaults()
+        {
+            var s = AppSettings.Load();
+            Assert.AreEqual(1500, s.PollMs);
+            Assert.AreEqual(8765, s.WebPort);
+            Assert.IsTrue(s.VoiceEnabled);
+            Assert.AreEqual(VoiceLanguages.Chinese, s.VoiceLanguage);
+            Assert.AreEqual(0, s.TaskHistoryLimit);
+            Assert.AreEqual(0, s.TaskNextId);
+            Assert.IsTrue(s.ArchiveEnabled);
+            Assert.AreEqual(0, s.ArchiveRetentionDays);
+            Assert.AreEqual(50, s.ExternalRestoreLimit);
+            Assert.AreEqual(24, s.ExternalRestoreHours);
+            Assert.AreEqual(AgentChatLog.DefaultKeepDays, s.AgentChatKeepDays);
+            Assert.AreEqual(AgentChatLog.DefaultMaxRecords, s.AgentChatMaxRecords);
+            Assert.IsFalse(s.VsMemoryAutoEnabled);
+            Assert.AreEqual(VsMemory.DefaultThresholdMB, s.VsMemoryThresholdMB);
+            Assert.AreEqual("VSManager", s.PublishRepoName);
+            Assert.AreEqual("public", s.PublishVisibility);
+            Assert.AreEqual("main", s.PublishBranch);
+            Assert.AreEqual("VSManager contributors", s.PublishAuthorName);
+            Assert.AreEqual("", s.PublishAuthorEmail);
+            Assert.IsNotNull(s.Aliases);
+            Assert.IsNotNull(s.VsNotes);
+            Assert.IsFalse(File.Exists(AppSettings.FilePath), "只读取不写入 / loading never writes");
+        }
+
+        [TestMethod]
+        public void MissingFields_InOldFile_GetDefaults()
+        {
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var s = AppSettings.Load();
+            Assert.AreEqual(2000, s.PollMs);
+            Assert.AreEqual(8765, s.WebPort);
+            Assert.IsTrue(s.VoiceEnabled);
+            Assert.AreEqual("main", s.PublishBranch);
+        }
+
+        [TestMethod]
+        public void SaveThenLoad_RoundTrips_AndKeepsJsonNames()
+        {
+            var s = new AppSettings { PollMs = 3000, VoiceEnabled = false, TaskNextId = 42, VoiceLanguage = VoiceLanguages.English, PublishOwner = "example" };
+            s.SetAlias("Demo", "演示");
+            Assert.IsTrue(s.Save());
+            string json = File.ReadAllText(AppSettings.FilePath);
+            StringAssert.Contains(json, "\"VoiceAnnounce\"");
+            StringAssert.Contains(json, "\"TaskNextId\"");
+            StringAssert.Contains(json, "\"ArchiveRoot\"");
+            StringAssert.Contains(json, "\"VoiceLanguage\"");
+            Assert.IsFalse(File.Exists(AppSettings.FilePath + ".tmp"));
+
+            var back = AppSettings.Load();
+            Assert.AreEqual(3000, back.PollMs);
+            Assert.IsFalse(back.VoiceEnabled);
+            Assert.AreEqual(42, back.TaskNextId);
+            Assert.AreEqual(VoiceLanguages.English, back.VoiceLanguage);
+            Assert.AreEqual("example", back.PublishOwner);
+            Assert.AreEqual("演示", back.GetAlias("demo"));
+        }
+
+        [TestMethod]
+        public void Save_RaisesSavedEvent()
+        {
+            string result = "not raised";
+            Action<string> h = e => result = e;
+            AppSettings.Saved += h;
+            try { new AppSettings().Save(); }
+            finally { AppSettings.Saved -= h; }
+            Assert.IsNull(result);
+        }
+
+        [TestMethod]
+        public void CorruptFile_FallsBackToBackup()
+        {
+            new AppSettings { PollMs = 2500 }.Save();
+            File.Copy(AppSettings.FilePath, AppSettings.FilePath + ".bak", true);
+            File.WriteAllText(AppSettings.FilePath, "{ broken");
+            Assert.AreEqual(2500, AppSettings.Load().PollMs);
+            Assert.AreEqual(0, Directory.GetFiles(_data.Path, "settings.json.corrupt-*").Length);
+        }
+
+        [TestMethod]
+        public void CorruptFileWithoutBackup_UsesDefaults_AndKeepsCopy()
+        {
+            File.WriteAllText(AppSettings.FilePath, "{ broken");
+            var s = AppSettings.Load();
+            Assert.AreEqual(1500, s.PollMs);
+            Assert.AreEqual(1, Directory.GetFiles(_data.Path, "settings.json.corrupt-*").Length);
+            Assert.AreEqual("{ broken", File.ReadAllText(AppSettings.FilePath), "损坏的文件不被覆盖 / damaged file not overwritten");
+        }
+
+        [TestMethod]
+        public void EmptyFile_UsesDefaults()
+        {
+            File.WriteAllText(AppSettings.FilePath, "");
+            Assert.AreEqual(1500, AppSettings.Load().PollMs);
+        }
+
+        [TestMethod]
+        public void Load_ClampsAndNormalizesValues()
+        {
+            File.WriteAllText(AppSettings.FilePath,
+                "{\"AgentChatKeepDays\":-5,\"AgentChatMaxRecords\":-1,\"VsMemoryThresholdMB\":10,\"VoiceLanguage\":\"fr\"}");
+            var s = AppSettings.Load();
+            Assert.AreEqual(0, s.AgentChatKeepDays);
+            Assert.AreEqual(0, s.AgentChatMaxRecords);
+            Assert.AreEqual(VsMemory.MinThresholdMB, s.VsMemoryThresholdMB);
+            Assert.AreEqual(VoiceLanguages.Chinese, s.VoiceLanguage);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"VsMemoryThresholdMB\":0,\"VoiceLanguage\":\"en-US\"}");
+            s = AppSettings.Load();
+            Assert.AreEqual(VsMemory.DefaultThresholdMB, s.VsMemoryThresholdMB);
+            Assert.AreEqual(VoiceLanguages.English, s.VoiceLanguage);
+        }
+
+        [TestMethod]
+        public void VoiceLanguage_Normalize()
+        {
+            Assert.AreEqual("zh", VoiceLanguages.Normalize(null));
+            Assert.AreEqual("zh", VoiceLanguages.Normalize(" "));
+            Assert.AreEqual("en", VoiceLanguages.Normalize("EN"));
+            Assert.AreEqual("en", VoiceLanguages.Normalize("English"));
+            Assert.AreEqual("zh", VoiceLanguages.Normalize("ja"));
+        }
+    }
+}

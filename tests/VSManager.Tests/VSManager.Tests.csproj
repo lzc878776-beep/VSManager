@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- VSManager 核心逻辑单元测试（MSTest）/ Unit tests for VSManager core logic (MSTest) -->
+  <PropertyGroup>
+	<TargetFramework>net48</TargetFramework>
+	<LangVersion>latest</LangVersion>
+	<UseWindowsForms>true</UseWindowsForms>
+	<IsPackable>false</IsPackable>
+	<IsTestProject>true</IsTestProject>
+	<RootNamespace>VSManager.Tests</RootNamespace>
+	<AssemblyName>VSManager.Tests</AssemblyName>
+	<!-- 测试框架与 NAudio 引用的 Microsoft.Win32.Registry 版本不同，已选择与主程序一致的版本，屏蔽该提示 -->
+	<!-- The test SDK and NAudio reference different Microsoft.Win32.Registry versions; the one used by the app is chosen -->
+	<MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<Reference Include="System.Runtime.Serialization" />
+	<Reference Include="System.Net.Http" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+	<PackageReference Include="MSTest.TestAdapter" Version="3.6.4" />
+	<PackageReference Include="MSTest.TestFramework" Version="3.6.4" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\..\src\VSManager\VSManager.csproj" />
+  </ItemGroup>
+
+</Project>

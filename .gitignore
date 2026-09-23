@@ -24,6 +24,23 @@ logs/
 archive/
 Archive/
 *.jsonl
+agent-chat*
 
 # Keep the example config
 !settings.example.json
+
+# 临时文件与测试产物 / Temporary files and test artifacts
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+~$*
+TestResults/
+coverage/
+*.coverage
+*.trx
+tmp/
+temp/
+screenshots/
+publish-scan-*.txt

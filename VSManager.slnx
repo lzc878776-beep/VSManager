@@ -1,3 +1,4 @@
 <Solution>
-  <Project Path="VSManager.csproj" />
+  <Project Path="src/VSManager/VSManager.csproj" />
+  <Project Path="tests/VSManager.Tests/VSManager.Tests.csproj" />
 </Solution>

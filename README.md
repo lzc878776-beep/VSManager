@@ -13,6 +13,8 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 - **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
 - **发布到 GitHub**：一键 git init / 提交 / 创建或关联远程仓库 / 推送，发布前自动做敏感信息自检。
+- **内存监控**：按 VSManager / 各 VS 实例（含子进程）/ 共享组件分组显示工作集与私有字节，支持温和清理与超阈值提醒。
+- **自动重启**：AI 助手出现异常、请求连续失败或长时间无响应时自动重建；可选进程看门狗在 VSManager 异常退出后自动拉起，并有防重启风暴限制。
 
 ## 运行环境
 
@@ -24,13 +26,77 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 ## 构建与运行
 
 ```powershell
-git clone <repo-url>
+git clone https://github.com/<owner>/VSManager.git
 cd VSManager
-dotnet build VSManager.csproj -c Release
-.\bin\Release\net48\VSManager.exe
+dotnet build VSManager.slnx -c Release
+.\src\VSManager\bin\Release\net48\VSManager.exe
 ```
 
-也可以直接用 Visual Studio 打开 `VSManager.csproj` 生成并运行。
+`<owner>` 替换为仓库所有者；默认分支为 `main`，开发中的内容在 `develop`（见[分支策略](#分支策略)）。
+
+也可以直接用 Visual Studio 打开根目录的 `VSManager.slnx`（项目文件位于 `src\VSManager\VSManager.csproj`）生成并运行。
+
+运行单元测试（MSTest，测试数据全部写入系统临时目录，不会读写 %APPDATA%\VSManager 中的真实数据）：
+
+```powershell
+dotnet test VSManager.slnx
+```
+
+若本机 NuGet 配置中有不可用的源导致还原失败，可先执行 `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`。
+
+## 目录结构
+
+```text
+VSManager/
+├─ VSManager.slnx              解决方案
+├─ README.md / LICENSE / .gitignore / .gitattributes
+├─ CONTRIBUTING.md             贡献指南（分支策略、提交规范、自检）
+├─ CHANGELOG.md                更新日志
+├─ settings.example.json       配置示例（真实配置在 %APPDATA%\VSManager\，不入库）
+├─ src/
+│  └─ VSManager/               主程序项目（WinForms，.NET Framework 4.8）
+│     ├─ VSManager.csproj
+│     ├─ Program.cs / app.manifest
+│     ├─ Assets/               图标与嵌入资源（Web 页面、Copilot Skill）
+│     │  ├─ app.ico
+│     │  ├─ Web/               remote.html、transcript.html
+│     │  └─ Skill/             SKILL.md、vsm.ps1
+│     ├─ Core/                 领域层：不依赖界面与 Win32
+│     │  ├─ Models/            数据模型（外部对话、图片附件、Copilot 状态）
+│     │  ├─ Tasks/             任务模型、任务状态机、发送重试判定、任务清单
+│     │  └─ TextUtil.cs        通用文本工具
+│     ├─ Infrastructure/       基础设施层
+│     │  ├─ Config/            配置读写（AppSettings）、数据目录（AppPaths）
+│     │  ├─ Http/              AI 接口客户端工厂、请求体策略
+│     │  ├─ IO/                文件系统抽象、原子写入
+│     │  ├─ Logging/           统一日志入口（AppLog）、发送日志
+│     │  ├─ Storage/           tasks.json 存储
+│     │  ├─ Win32/             Win32 互操作、内存裁剪
+│     │  └─ QrCode.cs          二维码
+│     ├─ Services/             服务层
+│     │  ├─ Abstractions/      外部依赖接口（VS 操作、Copilot 通道、语音）
+│     │  ├─ Agent/             AI 总控助手、提示词、对话记录
+│     │  ├─ Publish/           发布到 GitHub
+│     │  ├─ Remote/            局域网网页遥控、Skill 安装
+│     │  ├─ Storage/           历史归档
+│     │  ├─ Tasks/             任务调度器（发布、重试、完成、失败）
+│     │  ├─ VisualStudio/      VS 实例、Copilot 对话 / 监控、代码扫描、内存监控
+│     │  └─ Voice/             豆包语音合成与识别
+│     └─ UI/                   界面层：主窗口、主题、通用控件
+│        ├─ Forms/             设置、发布、对话记录、内存等窗口
+│        └─ Panels/            Copilot 对话、AI 助手、任务清单面板
+└─ tests/
+   └─ VSManager.Tests/         单元测试（MSTest）
+```
+
+所有源码仍使用同一个命名空间 `VSManager`，目录只用于按职责组织文件。构建输出（`bin/`、`obj/`）与测试结果（`TestResults/`）已被 `.gitignore` 排除。
+
+### 分层架构
+
+- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 失败 / 已取消）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
+- **Services（服务层）**：VS 管理、Copilot 消息发送、AI 助手、语音、归档、发布。`TaskDispatcher` 负责任务调度，通过 `ITaskDispatchHost` 与主窗口交互；外部依赖通过 `IVsOperations`、`ICopilotChannel`、`IVoiceService`、`IAiClientFactory` 抽象。
+- **Infrastructure（基础设施层）**：Win32 封装、配置与数据目录、文件系统抽象 `IFileSystem` 与原子写入 `AtomicFile`、统一日志 `AppLog`（含未处理异常记录到 crash.log）、HTTP 客户端创建。
+- **UI（界面层）**：窗体与控件，只负责展示与交互，业务动作委托给服务层。
 
 ## 配置
 
@@ -51,6 +117,51 @@ dotnet build VSManager.csproj -c Release
 | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` / `PublishVisibility` / `PublishBranch` | 发布到 GitHub：本地目录（空＝自动查找）、所有者（空＝Token 用户）、仓库名、可见性、默认分支 | 空 / 空 / VSManager / public / main |
 | `PublishAuthorName` / `PublishAuthorEmail` | 提交作者与邮箱（邮箱为空时使用 GitHub noreply 地址） | VSManager contributors / 空 |
 | `GitHubTokenProtected` | GitHub Token（DPAPI 加密） | 空 |
+
+<details>
+<summary>全部配置项与默认值（点击展开）</summary>
+
+| 分组 | 配置项 | 默认值 | 说明 |
+|---|---|---|---|
+| 窗口与布局 | `MainScreen` / `ToolScreen` | 空 | 主界面 / 工具窗口所在屏幕（空＝自动） |
+| | `Layout` | `上下` | 工具窗口布局方式 |
+| | `ActivateMoveMain` / `ActivateMoveTools` | true / false | 激活 VS 时是否移动主界面 / 工具窗口 |
+| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | 置顶、最小化到托盘、全局热键 |
+| | `ClickToActivate` | false | 单击列表即激活 VS |
+| | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | 界面尺寸记忆（0＝默认） |
+| Copilot 监听与发送 | `MonitorCopilot` / `PollMs` | true / 1500 | 监听 Copilot 状态及轮询间隔（毫秒） |
+| | `Sound` / `Popup` | true / true | 完成时提示音、托盘气泡 |
+| | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | 识别 Copilot 窗格与「忙碌」按钮 |
+| | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | 后台发送、后台同步对话、自动打开对话窗格 |
+| | `RestoreCopilotPane` / `ShowChatSteps` | true / true | 窗格被切走时自动切回、显示对话步骤 |
+| | `WatchConversations` / `ExternalRestoreLimit` / `ExternalRestoreHours` | true / 50 / 24 | 监听各 VS 中的手动对话及启动时恢复的数量与时间范围 |
+| | `Aliases` / `VsNotes` | [] / [] | VS 别名与职责描述 |
+| AI 总控助手 | `AgentEnabled` | true | 启用 AI 助手 |
+| | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI 兼容接口与模型 |
+| | `AgentKeyProtected` | 空 | API Key（DPAPI 加密；也可用 `VSMANAGER_AGENT_API_KEY`） |
+| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进 |
+| | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | 单次文本上限（字符） |
+| | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | 输出上限（0＝模型默认）、历史条数、单轮工具调用次数 |
+| | `AgentMaxFileLines` / `AgentMaxReadCount` | 4000 / 400 | 读取文件行数、读取对话条数上限 |
+| | `AgentChatKeepDays` / `AgentChatMaxRecords` | 30 / 2000 | 对话记录保留天数与条数（0＝不限） |
+| 自动重启 | `AgentAutoRestart` / `AgentHangTimeoutSeconds` / `AgentFailureThreshold` | true / 120 / 3 | 见[自动重启](#自动重启) |
+| | `ProcessWatchdogEnabled` | false | 进程看门狗 |
+| | `AutoRestartMaxCount` / `AutoRestartWindowMinutes` | 3 / 5 | 防重启风暴 |
+| 任务清单 | `TaskHistoryLimit` / `TaskNextId` | 0 / 自动 | 历史条数上限（0＝全部保留）、下一个任务编号 |
+| 语音 | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | 完成播报、AI 摘要、按语言翻译、播报 VS 名称 |
+| | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | 语音语言与资源 |
+| | `VoiceSpeaker` / `VoiceSpeakerEn` | 内置中文 / 英文声音描述 | 音色 |
+| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | 按住说话输入 |
+| | `VoiceKeyProtected` | 空 | 豆包语音 API Key（DPAPI 加密；也可用 `VSMANAGER_DOUBAO_API_KEY`） |
+| Web 远程 | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / 空（自动生成） | 局域网远程控制 |
+| 归档 | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / 空 / 0 | 历史归档 |
+| 内存 | `VsMemoryAutoEnabled` / `VsMemoryThresholdMB` / `VsMemoryAutoClean` | false / 6144 / false | 见[内存监控](#内存监控) |
+| 发布 | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` | 空 / 空 / `VSManager` | 本地目录、所有者、仓库名 |
+| | `PublishVisibility` / `PublishBranch` | `public` / `main` | 可见性、默认分支 |
+| | `PublishAuthorName` / `PublishAuthorEmail` | `VSManager contributors` / 空（noreply） | 提交作者 |
+| | `GitHubTokenProtected` | 空 | GitHub Token（DPAPI 加密；也可用 `VSMANAGER_GITHUB_TOKEN`） |
+
+</details>
 
 ### 环境变量
 
@@ -77,11 +188,34 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 |---|---|
 | `%APPDATA%\VSManager\settings.json` | 配置（含加密的 Key 与 Web 令牌） |
 | `%APPDATA%\VSManager\tasks.json` | 任务清单 |
+| `%APPDATA%\VSManager\agent-chat.jsonl` | AI 助手对话记录（每行一条 JSON，仅存本机） |
 | `%APPDATA%\VSManager\logs\` | 程序日志 |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | 发布自检的自定义词表 |
 | `<ArchiveRoot>\tasks\`、`chat\`、`logs\` | 历史归档 |
 
-以上文件都已写入 `.gitignore`，请勿提交。
+以上文件都已写入 `.gitignore`，请勿提交；发布自检也会拦下这些本机数据文件。
+
+### AI 助手对话记录
+
+点击主窗口顶部的「📜 对话记录」打开历史窗口，可按关键词（或「#任务编号」）搜索、按日期筛选、切换正序 / 倒序，并可显示工具调用步骤。主界面的 AI 对话区只显示本次运行的会话（重启后清空），完整历史在该窗口中查看。每条记录包含时间、角色（user / assistant / notice）、文本以及关联的任务编号；写入时逐条追加并立即刷盘。容量由「属性 → AI 总控助手 → 对话记录」中的 `AgentChatKeepDays`（默认 30 天）与 `AgentChatMaxRecords`（默认 2000 条）控制，超出时只裁剪该文件中最旧的记录，不影响任务清单与归档。
+
+### 内存监控
+
+点击主窗口顶部的「🧠 内存」打开内存面板：按 VSManager 本体、各 VS 实例（devenv 及其全部子进程，如 ServiceHub、WebView2、MSBuild、Copilot 语言服务）和无归属的共享组件（如 VBCSCompiler）分组，显示每个进程的 PID、所属 VS、工作集、私有字节与占比，默认每 5 秒自动刷新。
+
+- 「清理 VSManager」：完整 GC 并修剪 VSManager 及其 WebView2 的工作集。
+- 「温和清理」（单个 VS 或全部）：若 VS 提供 `Tools.ForceGC` 命令则先触发 VS 内部 GC，再修剪标为「可安全清理」的进程的工作集。修剪只是把不常用的内存页移出物理内存，需要时自动换回；不会结束任何进程、不会丢失未保存内容，私有字节通常不变。
+- 调试器组件、测试宿主、终端 / Copilot 代理命令、被调试的程序等标为「不建议」，只展示不清理。
+- 每次清理的前后数值显示在面板底部，并写入 `%APPDATA%\VSManager\logs\memory.log`。
+- 超阈值自动策略（默认关闭）：`VsMemoryAutoEnabled`（默认 false）、`VsMemoryThresholdMB`（默认 6144）、`VsMemoryAutoClean`（默认 false = 只提示）。每分钟检查一次，同一 VS 30 分钟内最多处理一次；VS 正在调试 / 生成 / Copilot 运行中时只提示。
+
+### 自动重启
+
+- **AI 助手自动重启**（默认开启，`AgentAutoRestart`）：AI 助手内部出现未处理异常、请求连续失败 `AgentFailureThreshold` 次（默认 3，仅统计网络错误 / 超时 / 5xx 等临时故障）或运行中 `AgentHangTimeoutSeconds` 秒没有任何进展（默认 120；等待用户确认时不计）时，自动取消当前一轮、重建 AI 客户端并恢复可用，对话中与状态栏会显示「AI 助手已自动重启」。任务清单不受影响。
+- **进程看门狗**（默认关闭，`ProcessWatchdogEnabled`）：开启后会启动一个独立的看门狗进程；VSManager 异常退出（崩溃、被结束）后约 2 秒自动重新拉起。任务清单每次变更都会写盘，崩溃时还会再尽力保存一次；重启后恢复任务队列，执行中的任务继续跟踪，退出时「发送中」的任务可能已送达，因此标为失败并提示手动重新排队，避免重复发布。正常退出不会被拉起。
+- **防重启风暴**：`AutoRestartWindowMinutes` 分钟内最多自动重启 `AutoRestartMaxCount` 次（默认 5 分钟 3 次，AI 助手与进程分别计数），超过后停止自动重启并提示查看日志。
+- **手动入口**：主窗口顶部「⟳ 重启」菜单与托盘菜单提供「重启 AI 助手」「重启 VSManager…」（需确认；正在发送时拒绝，任务清单与配置先保存），菜单内还可切换上述两个开关、打开日志目录。
+- 日志：`%APPDATA%\VSManager\logs\agent.log`（AI 助手故障与重启）、`watchdog.log`（看门狗）、`crash.log`（未处理异常）。
 
 ## 发布到 GitHub
 
@@ -92,6 +226,37 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
   - classic Token：`repo` 范围（仅公开仓库可用 `public_repo`）；推送 `.github/workflows` 还需要 `workflow`。
 - **敏感信息自检**：扫描所有待提交文件以及提交信息、提交作者，规则包括盘符绝对路径、当前用户名与机器名、邮箱（noreply 与 example 域名除外）、常见 Key/Token 格式与疑似密钥赋值、本机已配置的密钥，以及自定义词表 `%APPDATA%\VSManager\publish-scan-terms.txt`（每行一个，适合填写内部项目名、客户名，文件不会提交）。有命中时发布暂停并列出「文件:行号 + 命中内容」（密钥已打码），由你确认继续或取消；「仅自检」只扫描、不修改仓库。
 - **日志**：`%APPDATA%\VSManager\logs\publish-yyyyMMdd.log`。失败时界面会给出原因与修复建议；远程已有本地没有的提交时不会强制推送。
+
+## 分支策略
+
+| 分支 | 用途 | 合并方式 |
+|---|---|---|
+| `main` | 默认主分支，始终可构建、可发布；每个版本打标签（如 `v1.0.0`） | 只接受来自 `develop`（发布）或 `fix/xxx`（紧急修复）的合并 |
+| `develop` | 集成分支，汇总已完成的功能与修复 | 接受 `feature/xxx`、`fix/xxx` 的 Pull Request |
+| `feature/xxx` | 新功能，从 `develop` 创建 | 完成后向 `develop` 发起 Pull Request |
+| `fix/xxx` | 缺陷修复，一般从 `develop` 创建；线上紧急问题从 `main` 创建 | 合并回来源分支；从 `main` 创建的修复还需同步合并到 `develop` |
+
+```powershell
+git switch develop; git pull
+git switch -c feature/memory-panel
+# ……开发、构建、测试 / develop, build, test……
+git push -u origin feature/memory-panel   # 然后在 GitHub 上向 develop 发起 Pull Request
+```
+
+- 推送前先 `git pull` 拉取远程最新内容；**不要强制推送**（`--force`）到 `main` 与 `develop`。
+- 提交信息格式为「类型: 简述」，中英双语，详见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+- 发布前使用「🚀 发布 → 仅自检」做敏感信息自检，确认无命中后再提交。
+
+## 常见问题
+
+- **看不到某个 VS 实例？** VSManager 与 VS 需以相同权限运行（都以管理员或都不以管理员运行），并且 VS 已完全加载解决方案。
+- **Copilot 状态一直是「未知」？** 确认已安装 GitHub Copilot 并打开过 Copilot 对话窗格；若窗格标题不同，可在「属性」中修改 `CopilotPaneKeyword`。
+- **AI 助手没有回复 / 提示未配置？** 在「属性 → AI 总控助手」中填写 API Key（或设置 `VSMANAGER_AGENT_API_KEY`），并确认接口支持函数调用。
+- **`dotnet restore` 失败？** 本机 NuGet 配置中可能有不可用的源，执行 `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`。
+- **生成时提示 VSManager.exe 被占用？** 程序正在运行时，请先退出（托盘 → 退出），或把输出指定到临时目录：`dotnet build VSManager.slnx "-p:OutputPath=%TEMP%\vsm-build\"`。
+- **推送到 GitHub 失败？** 检查 Token 权限（classic：`repo` 或仅公开仓库的 `public_repo`；fine-grained：Contents 读写）与网络；远程有新提交时先 `git pull`，工具不会强制推送。
+- **配置或任务丢失？** 配置在 `%APPDATA%\VSManager\settings.json`，损坏时另存为 `settings.json.corrupt-*`；任务清单在 `tasks.json`，历史归档在 `<ArchiveRoot>\tasks\`。
+
 ## 安全提示
 
 - Web 远程控制默认关闭；开启后会在局域网内监听端口，凭访问令牌控制所有 VS，只应在可信网络中使用。令牌可以在「属性」中重置。
@@ -109,17 +274,21 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 
 二维码编码器（`QrCode.cs`）与应用图标（`app.ico`，渐变底色 + 文字）均为本项目自行制作，随本项目按 MIT 许可证发布。使用 DeepSeek、豆包语音等在线服务时，需另行遵守各服务商的服务条款。
 
-## 贡献约定
+## 贡献指南
+
+欢迎提交 Issue 与 Pull Request，完整流程见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。要点：
 
 - 本项目是开源项目：README、文档、代码注释、提交信息与发布说明中不要出现个人信息（真实姓名、邮箱、机器名、用户名、本机盘符路径、公司 / 客户信息），示例路径请使用 `%APPDATA%` 等环境变量或通用示例。
 - 开源说明文档与代码注释提供中英两份（中文在前、英文在后，或并列呈现）。
+- 功能开发使用 `feature/xxx`，修复使用 `fix/xxx`，向 `develop` 发起 Pull Request；提交前构建 0 错误、单元测试全部通过。
+
 ## 声明
 
 本项目为独立的开源工具，与 Microsoft、GitHub 及文中提到的各服务商无隶属或背书关系。Visual Studio、GitHub Copilot 等名称为其各自所有者的商标。
 
 ## 许可证
 
-[MIT](LICENSE)
+本项目以 [MIT 许可证](LICENSE) 发布：可自由使用、修改与再分发，需保留版权与许可声明；软件按「原样」提供，不附带任何担保。第三方组件遵循各自的许可证（见上表）。
 
 ---
 
@@ -138,6 +307,8 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 - **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents.
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
 - **Publish to GitHub**: one-click git init / commit / create or link the remote / push, with an automatic sensitive-content scan before publishing.
+- **Memory monitor**: working set and private bytes grouped by VSManager / each VS instance (with child processes) / shared components, with gentle cleanup and threshold alerts.
+- **Auto restart**: the AI assistant is rebuilt automatically after an error, repeated request failures or a hang; an optional process watchdog relaunches VSManager after an abnormal exit, with a restart-storm limit.
 
 ## Requirements
 
@@ -149,13 +320,77 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 ## Build and run
 
 ```powershell
-git clone <repo-url>
+git clone https://github.com/<owner>/VSManager.git
 cd VSManager
-dotnet build VSManager.csproj -c Release
-.\bin\Release\net48\VSManager.exe
+dotnet build VSManager.slnx -c Release
+.\src\VSManager\bin\Release\net48\VSManager.exe
 ```
 
-You can also open `VSManager.csproj` in Visual Studio and build / run it there.
+Replace `<owner>` with the repository owner. The default branch is `main`; work in progress lives in `develop` (see [Branching](#branching)).
+
+You can also open `VSManager.slnx` at the repository root in Visual Studio (the project file is `src\VSManager\VSManager.csproj`) and build / run it there.
+
+Run the unit tests (MSTest; all test data goes to the system temp folder, real data under %APPDATA%\VSManager is never read or written):
+
+```powershell
+dotnet test VSManager.slnx
+```
+
+If restore fails because the local NuGet configuration lists an unavailable source, run `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json` first.
+
+## Directory layout
+
+```text
+VSManager/
+├─ VSManager.slnx              Solution
+├─ README.md / LICENSE / .gitignore / .gitattributes
+├─ CONTRIBUTING.md             Contribution guide (branching, commit format, scan)
+├─ CHANGELOG.md                Changelog
+├─ settings.example.json       Example config (the real one lives in %APPDATA%\VSManager\ and is not committed)
+├─ src/
+│  └─ VSManager/               Main project (WinForms, .NET Framework 4.8)
+│     ├─ VSManager.csproj
+│     ├─ Program.cs / app.manifest
+│     ├─ Assets/               Icon and embedded resources (web pages, Copilot skill)
+│     │  ├─ app.ico
+│     │  ├─ Web/               remote.html, transcript.html
+│     │  └─ Skill/             SKILL.md, vsm.ps1
+│     ├─ Core/                 Domain layer: no UI or Win32 dependencies
+│     │  ├─ Models/            Data models (external chats, image attachments, Copilot state)
+│     │  ├─ Tasks/             Task model, task state machine, send retry rules, task list
+│     │  └─ TextUtil.cs        Shared text helpers
+│     ├─ Infrastructure/       Infrastructure layer
+│     │  ├─ Config/            Settings load / save (AppSettings), data folder (AppPaths)
+│     │  ├─ Http/              AI client factory, request body policy
+│     │  ├─ IO/                File-system abstraction, atomic writes
+│     │  ├─ Logging/           Unified log entry (AppLog), send log
+│     │  ├─ Storage/           tasks.json store
+│     │  ├─ Win32/             Win32 interop, memory trimming
+│     │  └─ QrCode.cs          QR code
+│     ├─ Services/             Service layer
+│     │  ├─ Abstractions/      Interfaces for external dependencies (VS operations, Copilot channel, voice)
+│     │  ├─ Agent/             AI assistant, prompts, chat history
+│     │  ├─ Publish/           Publish to GitHub
+│     │  ├─ Remote/            LAN web remote, skill installer
+│     │  ├─ Storage/           History archive
+│     │  ├─ Tasks/             Task dispatcher (publish, retry, completion, failure)
+│     │  ├─ VisualStudio/      VS instances, Copilot chat / monitor, code scanner, memory monitor
+│     │  └─ Voice/             Doubao text-to-speech and speech recognition
+│     └─ UI/                   UI layer: main window, theme, shared controls
+│        ├─ Forms/             Settings, publish, chat history, memory windows
+│        └─ Panels/            Copilot chat, AI assistant and task list panels
+└─ tests/
+   └─ VSManager.Tests/         Unit tests (MSTest)
+```
+
+All source files still share the single namespace `VSManager`; folders only group files by responsibility. Build output (`bin/`, `obj/`) and test results (`TestResults/`) are excluded by `.gitignore`.
+
+### Layered architecture
+
+- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / failed / cancelled), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
+- **Services**: VS management, Copilot messaging, AI assistant, voice, archive and publishing. `TaskDispatcher` dispatches tasks and talks to the main window through `ITaskDispatchHost`; external dependencies are abstracted by `IVsOperations`, `ICopilotChannel`, `IVoiceService` and `IAiClientFactory`.
+- **Infrastructure**: Win32 wrappers, settings and data folder, the file-system abstraction `IFileSystem` with atomic writes `AtomicFile`, the unified log `AppLog` (unhandled exceptions go to crash.log) and HTTP client creation.
+- **UI**: forms and controls only handle display and interaction; business actions are delegated to the service layer.
 
 ## Configuration
 
@@ -176,6 +411,51 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` / `PublishVisibility` / `PublishBranch` | Publish to GitHub: local folder (empty = auto-detect), owner (empty = token user), repository name, visibility, default branch | empty / empty / VSManager / public / main |
 | `PublishAuthorName` / `PublishAuthorEmail` | Commit author and e-mail (empty e-mail = GitHub noreply address) | VSManager contributors / empty |
 | `GitHubTokenProtected` | GitHub token (DPAPI-encrypted) | empty |
+
+<details>
+<summary>All settings and defaults (click to expand)</summary>
+
+| Group | Setting | Default | Description |
+|---|---|---|---|
+| Window & layout | `MainScreen` / `ToolScreen` | empty | Screen for the main window / tool windows (empty = auto) |
+| | `Layout` | `上下` (stacked) | Tool-window layout |
+| | `ActivateMoveMain` / `ActivateMoveTools` | true / false | Move the main window / tool windows when activating a VS |
+| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | Always on top, minimize to tray, global hotkeys |
+| | `ClickToActivate` | false | A single click in the list activates the VS |
+| | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | Remembered UI sizes (0 = default) |
+| Copilot monitoring & sending | `MonitorCopilot` / `PollMs` | true / 1500 | Monitor Copilot state and polling interval (ms) |
+| | `Sound` / `Popup` | true / true | Sound and tray balloon on completion |
+| | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | How the Copilot pane and its "busy" button are recognized |
+| | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | Send in the background, sync chats in the background, open the chat pane automatically |
+| | `RestoreCopilotPane` / `ShowChatSteps` | true / true | Switch back to the pane when it is replaced, show chat steps |
+| | `WatchConversations` / `ExternalRestoreLimit` / `ExternalRestoreHours` | true / 50 / 24 | Watch manual chats in each VS, and how many / how recent to restore at start |
+| | `Aliases` / `VsNotes` | [] / [] | VS aliases and role descriptions |
+| AI assistant | `AgentEnabled` | true | Enable the assistant |
+| | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI-compatible endpoint and model |
+| | `AgentKeyProtected` | empty | API key (DPAPI-encrypted; or `VSMANAGER_AGENT_API_KEY`) |
+| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish |
+| | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | Per-call text limits (characters) |
+| | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | Output limit (0 = model default), history messages, tool calls per round |
+| | `AgentMaxFileLines` / `AgentMaxReadCount` | 4000 / 400 | File lines and chat messages read at most |
+| | `AgentChatKeepDays` / `AgentChatMaxRecords` | 30 / 2000 | Chat history retention in days / records (0 = unlimited) |
+| Auto restart | `AgentAutoRestart` / `AgentHangTimeoutSeconds` / `AgentFailureThreshold` | true / 120 / 3 | See [Auto restart](#auto-restart) |
+| | `ProcessWatchdogEnabled` | false | Process watchdog |
+| | `AutoRestartMaxCount` / `AutoRestartWindowMinutes` | 3 / 5 | Restart-storm guard |
+| Task list | `TaskHistoryLimit` / `TaskNextId` | 0 / automatic | History limit (0 = keep all), next task id |
+| Voice | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | Completion announcement, AI summary, translate to the voice language, include the VS name |
+| | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | Voice language and resource |
+| | `VoiceSpeaker` / `VoiceSpeakerEn` | built-in Chinese / English voice descriptions | Voices |
+| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | Push-to-talk input |
+| | `VoiceKeyProtected` | empty | Doubao speech API key (DPAPI-encrypted; or `VSMANAGER_DOUBAO_API_KEY`) |
+| Web remote | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / empty (generated) | LAN remote control |
+| Archive | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / empty / 0 | History archive |
+| Memory | `VsMemoryAutoEnabled` / `VsMemoryThresholdMB` / `VsMemoryAutoClean` | false / 6144 / false | See [Memory monitor](#memory-monitor) |
+| Publish | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` | empty / empty / `VSManager` | Local folder, owner, repository name |
+| | `PublishVisibility` / `PublishBranch` | `public` / `main` | Visibility, default branch |
+| | `PublishAuthorName` / `PublishAuthorEmail` | `VSManager contributors` / empty (noreply) | Commit author |
+| | `GitHubTokenProtected` | empty | GitHub token (DPAPI-encrypted; or `VSMANAGER_GITHUB_TOKEN`) |
+
+</details>
 
 ### Environment variables
 
@@ -202,11 +482,34 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 |---|---|
 | `%APPDATA%\VSManager\settings.json` | Settings (including encrypted keys and the web token) |
 | `%APPDATA%\VSManager\tasks.json` | Task list |
+| `%APPDATA%\VSManager\agent-chat.jsonl` | AI assistant chat history (one JSON object per line, local only) |
 | `%APPDATA%\VSManager\logs\` | Application logs |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | Custom terms for the publish scan |
 | `<ArchiveRoot>\tasks\`, `chat\`, `logs\` | History archive |
 
-All of these are listed in `.gitignore`; do not commit them.
+All of these are listed in `.gitignore`; do not commit them. The publish scan also blocks these local data files.
+
+### AI assistant chat history
+
+Click "📜 对话记录" (Chat history) at the top of the main window to open the history window: search by keywords (or "#task-id"), filter by date, switch between oldest-first and newest-first, and optionally show tool-call steps. The chat area in the main window only shows the current session (cleared on restart); the full history lives in this window. Each record holds the time, role (user / assistant / notice), text and related task ids, and is appended and flushed to disk immediately. Capacity is controlled by `AgentChatKeepDays` (default 30 days) and `AgentChatMaxRecords` (default 2000) in Settings → AI assistant → Chat history; only the oldest records in this file are trimmed, the task list and archive are not affected.
+
+### Memory monitor
+
+Click "🧠 内存" (Memory) at the top of the main window to open the memory panel. It groups processes into VSManager itself, each VS instance (devenv and all its descendants such as ServiceHub, WebView2, MSBuild and the Copilot language server) and orphaned shared components (such as VBCSCompiler), and shows PID, owner, working set, private bytes and share for each process; it refreshes every 5 seconds by default.
+
+- "Clean VSManager": full GC and working-set trim of VSManager and its WebView2 processes.
+- "Gentle clean" (one VS or all): runs VS's own `Tools.ForceGC` command when available, then trims the working set of processes marked "Safe". Trimming only moves rarely used pages out of RAM (paged back in on demand); nothing is terminated, unsaved work is untouched, and private bytes usually stay the same.
+- Debugger components, test hosts, terminal / Copilot agent commands and the program under debugging are marked "Not advised" and are only displayed.
+- Before/after numbers of every cleanup are shown at the bottom of the panel and written to `%APPDATA%\VSManager\logs\memory.log`.
+- Threshold policy (off by default): `VsMemoryAutoEnabled` (default false), `VsMemoryThresholdMB` (default 6144), `VsMemoryAutoClean` (default false = notify only). Checked once a minute, at most once per 30 minutes per VS; a VS that is debugging / building / running Copilot is only notified.
+
+### Auto restart
+
+- **AI assistant auto-restart** (on by default, `AgentAutoRestart`): when the assistant hits an unhandled error, `AgentFailureThreshold` consecutive request failures (default 3; only transient failures such as network errors, timeouts and 5xx count) or makes no progress for `AgentHangTimeoutSeconds` while running (default 120; waiting for the user's confirmation does not count), the current round is cancelled, the AI client is rebuilt and the assistant becomes usable again. The chat and the status bar show "AI 助手已自动重启" (AI assistant restarted). The task list is not affected.
+- **Process watchdog** (off by default, `ProcessWatchdogEnabled`): starts a separate watchdog process that relaunches VSManager about 2 seconds after an abnormal exit (crash, killed). The task list is saved on every change and once more on a crash; after the restart the queue is restored and running tasks are tracked again. Tasks that were "sending" at the exit may already have been delivered, so they are marked failed with a hint to requeue manually instead of being published twice. A normal exit is never relaunched.
+- **Restart-storm guard**: at most `AutoRestartMaxCount` automatic restarts per `AutoRestartWindowMinutes` minutes (default 3 per 5 minutes, counted separately for the assistant and the process); beyond that automatic restarts stop and you are asked to check the logs.
+- **Manual entries**: the "⟳ 重启" (Restart) menu at the top of the main window and the tray menu provide "Restart AI assistant" and "Restart VSManager…" (asks for confirmation; refused while a message is being sent; tasks and settings are saved first). The menu also toggles both switches and opens the log folder.
+- Logs: `%APPDATA%\VSManager\logs\agent.log` (assistant faults and restarts), `watchdog.log` (watchdog), `crash.log` (unhandled exceptions).
 
 ## Publish to GitHub
 
@@ -217,6 +520,36 @@ Click "🚀 发布" (Publish) at the top of the main window. The flow is: check 
   - Classic token: `repo` scope (`public_repo` is enough for public repositories); pushing `.github/workflows` also needs `workflow`.
 - **Sensitive-content scan**: scans every file to be committed plus the commit message and author for absolute drive paths, the current user and machine name, e-mail addresses (except noreply / example domains), common key/token formats and suspicious secret assignments, secrets configured on this machine, and the custom term list `%APPDATA%\VSManager\publish-scan-terms.txt` (one per line, e.g. internal project or customer names; never committed). On any hit publishing pauses and lists "file:line + match" (secrets masked) so you can continue or cancel. "仅自检" (Scan only) scans without touching the repository.
 - **Log**: `%APPDATA%\VSManager\logs\publish-yyyyMMdd.log`. Failures show the reason and a suggested fix; the tool never force-pushes when the remote has commits you don't have.
+
+## Branching
+
+| Branch | Purpose | Merges |
+|---|---|---|
+| `main` | Default branch; always buildable and releasable; every release is tagged (e.g. `v1.0.0`) | Only from `develop` (releases) or `fix/xxx` (hotfixes) |
+| `develop` | Integration branch collecting finished features and fixes | Pull requests from `feature/xxx` and `fix/xxx` |
+| `feature/xxx` | New features, branched from `develop` | Pull request into `develop` when done |
+| `fix/xxx` | Bug fixes, usually from `develop`; urgent production fixes from `main` | Merged back into the source branch; fixes from `main` are also merged into `develop` |
+
+```powershell
+git switch develop; git pull
+git switch -c feature/memory-panel
+# ... develop, build, test ...
+git push -u origin feature/memory-panel   # then open a pull request into develop on GitHub
+```
+
+- Always `git pull` before pushing; **never force-push** (`--force`) to `main` or `develop`.
+- Commit messages use "type: summary" in both Chinese and English; see [CONTRIBUTING.md](CONTRIBUTING.md).
+- Run "🚀 发布 → 仅自检" (Publish → Scan only) before committing and continue only when there are no hits.
+
+## FAQ
+
+- **A VS instance is missing?** VSManager and VS must run with the same privileges (both elevated or both not), and the solution must be fully loaded.
+- **Copilot state stays "unknown"?** Make sure GitHub Copilot is installed and its chat pane has been opened; if the pane title differs, change `CopilotPaneKeyword` in Settings.
+- **The AI assistant does not answer / says it is not configured?** Enter the API key in Settings → AI assistant (or set `VSMANAGER_AGENT_API_KEY`) and make sure the endpoint supports function calling.
+- **`dotnet restore` fails?** The local NuGet configuration may list an unavailable source; run `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`.
+- **Build says VSManager.exe is in use?** Exit the running app first (tray → 退出 / Exit) or build to a temporary folder: `dotnet build VSManager.slnx "-p:OutputPath=%TEMP%\vsm-build\"`.
+- **Pushing to GitHub fails?** Check the token permissions (classic: `repo`, or `public_repo` for public repositories only; fine-grained: Contents read & write) and the network; if the remote has new commits run `git pull` first — the tool never force-pushes.
+- **Settings or tasks lost?** Settings live in `%APPDATA%\VSManager\settings.json` (a corrupted file is kept as `settings.json.corrupt-*`); the task list is `tasks.json` and the history archive is under `<ArchiveRoot>\tasks\`.
 
 ## Security notes
 
@@ -237,8 +570,11 @@ The QR code encoder (`QrCode.cs`) and the application icon (`app.ico`, gradient 
 
 ## Contributing
 
+Issues and pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and [CHANGELOG.md](CHANGELOG.md) for release notes. In short:
+
 - This is an open-source project: README, docs, code comments, commit messages and release notes must not contain personal information (real names, e-mail addresses, machine names, user names, local drive paths, company / customer information). Use environment variables such as `%APPDATA%` or generic examples for paths.
 - Documentation and code comments are provided in both Chinese and English (Chinese first, then English, or side by side).
+- Use `feature/xxx` for features and `fix/xxx` for fixes, and open pull requests into `develop`; the build must have 0 errors and all unit tests must pass.
 
 ## Disclaimer
 
@@ -246,4 +582,4 @@ This is an independent open-source tool and is not affiliated with or endorsed b
 
 ## License
 
-[MIT](LICENSE)
+Released under the [MIT License](LICENSE): you may use, modify and redistribute it as long as the copyright and license notice are kept; the software is provided "as is" without warranty. Third-party components follow their own licenses (see the table above).

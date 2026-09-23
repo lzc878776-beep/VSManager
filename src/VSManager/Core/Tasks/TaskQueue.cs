@@ -1,0 +1,244 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+
+namespace VSManager
+{
+    /// <summary>
+    /// 任务流水归档的接收方（默认写入 ArchiveRoot\tasks\*.jsonl）。
+    /// Receiver of task journal events (by default written to ArchiveRoot\tasks\*.jsonl).
+    /// </summary>
+    public interface ITaskArchiveSink
+    {
+        void TaskEvent(QueuedTask task, string evt);
+    }
+
+    /// <summary>默认归档实现：转发到 <see cref="Archive"/>。/ Default sink: forwards to <see cref="Archive"/>.</summary>
+    public sealed class ArchiveTaskSink : ITaskArchiveSink
+    {
+        public static readonly ArchiveTaskSink Instance = new ArchiveTaskSink();
+        public void TaskEvent(QueuedTask task, string evt) => Archive.TaskEvent(task, evt);
+    }
+
+    /// <summary>
+    /// 任务清单：持久化到 %APPDATA%\VSManager\tasks.json（上一版本保存在 tasks.json.bak），只在界面线程修改。
+    /// 默认保留全部历史；保存失败时保留内存中的清单、记录日志并由界面提示，之后自动重试。
+    /// Task list persisted to %APPDATA%\VSManager\tasks.json (previous version in tasks.json.bak); modified on the UI thread only.
+    /// Keeps the full history by default; when saving fails the in-memory list is kept, the error is logged and shown in
+    /// the UI, and saving is retried automatically.
+    /// </summary>
+    public sealed class TaskQueue
+    {
+        private readonly List<QueuedTask> _items = new List<QueuedTask>();
+        private readonly AppSettings _settings;
+        private readonly ITaskStore _store;
+        private readonly ITaskArchiveSink _archive;
+        private readonly Func<DateTime> _clock;
+        private readonly object _saveLock = new object();
+        private int _nextId = 1;
+        private bool _dirty;
+        private DateTime _lastSaveAttempt;
+        /// <summary>上次归档时各任务的状态，用于在 Commit 时找出新增 / 变化 / 移除的任务。/ Last archived state per task, used to detect changes on Commit.</summary>
+        private readonly Dictionary<int, QueuedTask> _archived = new Dictionary<int, QueuedTask>();
+
+        public event Action Changed;
+
+        public static string FilePath => Path.Combine(AppPaths.DataFolder, "tasks.json");
+        public static string LogPath => AppLog.PathOf(AppLog.TasksFile);
+
+        public IReadOnlyList<QueuedTask> Items => _items;
+
+        /// <summary>最近一次保存失败的原因；保存成功后为 null。/ Reason of the last failed save; null after a successful save.</summary>
+        public string SaveError { get; private set; }
+
+        /// <summary>启动时读取任务记录遇到的问题（文件损坏、部分记录无法识别等），没有问题时为 null。/ Problems found while loading; null when none.</summary>
+        public string LoadWarning { get; private set; }
+
+        public TaskQueue(AppSettings settings) : this(settings, new JsonTaskStore(FilePath), ArchiveTaskSink.Instance, null)
+        {
+            AppDomain.CurrentDomain.ProcessExit += (s, e) => { if (_dirty) Save(); };
+        }
+
+        /// <summary>
+        /// 可替换存储、归档与时钟的构造函数（用于单元测试）。
+        /// Constructor with a replaceable store, archive sink and clock (for unit tests).
+        /// </summary>
+        public TaskQueue(AppSettings settings, ITaskStore store, ITaskArchiveSink archive, Func<DateTime> clock)
+        {
+            _settings = settings;
+            _store = store;
+            _archive = archive;
+            _clock = clock ?? (() => DateTime.Now);
+            Load();
+            foreach (var t in _items) _archived[t.Id] = t.Clone();
+        }
+
+        private void Load()
+        {
+            var problems = new List<string>();
+            _items.AddRange(_store.Load(problems));
+
+            _interrupted.AddRange(_items.Where(t => t.Status == QueueStatus.Sending));
+            foreach (var t in _items) TaskStateMachine.RecoverAfterRestart(t);
+
+            // 编号去重：缺失或重复的编号重新分配，保证之后新建的任务编号不与历史重复
+            // De-duplicate ids: missing or repeated ids are renumbered so that new tasks never reuse a historical id
+            int max = Math.Max(_items.Count == 0 ? 0 : _items.Max(t => t.Id), Math.Max(0, _settings.TaskNextId - 1));
+            var seen = new HashSet<int>();
+            int fixedIds = 0;
+            foreach (var t in _items.OrderBy(t => t.Created))
+                if (t.Id <= 0 || !seen.Add(t.Id)) { t.Id = ++max; seen.Add(t.Id); fixedIds++; }
+            if (fixedIds > 0) problems.Add(fixedIds + " 条任务的编号缺失或重复，已重新编号");
+            _nextId = max + 1;
+            _items.Sort((a, b) => a.Id.CompareTo(b.Id));
+
+            if (problems.Count > 0)
+            {
+                LoadWarning = string.Join("；", problems);
+                Log("读取任务记录：" + LoadWarning + "（共恢复 " + _items.Count + " 条）");
+                _dirty = true;
+            }
+        }
+
+        private readonly List<QueuedTask> _interrupted = new List<QueuedTask>();
+
+        /// <summary>
+        /// 读取时处于「发送中」的任务（上次退出时正在发送，已按原规则恢复为排队）。
+        /// Tasks that were "sending" when loaded (being sent at the last exit; recovered to waiting as before).
+        /// </summary>
+        public IReadOnlyList<QueuedTask> InterruptedSends => _interrupted;
+
+        /// <summary>
+        /// 异常退出后重启时调用：把仍在排队的「上次正在发送」任务标记为失败（可能已送达 VS），避免重复发布；返回处理条数。
+        /// Call after a restart from an abnormal exit: marks the still-waiting "was sending" tasks as failed (they may have
+        /// reached VS) to avoid publishing them twice; returns how many were changed.
+        /// </summary>
+        public int PauseInterruptedSends(string reason)
+        {
+            int n = 0;
+            foreach (var t in _interrupted)
+                if (t.Status == QueueStatus.Waiting && _items.Contains(t)) { TaskStateMachine.Fail(t, reason, _clock()); n++; }
+            _interrupted.Clear();
+            if (n > 0) Commit();
+            return n;
+        }
+
+        /// <summary>下一个将分配的任务编号。/ The next task id to be assigned.</summary>
+        public int NextId => _nextId;
+
+        public QueuedTask Find(int id) => _items.FirstOrDefault(t => t.Id == id);
+
+        public QueuedTask Add(string vsKey, string vsName, string text, string source)
+        {
+            var t = new QueuedTask
+            {
+                Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
+                Status = QueueStatus.Waiting, Created = _clock()
+            };
+            _items.Add(t);
+            // 编号计数同时记在设置中，清除历史后新任务也不会复用旧编号
+            // The id counter is also stored in the settings so ids are never reused, even after the history is cleared
+            _settings.TaskNextId = _nextId;
+            _settings.Save();
+            Commit();
+            return t;
+        }
+
+        /// <summary>同一 VS 中排在该任务前面的未完成任务数。/ Number of unfinished tasks ahead of this one for the same VS.</summary>
+        public int Ahead(QueuedTask task) =>
+            _items.Count(t => t != task && t.VsKey == task.VsKey && QueueStatus.Active(t.Status) && (t.Status != QueueStatus.Waiting || t.Id < task.Id));
+
+        public bool Remove(int id)
+        {
+            var t = Find(id);
+            if (!TaskStateMachine.CanRemove(t)) return false;
+            _items.Remove(t);
+            Commit();
+            return true;
+        }
+
+        /// <summary>提交修改：裁剪历史（若配置了上限）、写归档流水、保存并通知界面。/ Commits changes: trims history (if limited), archives, saves and notifies.</summary>
+        public void Commit()
+        {
+            // 历史上限：TaskHistoryLimit <= 0 表示保留全部（默认）/ History limit: TaskHistoryLimit <= 0 keeps everything (default)
+            int limit = _settings.TaskHistoryLimit;
+            if (limit > 0)
+            {
+                var old = _items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
+                foreach (var t in old) _items.Remove(t);
+            }
+            ArchiveChanges();
+            _dirty = true;
+            Save();
+            Changed?.Invoke();
+        }
+
+        /// <summary>把自上次提交以来新增、状态变化、被移除的任务追加到任务流水归档。/ Archives tasks added, changed or removed since the last commit.</summary>
+        private void ArchiveChanges()
+        {
+            try
+            {
+                var alive = new HashSet<int>();
+                foreach (var t in _items)
+                {
+                    alive.Add(t.Id);
+                    _archived.TryGetValue(t.Id, out var prev);
+                    string evt = ArchiveEventFor(prev, t);
+                    if (evt == null) continue;
+                    _archive.TaskEvent(t, evt);
+                    _archived[t.Id] = t.Clone();
+                }
+                foreach (var id in _archived.Keys.Where(k => !alive.Contains(k)).ToList())
+                {
+                    _archive.TaskEvent(_archived[id], "removed");
+                    _archived.Remove(id);
+                }
+            }
+            catch (Exception ex) { Log("归档任务流水失败：" + ex.Message); }
+        }
+
+        /// <summary>
+        /// 归档事件名：created / retry / update / 新状态；没有变化时返回 null。
+        /// Archive event name: created / retry / update / the new status; null when nothing changed.
+        /// </summary>
+        internal static string ArchiveEventFor(QueuedTask prev, QueuedTask t)
+        {
+            if (prev == null) return "created";
+            if (prev.Status == t.Status && prev.Attempts == t.Attempts && prev.Result == t.Result && prev.Error == t.Error && prev.Text == t.Text && prev.VsKey == t.VsKey) return null;
+            if (t.Status == QueueStatus.Waiting && prev.Status != QueueStatus.Waiting) return "retry";
+            if (prev.Status == t.Status) return "update";
+            return t.Status;
+        }
+
+        /// <summary>保存失败后定期重试（由界面计时器调用）。/ Retries a failed save periodically (called by a UI timer).</summary>
+        public void RetrySaveIfNeeded()
+        {
+            if (!_dirty || SaveError == null || (_clock() - _lastSaveAttempt).TotalSeconds < 10) return;
+            if (Save()) Changed?.Invoke();
+        }
+
+        /// <summary>立即写盘（退出程序时调用）。失败不会清空内存中的清单。/ Saves now (called on exit). A failure never clears the in-memory list.</summary>
+        public bool Save()
+        {
+            string error;
+            lock (_saveLock)
+            {
+                _lastSaveAttempt = _clock();
+                try { error = _store.Save(_items); }
+                catch (Exception ex) { error = ex.GetType().Name + "：" + ex.Message; }
+                bool wasFailing = SaveError != null;
+                SaveError = error;
+                if (error == null)
+                {
+                    _dirty = false;
+                    if (wasFailing) Log("保存已恢复正常（" + _items.Count + " 条）");
+                }
+                else if (!wasFailing) Log("保存任务清单失败：" + error + "（内存中的 " + _items.Count + " 条任务已保留，将自动重试）");
+            }
+            return error == null;
+        }
+
+        private static void Log(string text) => AppLog.Write(AppLog.TasksFile, text);
+    }
+}
