@@ -17,9 +17,16 @@ namespace VSManager
 
         Task<string> IManualChatDispatchHost.SendQueuedAsync(VsInstance target, QueuedTask task, Func<bool> stillValid)
         {
-            Func<bool> guard = () => OnUi(() => !IsDisposed && stillValid()).GetAwaiter().GetResult();
+            Func<bool> guard = () => CheckQueueSendValid(stillValid);
             return task.HasAttachments ? SendTaskCore(target, task, guard)
                 : SendChatCore(target, TaskStateMachine.DispatchText(task), queueGuard: guard);
+        }
+
+        internal bool CheckQueueSendValid(Func<bool> stillValid)
+        {
+            // 界面线程直接检查，不能等待排给自身的回调。/ Check directly on the UI thread; never wait for a callback queued to itself.
+            if (!InvokeRequired) return !IsDisposed && IsHandleCreated && stillValid();
+            return OnUi(() => !IsDisposed && stillValid()).GetAwaiter().GetResult();
         }
     }
 }
