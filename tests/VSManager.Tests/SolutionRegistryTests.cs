@@ -214,7 +214,7 @@ namespace VSManager.Tests
             _clock.Advance(TimeSpan.FromSeconds(21));
             await _dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Running, t.Status);
-            CollectionAssert.AreEqual(new[] { "R:do it" }, _host.Sent.ToArray());
+            CollectionAssert.AreEqual(new[] { "R:" + TaskStateMachine.DispatchText(t) }, _host.Sent.ToArray());
         }
 
         [TestMethod]

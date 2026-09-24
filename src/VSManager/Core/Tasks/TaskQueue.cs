@@ -72,6 +72,10 @@ namespace VSManager
             _clock = clock ?? (() => DateTime.Now);
             Load();
             foreach (var t in _items) _archived[t.Id] = t.Clone();
+            bool reconciled = false;
+            foreach (var t in _items.Where(x => QueueStatus.Active(x.Status) || x.Status == QueueStatus.Done).ToList())
+                reconciled |= ReplaceFailed(t);
+            if (reconciled) Commit();
         }
 
         private void Load()
@@ -141,11 +145,14 @@ namespace VSManager
 
         private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target)
         {
+            var duplicate = TaskStateMachine.FindActiveDuplicate(_items, vsKey, text);
+            if (duplicate != null) return duplicate;
             var t = new QueuedTask
             {
                 Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
                 Status = status, Created = _clock(), Target = target
             };
+            ReplaceFailed(t);
             _items.Add(t);
             // 编号计数同时记在设置中，清除历史后新任务也不会复用旧编号
             // The id counter is also stored in the settings so ids are never reused, even after the history is cleared
@@ -155,9 +162,23 @@ namespace VSManager
             return t;
         }
 
+        private bool ReplaceFailed(QueuedTask t)
+        {
+            var matches = ResentTaskMatcher.Find(_items, t);
+            foreach (var kept in matches.Kept)
+                Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id}：{kept.Reason}");
+            if (matches.Hide.Count == 0) return false;
+            t.QueueOrder = Math.Min(t.Order, matches.Hide.Min(x => x.Order));
+            t.Replaces = (t.Replaces ?? new int[0]).Concat(matches.Hide.Select(x => x.Id)).Distinct().ToArray();
+            foreach (var old in matches.Hide) _items.Remove(old);
+            return true;
+        }
+
         /// <summary>同一 VS 中排在该任务前面的未完成任务数。/ Number of unfinished tasks ahead of this one for the same VS.</summary>
         public int Ahead(QueuedTask task) =>
-            _items.Count(t => t != task && t.VsKey == task.VsKey && QueueStatus.Active(t.Status) && (t.Status != QueueStatus.Waiting || t.Id < task.Id));
+            _items.Count(t => t != task && ResentTaskMatcher.SameTarget(t, task)
+                && (QueueStatus.Active(t.Status) || t.Status == QueueStatus.Failed)
+                && (t.Status == QueueStatus.Running || t.Status == QueueStatus.Sending || t.Order < task.Order));
 
         public bool Remove(int id)
         {
@@ -175,7 +196,8 @@ namespace VSManager
             int limit = _settings.TaskHistoryLimit;
             if (limit > 0)
             {
-                var old = _items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
+                var old = _items.Where(t => t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
+                    .OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
                 foreach (var t in old) _items.Remove(t);
             }
             ArchiveChanges();

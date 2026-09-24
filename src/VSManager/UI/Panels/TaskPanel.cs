@@ -212,7 +212,7 @@ namespace VSManager
             // 生成中的对话、执行中与排队的任务在前；已结束的（任务与对话混合）按完成时间倒序
             var items = ext.Where(c => c.Generating).OrderByDescending(c => c.Started).Cast<object>()
                 .Concat(_queue.Items.Where(t => QueueStatus.Active(t.Status))
-                    .OrderBy(t => t.Status == QueueStatus.WaitingVs ? 2 : t.Status == QueueStatus.Waiting ? 1 : 0).ThenBy(t => t.Id))
+                    .OrderBy(t => t.Status == QueueStatus.WaitingVs ? 2 : t.Status == QueueStatus.Waiting ? 1 : 0).ThenBy(t => t.Order).ThenBy(t => t.Id))
                 .Concat(finishedTasks.Select(t => (Item: (object)t, At: t.Finished ?? t.Created))
                     .Concat(finishedChats.Select(c => (Item: (object)c, At: c.Finished ?? c.Started)))
                     .OrderByDescending(x => x.At).Select(x => x.Item))
@@ -308,6 +308,8 @@ namespace VSManager
             g.Clear(Theme.Sidebar);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             int waiting = _queue?.Items.Count(t => t.Status == QueueStatus.Waiting) ?? 0;
+            int paused = _queue?.Items.Count(t => t.Status == QueueStatus.Waiting
+                && TaskStateMachine.BlockingTask(_queue.Items, t)?.Status == QueueStatus.Failed) ?? 0;
             int parked = _queue?.Items.Count(t => t.Status == QueueStatus.WaitingVs) ?? 0;
             int running = _queue?.Items.Count(t => t.Status == QueueStatus.Running || t.Status == QueueStatus.Sending) ?? 0;
             int chatting = _externals?.Invoke().Count(c => c.Generating) ?? 0;
@@ -330,7 +332,8 @@ namespace VSManager
                 return;
             }
             TextRenderer.DrawText(g, "任务清单", Theme.SemiBold, new Point(Dpi.S(16), Dpi.S(12)), Theme.Text, TextFormatFlags.NoPadding);
-            string sub = running + waiting == 0 ? "空闲" : $"执行 {running} · 排队 {waiting}";
+            string sub = running + waiting == 0 ? "空闲" : $"执行 {running} · 排队 {waiting - paused}";
+            if (paused > 0) sub += $" · 暂停 {paused}";
             if (parked > 0) sub = (running + waiting == 0 ? "" : sub + " · ") + $"待打开 {parked}";
             if (chatting > 0) sub = (running + waiting + parked == 0 ? "" : sub + " · ") + $"对话 {chatting}";
             Color subColor = running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
@@ -438,14 +441,14 @@ namespace VSManager
                     t.Status == QueueStatus.Failed ? Theme.Danger : Theme.TextMuted, flags | TextFormatFlags.SingleLine);
         }
 
-        private static void StatusLook(QueuedTask t, out string text, out Color fg, out Color bg, out Color dot)
+        private void StatusLook(QueuedTask t, out string text, out Color fg, out Color bg, out Color dot)
         {
             switch (t.Status)
             {
                 case QueueStatus.Waiting:
-                    text = t.Attempts > 0 ? "等待重试" : "排队中"; fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
+                    text = TaskStateMachine.StatusText(t, DateTime.Now, _queue.Items); fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
                 case QueueStatus.WaitingVs:
-                    text = "等待目标 VS / Waiting for VS"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; break;
+                    text = "待打开 VS"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; break;
                 case QueueStatus.Sending:
                     text = "发送中…"; fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Running:

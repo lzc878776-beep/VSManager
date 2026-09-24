@@ -41,7 +41,7 @@ namespace VSManager.Tests
             var a2 = _queue.Add("A", "A", "a2", "AI");
             var b1 = _queue.Add("B", "B", "b1", "用户");
             await _dispatcher.PumpAsync();
-            CollectionAssert.AreEqual(new[] { "A:a1", "B:b1" }, _host.Sent.ToArray());
+            CollectionAssert.AreEqual(new[] { "A:" + TaskStateMachine.DispatchText(a1), "B:" + TaskStateMachine.DispatchText(b1) }, _host.Sent.ToArray());
             Assert.AreEqual(QueueStatus.Running, a1.Status);
             Assert.AreEqual(_clock.Now, a1.Started);
             Assert.AreEqual(QueueStatus.Waiting, a2.Status, "同一 VS 一次只执行一个任务 / one task per VS at a time");
@@ -146,7 +146,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task RunningTask_NeverBusy_AssumedDoneAfter30Seconds()
+        public async Task RunningTask_NeverBusy_RequiresSuccessReceiptAfter30Seconds()
         {
             _host.AddVs("A");
             var t = _queue.Add("A", "A", "a", "AI");
@@ -157,6 +157,130 @@ namespace VSManager.Tests
             Assert.AreEqual(QueueStatus.Done, t.Status);
             Assert.AreEqual("完成了", t.Result);
             Assert.AreEqual(QueueStatus.Running, next.Status, "完成后继续发布下一个 / next task published after completion");
+        }
+
+        [TestMethod]
+        public async Task Finish_WaitsForReply_BeforeDispatchingNext_AndIgnoresDuplicateCompletion()
+        {
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            var reply = new TaskCompletionSource<string>();
+            int reads = 0;
+            _host.AnswerReader = t => { reads++; return reply.Task; };
+            var finishing = _dispatcher.FinishAsync(first, v, null);
+            await _dispatcher.FinishAsync(first, v, null);
+            _clock.Advance(TimeSpan.FromMinutes(1));
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, first.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, reads);
+            Assert.AreEqual(1, _host.Sent.Count);
+            Assert.IsFalse(_archive.Events.Contains("#1:done"));
+
+            reply.SetResult("Completed\r\n" + TaskStateMachine.SuccessReceipt(first));
+            await finishing;
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Done, first.Status);
+            Assert.AreEqual("Completed", first.Result);
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.AreEqual(2, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task FailedTask_BlocksSuccessors_UntilReplacementSucceeds()
+        {
+            var v = _host.AddVs("A");
+            _host.AddVs("B");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            _dispatcher.Fail(first, "execution failed");
+            var independent = _queue.Add("B", "B", "independent", "AI");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(QueueStatus.Running, independent.Status);
+            _dispatcher.DispatchNow(next);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+
+            var retry = _queue.Add("A", "A", "resend #1: corrected first task", "AI");
+            Assert.IsNull(_queue.Find(first.Id));
+            _dispatcher.Retry(first);
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, retry.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            _dispatcher.Retry(retry);
+            Assert.AreEqual(1, retry.Attempts);
+            await _dispatcher.FinishAsync(retry, v, null);
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.AreEqual(4, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task ReadException_FailsTask_WithoutReleasingSuccessor()
+        {
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromException<string>(new InvalidOperationException("read failed"));
+            await _dispatcher.FinishAsync(first, v, null);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            StringAssert.Contains(first.Error, "read failed");
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task SendException_FailsTask_WithoutAutomaticResendOrSuccessor()
+        {
+            _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _host.SendException = new InvalidOperationException("unknown delivery");
+            await _dispatcher.PumpAsync();
+            _clock.Advance(TimeSpan.FromMinutes(2));
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task IdleTimeout_WithoutSuccessReceipt_DoesNotReleaseSuccessor()
+        {
+            _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _host.IncludeSuccessReceipt = false;
+            _host.Answer = "Request failed";
+            await _dispatcher.PumpAsync();
+            _clock.Advance(TimeSpan.FromSeconds(31));
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task CancellationDuringReplyRead_IsNotOverwrittenByLateSuccess()
+        {
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            await _dispatcher.PumpAsync();
+            var reply = new TaskCompletionSource<string>();
+            _host.AnswerReader = t => reply.Task;
+            var finishing = _dispatcher.FinishAsync(first, v, null);
+            Assert.IsTrue(_dispatcher.Cancel(first));
+            _dispatcher.Retry(first);
+            Assert.AreEqual(QueueStatus.Cancelled, first.Status);
+            reply.SetResult("Completed\r\n" + TaskStateMachine.SuccessReceipt(first));
+            await finishing;
+            Assert.AreEqual(QueueStatus.Cancelled, first.Status);
+            Assert.AreEqual(0, _host.Notices.Count);
         }
 
         [TestMethod]
@@ -194,15 +318,18 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task Finish_UnreadableAnswer_LeavesResultEmpty()
+        public async Task Finish_UnreadableAnswer_FailsAndBlocksSuccessor()
         {
             var v = _host.AddVs("A");
             var t = _queue.Add("A", "A", "a", "用户");
+            var next = _queue.Add("A", "A", "b", "用户");
             await _dispatcher.PumpAsync();
             _host.Answer = "  ";
-            _dispatcher.Finish(t, v, TimeSpan.FromSeconds(3));
-            Assert.AreEqual(QueueStatus.Done, t.Status);
-            Assert.IsNull(t.Result);
+            await _dispatcher.FinishAsync(t, v, TimeSpan.FromSeconds(3));
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, t.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, _host.Sent.Count);
             Assert.AreEqual(0, _host.Notices.Count);
         }
 

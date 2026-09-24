@@ -159,7 +159,7 @@ namespace VSManager.Tests
             Assert.AreEqual(RunningVerdict.SawBusy, TaskStateMachine.CheckRunning(t, true, CopilotState.Busy, can, T0.AddSeconds(100)));
             Assert.IsFalse(evaluated, "忙碌时不调用 canDispatch / canDispatch not evaluated while busy");
             Assert.AreEqual(RunningVerdict.None, TaskStateMachine.CheckRunning(t, true, CopilotState.Idle, can, T0.AddSeconds(30)));
-            Assert.AreEqual(RunningVerdict.AssumeDone, TaskStateMachine.CheckRunning(t, true, CopilotState.Idle, can, T0.AddSeconds(31)));
+            Assert.AreEqual(RunningVerdict.Unconfirmed, TaskStateMachine.CheckRunning(t, true, CopilotState.Idle, can, T0.AddSeconds(31)));
             Assert.AreEqual(RunningVerdict.None, TaskStateMachine.CheckRunning(t, true, CopilotState.Idle, () => false, T0.AddSeconds(31)));
             Assert.AreEqual(RunningVerdict.None, TaskStateMachine.CheckRunning(t, true, CopilotState.Unknown, can, T0.AddSeconds(31)));
             t.SawBusy = true;
@@ -209,6 +209,41 @@ namespace VSManager.Tests
             t.Status = QueueStatus.Cancelled; Assert.AreEqual("已取消", TaskStateMachine.StatusText(t, T0));
             Assert.AreEqual("1h05m", TextUtil.FormatDuration(TimeSpan.FromMinutes(65)));
             Assert.AreEqual("9s", TextUtil.FormatDuration(TimeSpan.FromSeconds(9)));
+        }
+
+        [TestMethod]
+        public void SuccessReceipt_MustMatchCurrentAttempt_AndSurvivePersistenceClone()
+        {
+            var t = Waiting();
+            TaskStateMachine.BeginSend(t, "A");
+            string oldReceipt = TaskStateMachine.SuccessReceipt(t);
+            Assert.IsTrue(TaskStateMachine.TryReadSuccess(t, "Completed\r\n" + oldReceipt, out string result));
+            Assert.AreEqual("Completed", result);
+            Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, "Request failed", out _));
+            Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, TaskStateMachine.FailureReceipt(t), out _));
+            Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, oldReceipt + " still working", out _));
+            Assert.IsTrue(TaskStateMachine.TryReadSuccess(t.Clone(), "Completed\r\n" + oldReceipt, out _));
+            TaskStateMachine.Requeue(t);
+            TaskStateMachine.BeginSend(t, "A");
+            Assert.AreNotEqual(oldReceipt, TaskStateMachine.SuccessReceipt(t));
+            Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, "Completed\r\n" + oldReceipt, out _));
+            StringAssert.Contains(TaskStateMachine.DispatchText(t), TaskStateMachine.SuccessReceipt(t));
+            StringAssert.Contains(TaskStateMachine.DispatchText(t), TaskStateMachine.FailureReceipt(t));
+        }
+
+        [TestMethod]
+        public void FailureAndParkedPredecessors_BlockOnlyTheirTarget()
+        {
+            var failed = Waiting(1); failed.Status = QueueStatus.Failed;
+            var next = Waiting(2, "a");
+            var other = Waiting(3, "B");
+            var items = new[] { failed, next, other };
+            CollectionAssert.AreEqual(new[] { other }, TaskStateMachine.NextToDispatch(items, T0));
+            StringAssert.Contains(TaskStateMachine.StatusText(next, T0, items), "已暂停");
+            failed.Status = QueueStatus.WaitingVs;
+            CollectionAssert.AreEqual(new[] { other }, TaskStateMachine.NextToDispatch(items, T0));
+            failed.Status = QueueStatus.Cancelled;
+            CollectionAssert.AreEqual(new[] { next, other }, TaskStateMachine.NextToDispatch(items, T0));
         }
 
         [TestMethod]

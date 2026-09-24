@@ -192,6 +192,86 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Resend_RemovesFailedEntry_PreservesOrderAndSurvivesRestart()
+        {
+            var q = NewQueue();
+            var first = q.Add("A", "A", "original", "AI");
+            var next = q.Add("A", "A", "next", "AI");
+            TaskStateMachine.Fail(first, "error", _clock.Now);
+            q.Commit();
+            _settings.AutoHideResentFailedTasks = false;
+            var retry = q.Add("A", "A", "resend #1: corrected instructions", "AI");
+            Assert.IsNull(q.Find(first.Id));
+            Assert.AreEqual(first.Id, retry.Order);
+            CollectionAssert.AreEqual(new[] { first.Id }, retry.Replaces);
+            Assert.AreEqual(1, q.Ahead(next));
+            CollectionAssert.AreEqual(new[] { retry }, TaskStateMachine.NextToDispatch(q.Items, _clock.Now));
+            Assert.IsTrue(_archive.Events.Contains("#1:removed"));
+            Assert.IsFalse(_store.Saved.Any(t => t.Id == first.Id));
+            Assert.AreSame(retry, q.Add("a", "A", "corrected instructions", "AI"));
+            Assert.AreEqual(2, q.Items.Count);
+
+            var restored = new TaskQueue(_settings, new MemoryTaskStore { Initial = _store.Saved }, new RecordingArchive(), _clock.Func);
+            Assert.AreEqual(first.Id, restored.Find(retry.Id).Order);
+            CollectionAssert.AreEqual(new[] { retry.Id }, TaskStateMachine.NextToDispatch(restored.Items, _clock.Now).Select(t => t.Id).ToArray());
+            var path = _data.File("replacement.json");
+            var json = new JsonTaskStore(path);
+            Assert.IsNull(json.Save(q.Items.ToList()));
+            var loaded = json.Load(new System.Collections.Generic.List<string>());
+            Assert.AreEqual(first.Id, loaded.Single(t => t.Id == retry.Id).Order);
+            CollectionAssert.AreEqual(new[] { first.Id }, loaded.Single(t => t.Id == retry.Id).Replaces);
+        }
+
+        [TestMethod]
+        public void RepeatedResend_KeepsOriginalPosition()
+        {
+            var q = NewQueue();
+            var first = q.Add("A", "A", "original", "AI");
+            q.Add("A", "A", "next", "AI");
+            TaskStateMachine.Fail(first, "error", _clock.Now);
+            var retry = q.Add("A", "A", "resend #1: corrected", "AI");
+            TaskStateMachine.Fail(retry, "error again", _clock.Now);
+            var second = q.Add("A", "A", "resend #3: corrected again", "AI");
+            Assert.IsNull(q.Find(retry.Id));
+            Assert.AreEqual(first.Id, second.Order);
+            CollectionAssert.AreEqual(new[] { second }, TaskStateMachine.NextToDispatch(q.Items, _clock.Now));
+        }
+
+        [TestMethod]
+        public void Load_ReconcilesPreviouslyHiddenDuplicates()
+        {
+            var failed = T(1, QueueStatus.Failed);
+            failed.Text = "the original failed task";
+            var resent = T(3, QueueStatus.Waiting);
+            resent.Text = failed.Text;
+            _store.Initial.AddRange(new[] { failed, T(2, QueueStatus.Waiting), resent });
+            var q = NewQueue();
+            Assert.IsNull(q.Find(1));
+            Assert.AreEqual(1, q.Find(3).Order);
+            Assert.IsTrue(_archive.Events.Contains("#1:removed"));
+            Assert.IsFalse(_store.Saved.Any(t => t.Id == 1));
+        }
+
+        [TestMethod]
+        public void HistoryTrimming_DoesNotRemoveFailureBarrier()
+        {
+            _settings.TaskHistoryLimit = 1;
+            var q = NewQueue();
+            var failed = q.Add("A", "A", "failed", "AI");
+            TaskStateMachine.Fail(failed, "error", _clock.Now);
+            for (int i = 0; i < 3; i++)
+            {
+                var done = q.Add("B", "B", "done " + i, "AI");
+                done.Status = QueueStatus.Done;
+                done.Finished = _clock.Now.AddMinutes(i + 1);
+            }
+            var next = q.Add("A", "A", "next", "AI");
+            Assert.AreSame(failed, q.Find(failed.Id));
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(q.Items, next));
+            Assert.AreEqual(0, TaskStateMachine.NextToDispatch(q.Items, _clock.Now).Count);
+        }
+
+        [TestMethod]
         public void StoreException_IsReportedNotThrown()
         {
             var q = new TaskQueue(_settings, new ThrowingStore(), _archive, _clock.Func);

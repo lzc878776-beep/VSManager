@@ -13,9 +13,8 @@ namespace VSManager
         SawBusy,
         /// <summary>目标 VS 已关闭超过 15 秒：任务失败。/ Target VS has been closed for more than 15 s: the task fails.</summary>
         VsClosed,
-        /// <summary>始终没观察到 Copilot 开始运行（任务极快或状态不可读）超过 30 秒：按已完成处理。
-        /// Copilot was never seen running (very fast task or unreadable state) for more than 30 s: treat as done.</summary>
-        AssumeDone
+        /// <summary>No execution was observed; the result is unconfirmed, not successful.</summary>
+        Unconfirmed
     }
 
     /// <summary>
@@ -33,7 +32,7 @@ namespace VSManager
         /// <summary>VS 关闭多久后判定任务失败。/ How long a closed VS is tolerated before the task fails.</summary>
         public static readonly TimeSpan VsClosedTimeout = TimeSpan.FromSeconds(15);
 
-        /// <summary>始终未观察到忙碌时，多久后按已完成处理。/ After how long a never-busy task is treated as done.</summary>
+        /// <summary>Timeout for an unconfirmed start; never treated as successful completion.</summary>
         public static readonly TimeSpan NeverBusyTimeout = TimeSpan.FromSeconds(30);
 
         /// <summary>VS 已关闭时记录的错误。/ Error recorded when the VS was closed.</summary>
@@ -46,6 +45,7 @@ namespace VSManager
             t.Status = QueueStatus.Sending;
             t.VsName = vsName;
             t.Attempts++;
+            t.CompletionToken = Guid.NewGuid().ToString("N");
             return true;
         }
 
@@ -74,6 +74,27 @@ namespace VSManager
                     break;
             }
             return d;
+        }
+
+        public static string SuccessReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":SUCCESS]";
+        public static string FailureReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":FAILED]";
+
+        public static string DispatchText(QueuedTask t) => t.Text + " "
+            + "任务队列回执（仅用于确认本次结果）：只有本任务全部成功完成，才在最终回复最后单独一行输出 " + SuccessReceipt(t)
+            + "；遇到错误、未完成、需要用户处理或无法确认成功时，说明原因并在最后单独一行输出 " + FailureReceipt(t)
+            + "。不要在过程消息中输出回执。";
+
+        public static bool TryReadSuccess(QueuedTask t, string answer, out string result)
+        {
+            result = answer?.Trim();
+            if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return false;
+            string receipt = SuccessReceipt(t);
+            if (!result.EndsWith(receipt, StringComparison.Ordinal) || result.Contains(FailureReceipt(t))) return false;
+            int receiptStart = result.Length - receipt.Length;
+            if (receiptStart > 0 && result[receiptStart - 1] != '\n') return false;
+            result = result.Substring(0, receiptStart).TrimEnd();
+            if (result.Length == 0) result = "任务已成功完成";
+            return true;
         }
 
         /// <summary>→ 失败。/ → failed.</summary>
@@ -146,25 +167,39 @@ namespace VSManager
             var elapsed = now - (t.Started ?? now);
             if (!vsOpen) return elapsed > VsClosedTimeout ? RunningVerdict.VsClosed : RunningVerdict.None;
             if (copilot == CopilotState.Busy) return RunningVerdict.SawBusy;
-            if (!t.SawBusy && copilot == CopilotState.Idle && canDispatch() && elapsed > NeverBusyTimeout) return RunningVerdict.AssumeDone;
+            if (!t.SawBusy && copilot == CopilotState.Idle && canDispatch() && elapsed > NeverBusyTimeout) return RunningVerdict.Unconfirmed;
             return RunningVerdict.None;
         }
 
-        /// <summary>
-        /// 本轮可发布的任务：每个没有发送中 / 执行中任务的 VS，取编号最小的排队任务（且已到重试时间），按编号排序。
-        /// Tasks to publish in this round: for every VS without a sending / running task, its lowest-numbered waiting task
-        /// (whose retry time has come), ordered by id. Tasks waiting for their target VS are not considered.
-        /// </summary>
-        public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now) =>
-            items.Where(x => QueueStatus.Active(x.Status) && x.Status != QueueStatus.WaitingVs).GroupBy(x => x.VsKey)
-                .Where(g => !g.Any(x => x.Status != QueueStatus.Waiting))
-                .Select(g => g.OrderBy(x => x.Id).First())
-                .Where(x => x.NextTry <= now)
-                .OrderBy(x => x.Id).ToList();
+        /// <summary>Earlier unfinished or failed work blocks the same target; explicit cancellation/removal skips it.</summary>
+        public static QueuedTask BlockingTask(IEnumerable<QueuedTask> items, QueuedTask task) =>
+            items.Where(x => x != task && ResentTaskMatcher.SameTarget(x, task)
+                && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
+                    || (x.Order < task.Order && (QueueStatus.Active(x.Status) || x.Status == QueueStatus.Failed))))
+                .OrderBy(x => x.Order).ThenBy(x => x.Id).FirstOrDefault();
 
-        /// <summary>同一 VS 中内容相同的未完成任务（避免重复添加）。/ An unfinished task with the same text for the same VS (avoids duplicates).</summary>
-        public static QueuedTask FindActiveDuplicate(IEnumerable<QueuedTask> items, string vsKey, string text) =>
-            items.FirstOrDefault(t => t.VsKey == vsKey && QueueStatus.Active(t.Status) && t.Text == text);
+        public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now)
+        {
+            var all = items.ToList();
+            return all.Where(x => x.Status == QueueStatus.Waiting && x.NextTry <= now && BlockingTask(all, x) == null)
+                .OrderBy(x => x.Order).ThenBy(x => x.Id).ToList();
+        }
+
+        /// <summary>Ignore resend markers and formatting when detecting an already queued task.</summary>
+        public static QueuedTask FindActiveDuplicate(IEnumerable<QueuedTask> items, string vsKey, string text)
+        {
+            string normalized = ResentTaskMatcher.Normalize(ResentTaskMatcher.StripMarker(text, out _));
+            return items.FirstOrDefault(t => string.Equals(t.VsKey, vsKey, StringComparison.OrdinalIgnoreCase)
+                && QueueStatus.Active(t.Status)
+                && ResentTaskMatcher.Normalize(ResentTaskMatcher.StripMarker(t.Text, out _)) == normalized);
+        }
+
+        public static string StatusText(QueuedTask t, DateTime now, IEnumerable<QueuedTask> items)
+        {
+            var blocker = t.Status == QueueStatus.Waiting ? BlockingTask(items, t) : null;
+            return blocker?.Status == QueueStatus.Failed
+                ? $"已暂停（前序 #{blocker.Id} 失败）" : StatusText(t, now);
+        }
 
         /// <summary>任务状态的简短文字（界面、AI 工具返回共用）。/ Short status text (shared by the UI and AI tool results).</summary>
         public static string StatusText(QueuedTask t, DateTime now)

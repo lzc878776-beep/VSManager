@@ -127,7 +127,11 @@ namespace VSManager
             {
                 Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Source = S("Source"),
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
-                Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target")
+                Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
+                QueueOrder = Math.Max(0, I("QueueOrder")), CompletionToken = S("CompletionToken"),
+                Replaces = e.Element("Replaces")?.Elements("item")
+                    .Select(x => int.TryParse(x.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) ? id : 0)
+                    .Where(id => id > 0).Distinct().ToArray()
             };
             if (string.IsNullOrWhiteSpace(t.Text)) return null;
             t.Created = ParseDate(S("Created")) ?? t.Started ?? t.Finished ?? DateTime.Now;

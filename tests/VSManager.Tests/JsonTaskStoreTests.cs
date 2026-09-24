@@ -50,6 +50,23 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void SaveThenLoad_PreservesCompletionReceiptAndResendPosition()
+        {
+            var task = T(7, QueueStatus.Waiting);
+            task.QueueOrder = 2;
+            task.Replaces = new[] { 2, 5 };
+            TaskStateMachine.BeginSend(task, "Demo");
+            TaskStateMachine.ApplySendResult(task, "已发送", DateTime.Now);
+            var store = new JsonTaskStore(_path);
+            Assert.IsNull(store.Save(new[] { task }));
+            var loaded = store.Load(new List<string>()).Single();
+            Assert.AreEqual(task.CompletionToken, loaded.CompletionToken);
+            Assert.AreEqual(2, loaded.Order);
+            CollectionAssert.AreEqual(task.Replaces, loaded.Replaces);
+            Assert.IsTrue(TaskStateMachine.TryReadSuccess(loaded, "Completed\r\n" + TaskStateMachine.SuccessReceipt(task), out _));
+        }
+
+        [TestMethod]
         public void Save_KeepsFieldNames_AndBackup()
         {
             var store = new JsonTaskStore(_path);

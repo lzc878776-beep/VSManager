@@ -31,7 +31,7 @@ namespace VSManager
     /// <summary>重新发布判定结果。/ Result of the resend check.</summary>
     public sealed class ResendMatch
     {
-        /// <summary>可可靠判定为同一任务、应隐藏的旧失败条目。/ Old failed entries reliably identified as the same task; to be hidden.</summary>
+        /// <summary>Old failed entries reliably identified for replacement and removal from the queue.</summary>
         public readonly List<QueuedTask> Hide = new List<QueuedTask>();
         /// <summary>内容相近但无法可靠判定、保留不动的条目。/ Similar entries that cannot be identified reliably and are kept.</summary>
         public readonly List<KeptResend> Kept = new List<KeptResend>();
@@ -127,11 +127,9 @@ namespace VSManager
         private static bool IsPath(string key) => !string.IsNullOrEmpty(key) && !key.StartsWith("title:", StringComparison.Ordinal);
 
         /// <summary>
-        /// 找出被 <paramref name="resent"/> 重新发布的旧失败条目。内容指纹相同且目标相同 → 隐藏；内容相同但目标不同或正文过短 → 保留并说明原因。
-        /// 正文显式引用原编号（如「重发 #26」）时，去掉标记后再比对，且对该编号不做长度限制。
-        /// Finds the old failed entries republished by <paramref name="resent"/>. Same fingerprint and same target → hide; same
-        /// content but a different target, or a too-short text → keep, with the reason. When the text references the original
-        /// id (e.g. "resend #26") the marker is stripped before comparing and the length limit does not apply to that id.
+        /// Finds failed entries for replacement: matching content and target, or an explicit resend id for the same target.
+        /// An explicit id permits corrected instructions and short text, and replaces only that id.
+        /// Ambiguous content-only matches and different targets are kept with an explanation.
         /// </summary>
         public static ResendMatch Find(IEnumerable<QueuedTask> items, QueuedTask resent)
         {
@@ -147,8 +145,8 @@ namespace VSManager
             {
                 if (t == null || t == resent || t.Id == resent.Id || t.Id > resent.Id || t.Status != QueueStatus.Failed) continue;
                 string oldNorm = Normalize(StripMarker(t.Text, out _));
-                if (FingerprintOfNormalized(oldNorm) != fp) continue;
                 bool referenced = refId.HasValue && refId.Value == t.Id;
+                if (refId.HasValue ? !referenced : FingerprintOfNormalized(oldNorm) != fp) continue;
                 if (!SameTarget(t, resent))
                     res.Kept.Add(new KeptResend { Task = t, Reason = "内容相同但目标 VS 不同 / same content but a different target VS" });
                 else if (!referenced && norm.Length < MinReliableLength)

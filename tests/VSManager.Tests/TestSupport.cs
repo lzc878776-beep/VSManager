@@ -81,6 +81,9 @@ namespace VSManager.Tests
         public readonly List<string> Status = new List<string>();
         public readonly List<string> Notices = new List<string>();
         public string Answer = "完成了";
+        public bool IncludeSuccessReceipt = true;
+        public Func<QueuedTask, Task<string>> AnswerReader;
+        public Exception SendException;
         public bool Sending;
         public DateTime ReadyAt = DateTime.MinValue;
         public bool? LastActivity;
@@ -101,10 +104,14 @@ namespace VSManager.Tests
         public Task<string> SendAsync(VsInstance v, string text)
         {
             Sent.Add(v.Key + ":" + text);
+            if (SendException != null) throw SendException;
             return Task.FromResult(SendResults.Count > 0 ? SendResults.Dequeue() : "已发送");
         }
 
-        public Task<string> ReadAnswerAsync(VsInstance v) => Task.FromResult(Answer);
+        public Task<string> ReadAnswerAsync(VsInstance v, QueuedTask expectedTask) => AnswerReader != null
+            ? AnswerReader(expectedTask)
+            : Task.FromResult(IncludeSuccessReceipt && !string.IsNullOrWhiteSpace(Answer)
+                ? Answer + "\r\n" + TaskStateMachine.SuccessReceipt(expectedTask) : Answer);
         public void SetStatus(string text) => Status.Add(text);
         public void LogEvent(string vsName, string text) { }
         public void NotifyAgent(string title, string body) => Notices.Add(title);

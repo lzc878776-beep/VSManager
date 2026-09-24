@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
@@ -23,7 +24,7 @@ namespace VSManager
         /// <summary>发送到 Copilot，返回结果文字（以「已发送」开头表示送达）。/ Sends to Copilot; a result starting with "已发送" means delivered.</summary>
         Task<string> SendAsync(VsInstance v, string text);
         /// <summary>读取 Copilot 最新回复文本，读取失败返回 null。/ Reads the latest Copilot answer; null when it cannot be read.</summary>
-        Task<string> ReadAnswerAsync(VsInstance v);
+        Task<string> ReadAnswerAsync(VsInstance v, QueuedTask expectedTask);
         void SetStatus(string text);
         void LogEvent(string vsName, string text);
         void NotifyAgent(string title, string body);
@@ -52,6 +53,7 @@ namespace VSManager
         private readonly ITaskDispatchHost _host;
         private readonly Func<DateTime> _clock;
         private bool _pumping;
+        private readonly HashSet<QueuedTask> _finishing = new HashSet<QueuedTask>();
 
         public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null)
         {
@@ -79,12 +81,13 @@ namespace VSManager
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
                     if (now < _host.TrackingReadyAt) break;
+                    if (_finishing.Contains(t)) continue;
                     var v = _host.FindVs(t.VsKey);
                     switch (TaskStateMachine.CheckRunning(t, v != null, v?.Copilot ?? CopilotState.Unknown, () => _host.CanDispatch(v), now))
                     {
                         case RunningVerdict.VsClosed: Fail(t, TaskStateMachine.VsClosedError); break;
                         case RunningVerdict.SawBusy: t.SawBusy = true; break;
-                        case RunningVerdict.AssumeDone: Finish(t, v, null); break;
+                        case RunningVerdict.Unconfirmed: await FinishAsync(t, v, null); break;
                     }
                 }
 
@@ -92,11 +95,18 @@ namespace VSManager
                 {
                     if (_host.IsSending) break;
                     var v = _host.FindVs(t.VsKey);
-                    if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting) continue;
+                    if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting
+                        || _tasks.Find(t.Id) != t || TaskStateMachine.BlockingTask(_tasks.Items, t) != null) continue;
                     TaskStateMachine.BeginSend(t, _host.NameOf(v));
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
-                    string r = await _host.SendAsync(v, t.Text);
+                    string r;
+                    try { r = await _host.SendAsync(v, TaskStateMachine.DispatchText(t)); }
+                    catch (Exception ex)
+                    {
+                        Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message);
+                        continue;
+                    }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
                     {
                         case SendDecision.Delivered:
@@ -155,27 +165,50 @@ namespace VSManager
             _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败：{error}");
             if (t.FromAgent)
                 _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName}",
-                    $"[任务完成通知] 任务 #{t.Id} 在「{t.VsName}」发布或执行失败：{error}。任务内容：{TextUtil.Clip(t.Text, 300)}。请判断是否改派、重试或告知用户。");
+                    $"[任务失败通知] 任务 #{t.Id} 在「{t.VsName}」发布或执行失败：{error}。任务内容：{TextUtil.Clip(t.Text, 300)}。该目标后续任务已暂停；请处理错误，重发时以「重发 #{t.Id}：」开头，原失败条目会被移除，重发任务成功返回前不得继续后续步骤。");
         }
 
         /// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task: stores the latest Copilot answer and notifies the AI assistant.</summary>
         public async void Finish(QueuedTask t, VsInstance v, TimeSpan? dur)
         {
-            if (!TaskStateMachine.Complete(t, _clock())) return;
-            _tasks.Commit();
-            string answer = null;
-            try { answer = await _host.ReadAnswerAsync(v); } catch { }
-            t.Result = string.IsNullOrWhiteSpace(answer) ? null : TextUtil.Clip(answer, 1500);
-            _tasks.Commit();
-            if (t.FromAgent)
+            try { await FinishAsync(t, v, dur); }
+            catch (Exception ex) { _host.SetStatus("任务结果处理出错：" + ex.Message); }
+        }
+
+        public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
+        {
+            if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t || !_finishing.Add(t)) return;
+            try
             {
-                string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
-                int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）",
-                    $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」完成（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
-                    "Copilot 回复：" + (t.Result ?? "（未能读取回复内容）") +
-                    $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报；若有依赖此结果的后续步骤就继续发布。");
+                string answer;
+                try { answer = await _host.ReadAnswerAsync(v, t); }
+                catch (Exception ex)
+                {
+                    if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t)
+                        Fail(t, "读取任务结果失败，后续任务已暂停：" + ex.Message);
+                    return;
+                }
+                if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+                if (!TaskStateMachine.TryReadSuccess(t, answer, out string result))
+                {
+                    t.Result = TextUtil.Clip(answer, 1500);
+                    Fail(t, "未收到本次任务的成功回执，后续任务已暂停。" + TextUtil.Clip(answer, 300));
+                    return;
+                }
+                t.Result = TextUtil.Clip(result, 1500);
+                TaskStateMachine.Complete(t, _clock());
+                _tasks.Commit();
+                if (t.FromAgent)
+                {
+                    string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
+                    int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
+                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）",
+                        $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
+                        "Copilot 回复：" + t.Result +
+                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
+                }
             }
+            finally { _finishing.Remove(t); }
             Pump();
         }
 
@@ -190,6 +223,12 @@ namespace VSManager
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
         public void Retry(QueuedTask t)
         {
+            if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
+                || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled))
+            {
+                _host.SetStatus("任务已被替换、正在处理或不可重试，请刷新任务清单");
+                return;
+            }
             TaskStateMachine.Requeue(t);
             _tasks.Commit();
             Pump();
@@ -210,8 +249,8 @@ namespace VSManager
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
-            else if (_tasks.Items.Any(x => x.VsKey == t.VsKey && x.Status == QueueStatus.Waiting && x.Id < t.Id))
-                _host.SetStatus($"任务 #{t.Id} 前面还有排队任务，按顺序发布");
+            else if (TaskStateMachine.BlockingTask(_tasks.Items, t) is QueuedTask blocker)
+                _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id} 成功返回（{TaskStateMachine.StatusText(blocker, _clock())}）");
             Pump();
         }
     }

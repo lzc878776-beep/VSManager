@@ -44,6 +44,11 @@ namespace VSManager
         [DataMember] public string Result;
         [DataMember] public string Error;
         [DataMember] public int Attempts;
+        // A replacement keeps the failed task's position even though it receives a new id.
+        [DataMember(EmitDefaultValue = false)] public int QueueOrder;
+        [DataMember(EmitDefaultValue = false)] public int[] Replaces;
+        [DataMember(EmitDefaultValue = false)] public string CompletionToken;
+        public int Order => QueueOrder > 0 ? QueueOrder : Id;
         /// <summary>
         /// 目标解决方案别名（按登记表别名分派时记录，用于显示等待原因）；普通任务为 null，不写入 tasks.json。
         /// Target solution alias (recorded when dispatched by a registry alias, used to show the waiting reason); null for
@@ -62,7 +67,9 @@ namespace VSManager
         public QueuedTask Clone() => new QueuedTask
         {
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
-            Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target
+            Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
+            QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
+            CompletionToken = CompletionToken
         };
     }
 }

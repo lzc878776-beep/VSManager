@@ -112,8 +112,10 @@ namespace VSManager
             sb.AppendLine("   发布编码任务前不要自己去读代码定位文件——目标 VS 的 Copilot 会自己查找；除非用户明确要求你先分析，否则直接 send_task。");
             sb.AppendLine("   send_task 在后台直接写入 Copilot 输入框，不会切换用户当前的界面；只有用户要求查看 VS 时才调用 activate_vs。");
             sb.AppendLine("5. send_task 会记入右侧「任务清单」：目标 VS 空闲时立即发布；正忙时自动排队，空闲后按顺序自动发布，不需要你等待或重试。可用 list_tasks 查看、cancel_task 取消。");
-            sb.AppendLine("   紧急或可并行的任务，可以改派给其他空闲且匹配的 VS。");
-            sb.AppendLine("   任务完成后你会收到以「[任务完成通知]」开头的消息：用一两句话向用户汇报结果；若还有依赖该结果的后续步骤，继续发布；不要重复发布清单中已有的任务。");
+            sb.AppendLine("   同一 VS 必须收到前序任务的成功回执后才发送下一项；出错、结果未知或缺少成功回执时暂停后续任务，不能把空闲或已发送当作成功。");
+            sb.AppendLine("   收到「[任务失败通知]」后先处理错误；重发时以「重发 #原任务编号：」开头，允许修正任务内容。系统会移除原失败条目并保留队列位置，不要重复发布后续任务。");
+            sb.AppendLine("   紧急或可并行的任务，可以改派给其他空闲且匹配的 VS；依赖失败任务的步骤不得改派以绕过暂停。");
+            sb.AppendLine("   任务完成后你会收到以「[任务完成通知]」开头的消息：用一两句话向用户汇报结果；只有确认成功才能继续依赖该结果的步骤，不要重复发布清单中已有的任务。");
             sb.AppendLine("6. 只是发布任务时，发完即简要回复（VS 完成后本工具会自动提醒用户），不要等待；用户明确要结果、或后续步骤依赖结果时，才调用 wait_for_vs。多个 VS 可以先依次发布再逐个等待。");
             sb.AppendLine("7. Copilot 需要修改代码时，正在调试不是阻碍（它会自行处理或提示）；停止调试、重新生成等操作只在用户要求或同意时执行。");
             sb.AppendLine("8. 用户的请求超出你现有工具的能力（没有合适的工具，或工具反复失败）时，不要只回答“做不到”：先说明原因，再调用 request_vsmanager_improvement，");
@@ -158,8 +160,10 @@ namespace VSManager
             sb.AppendLine("   Do not read code to locate files before dispatching a coding task - the target VS's Copilot will find them itself; unless the user explicitly asks you to analyze first, call send_task directly.");
             sb.AppendLine("   send_task writes into the Copilot input box in the background and does not switch the user's current view; call activate_vs only when the user wants to see the VS.");
             sb.AppendLine("5. send_task is recorded in the task list on the right: it is dispatched immediately when the target VS is idle; when it is busy the task is queued and dispatched automatically in order once idle, so you do not need to wait or retry. Use list_tasks to view and cancel_task to cancel.");
-            sb.AppendLine("   Urgent or parallelizable tasks can be reassigned to another idle, matching VS.");
-            sb.AppendLine("   When a task finishes you will receive a message starting with \"[任务完成通知]\" (task completion notice): report the result to the user in one or two sentences; if further steps depend on it, dispatch them; do not re-dispatch tasks already in the list.");
+            sb.AppendLine("   Each VS waits for a successful completion receipt before dispatching the next task. Errors, unknown results or missing receipts pause successors; idle or delivered does not mean successful.");
+            sb.AppendLine("   On [任务失败通知], resolve the failure first. Prefix a corrected resend with 'resend #originalId:'. The old failed entry is removed and its queue position retained. Never resend successors already queued.");
+            sb.AppendLine("   Urgent or independent tasks can use another matching VS, but never reassign dependent work to bypass a failed predecessor.");
+            sb.AppendLine("   On [任务完成通知], briefly report the result. Only confirmed success permits dependent steps; do not re-dispatch tasks already in the list.");
             sb.AppendLine("6. When you are only dispatching tasks, reply briefly right after dispatching (VSManager notifies the user when the VS finishes) and do not wait; call wait_for_vs only when the user explicitly wants the result or later steps depend on it. You may dispatch to several VS instances first and then wait for each.");
             sb.AppendLine("7. Debugging in progress does not prevent Copilot from editing code (it will handle it or ask); stop debugging, rebuild and similar actions only when the user asks or agrees.");
             sb.AppendLine("8. When a request is beyond your current tools (no suitable tool, or a tool keeps failing), do not just say \"I can't\": explain why, then call request_vsmanager_improvement");
