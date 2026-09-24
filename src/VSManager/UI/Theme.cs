@@ -497,7 +497,7 @@ namespace VSManager
         {
             base.OnMouseMove(e);
             int idx = IndexFromPoint(e.Location);
-            if (idx >= 0 && !GetItemRectangle(idx).Contains(e.Location)) idx = -1;
+            if (idx < 0 || idx >= Items.Count || !GetItemRectangle(idx).Contains(e.Location)) idx = -1;
             SetHover(idx);
         }
 
@@ -528,7 +528,7 @@ namespace VSManager
                 TopIndex = top;
                 var p = PointToClient(Cursor.Position);
                 int idx = ClientRectangle.Contains(p) ? IndexFromPoint(p) : -1;
-                if (idx >= 0 && !GetItemRectangle(idx).Contains(p)) idx = -1;
+                if (idx < 0 || idx >= Items.Count || !GetItemRectangle(idx).Contains(p)) idx = -1;
                 SetHover(idx);
             }
             return true;
