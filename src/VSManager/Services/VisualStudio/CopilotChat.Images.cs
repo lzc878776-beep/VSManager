@@ -65,7 +65,13 @@ namespace VSManager
             var cache = new CacheRequest { TreeFilter = Automation.RawViewCondition };
             using (cache.Activate())
             {
-                var before = AttachmentIds(pane);
+                HashSet<string> before;
+                if (_queueGuard != null)
+                {
+                    if (!TryAttachmentIds(pane, out before) || before.Count != 0)
+                        return ManualChatProtection.WaitPrefix + "附件不为空或无法确认 / Attachments are not empty or cannot be confirmed";
+                }
+                else before = AttachmentIds(pane);
 
                 Key(VK_SHIFT, true); Key(VK_MENU, true); Key(VK_CONTROL, true);
                 Native.Activate(vs.MainHwnd);
@@ -98,14 +104,24 @@ namespace VSManager
                     using (var bitmap = image.OpenBitmap()) Clipboard.SetImage(bitmap);
                     clipboardVersion = GetClipboardSequenceNumber();
                     if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
+                    blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
+                    if (blocked != null) return blocked;
                     Combo(VK_CONTROL, VK_V);
                     var until = DateTime.UtcNow.AddSeconds(8);
                     bool confirmed = false;
                     do
                     {
                         Thread.Sleep(100);
-                        var current = AttachmentIds(pane);
+                        HashSet<string> current;
+                        if (_queueGuard != null)
+                        {
+                            if (!TryAttachmentIds(pane, out current))
+                                return ManualChatProtection.UncertainPrefix + "无法读取附件，请检查草稿 / Cannot read attachments; inspect the draft";
+                        }
+                        else current = AttachmentIds(pane);
                         var added = current.Except(before).Except(addedIds).ToArray();
+                        if (_queueGuard != null && (added.Length > 1 || !addedIds.IsSubsetOf(current)))
+                            return ManualChatProtection.UncertainPrefix + "附件在上传时发生变化，请检查草稿 / Attachments changed during upload; inspect the draft";
                         if (added.Length == 1 && addedIds.All(current.Contains) && before.All(current.Contains))
                         {
                             addedIds.Add(added[0]);
@@ -125,7 +141,7 @@ namespace VSManager
                     !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
 
-                blocked = GuardQueueSubmit(vs, pane, edit, prompt);
+                blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
                 if (blocked != null) return blocked;
                 // 只提交一次，延迟确认不能触发重复发送。/ Submit once; delayed acknowledgement must not cause duplicate prompts.
                 if (!TryInvokeSend(pane)) return "图片已附加，但发送按钮不可用；请在 VS 中检查模型是否支持图片后发送";

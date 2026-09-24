@@ -40,7 +40,9 @@ namespace VSManager
                 bool focused = HasFocus(edit);
                 if (focused && InputComposition(target) != false) return ManualChatObservation.Unknown;
                 bool draft = text != null && text.Trim('\r', '\n').Length > 0;
-                return ManualChatProtection.Classify(false, text != null, draft || AttachmentIds(pane).Count > 0, focused);
+                bool attachmentsReadable = TryAttachmentIds(pane, out var attachments);
+                return ManualChatProtection.Classify(false, text != null && attachmentsReadable,
+                    draft || (attachmentsReadable && attachments.Count > 0), focused);
             }
             catch { return ManualChatObservation.Unknown; }
         }
@@ -78,12 +80,30 @@ namespace VSManager
             finally { _queueGuard = null; _queueTouched = false; }
         }
 
-        private string GuardQueueSubmit(VsInstance target, AutomationElement pane, AutomationElement edit, string expected)
+        private static bool TryAttachmentIds(AutomationElement pane, out HashSet<string> attachments)
+        {
+            attachments = null;
+            try
+            {
+                if (pane == null || pane.Current.ProcessId <= 0) return false;
+                // 原始树成功读取但无附件列表表示空；读取失败不能冒充空集合。/ A successful raw-tree read with no attachment list means empty; a failed read must not masquerade as empty.
+                using (var cache = new CacheRequest { TreeFilter = Automation.RawViewCondition }.Activate())
+                    attachments = AttachmentIds(pane);
+                return true;
+            }
+            catch { return false; }
+        }
+
+        private string GuardQueueSubmit(VsInstance target, AutomationElement pane, AutomationElement edit,
+            string expected, IEnumerable<string> expectedAttachments)
         {
             if (_queueGuard == null) return null;
-            if (!_queueGuard() || HasCancel(pane) || InputComposition(target) != false
+            // 文字必须无附件，图片必须恰为本次确认加入的集合；未知状态也保留草稿。/ Text requires no attachments; images require exactly this send's confirmed set; unknown state also preserves the draft.
+            if (!_queueGuard() || !TryAttachmentIds(pane, out var attachments)
+                || expectedAttachments == null || !attachments.SetEquals(expectedAttachments)
+                || HasCancel(pane) || InputComposition(target) != false
                 || !PasteVerifier.IsConfirmed(PasteVerifier.Classify(expected, null, GetEditText(edit))))
-                return ManualChatProtection.UncertainPrefix + "目标或输入在写入后发生变化，请检查草稿 / Target or input changed after writing; inspect the draft";
+                return ManualChatProtection.UncertainPrefix + "目标、输入或附件在写入后发生变化或无法确认，请检查草稿 / Target, input or attachments changed or cannot be confirmed after writing; inspect the draft";
             return null;
         }
 

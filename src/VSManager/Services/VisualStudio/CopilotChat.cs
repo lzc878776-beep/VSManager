@@ -935,7 +935,7 @@ namespace VSManager
                 if (blocked != null) return blocked;
                 if (!HasFocus(edit)) { T("后台：写入后输入框失去焦点"); return "Copilot 输入框失去焦点，已取消发送（内容保留在 VS 输入框中）"; }
 
-                blocked = GuardQueueSubmit(vs, pane, edit, text);
+                blocked = GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
                 if (blocked != null) return blocked;
                 T("后台：内容已写入，发送 Enter");
                 PostKey(target, 0x0D, 0x1C); // Enter
@@ -1082,7 +1082,7 @@ namespace VSManager
                     T("前台：无法读取输入框文本，但水印已隐藏、剪贴板内容正确且焦点在输入框，继续发送并以送达确认为准 / " +
                       "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
 
-                string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text);
+                string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
                 if (beforeSubmit != null) return beforeSubmit;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) { T("前台：回车前焦点已改变"); return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）"; }
                 T("前台：内容已粘贴，发送 Enter");
