@@ -30,9 +30,12 @@ namespace VSManager
         private readonly JavaScriptSerializer _json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
         private readonly MarkdownPipeline _pipeline = new MarkdownPipelineBuilder()
             .DisableHtml().UsePipeTables().UseAutoLinks().UseSoftlineBreakAsHardlineBreak().Build();
-        private readonly List<CachedMessage> _cache = new List<CachedMessage>();
         private CoreWebView2 _core;
         private State _latest = new State { Empty = "请在左侧选择一个 VS" };
+        private State _sent;
+        private long _sentRevision = -1;
+        private string _sentBot;
+        private bool _shown, _suspending;
         private long _revision;
         private string _done = "";
         private string _activity = "", _pending = "";
@@ -45,8 +48,23 @@ namespace VSManager
         private string _initialNavigationUri;
         private bool _disposed;
 
+        private string _assistantLabel = "Copilot";
+
         /// <summary>助手消息的标签名称。</summary>
-        public string AssistantLabel { get; set; } = "Copilot";
+        public string AssistantLabel
+        {
+            get { lock (_gate) return _assistantLabel; }
+            set
+            {
+                lock (_gate)
+                {
+                    if (_disposed || _assistantLabel == value) return;
+                    _assistantLabel = value;
+                    ++_revision;
+                }
+                ScheduleRender();
+            }
+        }
 
         /// <summary>点击本机附件链接（参数为附件编号）。/ An attachment link was clicked (argument: attachment id).</summary>
         public event Action<string> AttachmentClicked;
@@ -83,10 +101,12 @@ namespace VSManager
         public void Render(ChatTranscript transcript, bool showSteps)
         {
             long generation;
+            State previous;
             lock (_gate)
             {
                 if (_disposed) return;
                 generation = _generation;
+                previous = _latest;
             }
             if (transcript == null)
             {
@@ -99,14 +119,18 @@ namespace VSManager
                 foreach (var message in transcript.Messages.ToArray())
                 {
                     if (message == null) continue;
-                    var source = new SourceMessage { User = message.Role == ChatRole.User };
-                    if (message.Parts != null)
+                    var parts = message.Parts?.ToArray() ?? Array.Empty<ChatPart>();
+                    var old = state.Messages.Count < previous.Messages.Count ? previous.Messages[state.Messages.Count] : null;
+                    if (SameSource(old, message.Role == ChatRole.User, parts, showSteps))
+                        state.Messages.Add(old);
+                    else
                     {
-                        foreach (var part in message.Parts.ToArray())
+                        var source = new SourceMessage { User = message.Role == ChatRole.User };
+                        foreach (var part in parts)
                             if (part != null && (!part.IsStep || showSteps))
                                 source.Parts.Add(new SourcePart { Step = part.IsStep, Text = part.Text ?? "" });
+                        state.Messages.Add(source);
                     }
-                    state.Messages.Add(source);
                 }
             }
             if (state.Messages.Count == 0)
@@ -128,7 +152,7 @@ namespace VSManager
             {
                 if (_disposed || _done == text) return;
                 _done = text;
-                _latest.Revision = ++_revision;
+                ++_revision;
             }
             ScheduleRender();
         }
@@ -143,7 +167,7 @@ namespace VSManager
                 if (_disposed || (_activity == activity && _pending == pending)) return;
                 _activity = activity;
                 _pending = pending;
-                _latest.Revision = ++_revision;
+                ++_revision;
             }
             ScheduleRender();
         }
@@ -159,9 +183,10 @@ namespace VSManager
             lock (_gate)
             {
                 if (_disposed || (expectedGeneration.HasValue && expectedGeneration.Value != _generation)) return;
-                if (reset) _generation++;
+                if (!reset && SameState(_latest, state)) return;
+                if (reset) { _generation++; _sent = null; }
                 state.Generation = _generation;
-                state.Revision = ++_revision;
+                ++_revision;
                 _latest = state;
             }
             ScheduleRender();
@@ -171,7 +196,7 @@ namespace VSManager
         {
             lock (_gate)
             {
-                if (_disposed || !_handleReady || _scheduled) return;
+                if (_disposed || !_handleReady || !_shown || !_ready || _suspending || _scheduled) return;
                 _scheduled = true;
             }
             try { BeginInvoke((Action)FlushLatest); }
@@ -187,8 +212,7 @@ namespace VSManager
             lock (_gate) _handleReady = true;
             if (DesignMode) return;
             HookForm();
-            InitializeBrowser();
-            ScheduleRender();
+            ApplyMemoryLevel();
         }
 
         protected override void OnHandleDestroyed(EventArgs e)
@@ -224,16 +248,60 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 视图不可见（隐藏到托盘、最小化、面板收起）时把 WebView2 内存目标降为 Low，可见时恢复 Normal。
-        /// Lower the WebView2 memory target while the view is not visible; restore it when shown.
+        /// 首次可见时才初始化浏览器；隐藏后降低内存目标并尝试挂起。/ Initialize on first visibility; lower memory usage and try to suspend when hidden.
         /// </summary>
         private void ApplyMemoryLevel()
         {
-            if (_core == null || _disposed) return;
+            if (_disposed || DesignMode) return;
             var form = FindForm();
             bool shown = Visible && form != null && form.Visible && form.WindowState != FormWindowState.Minimized;
+            lock (_gate) _shown = shown;
+            if (_core == null)
+            {
+                if (shown && _handleReady) InitializeBrowser();
+                return;
+            }
+            _web.Visible = shown && _ready;
             var level = shown ? CoreWebView2MemoryUsageTargetLevel.Normal : CoreWebView2MemoryUsageTargetLevel.Low;
-            try { if (_core.MemoryUsageTargetLevel != level) _core.MemoryUsageTargetLevel = level; } catch { }
+            try { if (_core.MemoryUsageTargetLevel != level) _core.MemoryUsageTargetLevel = level; }
+            catch (Exception ex) when (IsBrowserMemoryError(ex))
+            { AppLog.Error("memory.log", "设置浏览器内存目标失败 / Browser memory target failed", ex); }
+            if (shown) ResumeBrowser();
+            else if (_ready && !_suspending) SuspendBrowser();
+        }
+
+        private static bool IsBrowserMemoryError(Exception ex) => ex is System.Runtime.InteropServices.COMException
+            || ex is InvalidOperationException || ex is NotImplementedException || ex is NotSupportedException;
+
+        private void ResumeBrowser()
+        {
+            try
+            {
+                _core.Resume();
+                ScheduleRender();
+            }
+            catch (Exception ex) when (IsBrowserMemoryError(ex))
+            {
+                AppLog.Error("memory.log", "恢复对话浏览器失败 / Browser resume failed", ex);
+                ShowError("恢复对话视图失败 / Cannot resume transcript: " + ex.Message, false);
+            }
+        }
+
+        private async void SuspendBrowser()
+        {
+            _suspending = true;
+            try
+            {
+                if (!await _core.TrySuspendAsync())
+                    AppLog.Write("memory.log", "浏览器未挂起，保持低内存目标 / Browser suspension declined; low memory target retained");
+            }
+            catch (Exception ex) when (IsBrowserMemoryError(ex))
+            { AppLog.Error("memory.log", "浏览器挂起不可用，保持低内存目标 / Suspension unavailable; low memory target retained", ex); }
+            finally
+            {
+                _suspending = false;
+                if (!_disposed && _shown) ResumeBrowser();
+            }
         }
 
         private Form _hostForm;
@@ -248,6 +316,7 @@ namespace VSManager
         {
             base.OnParentChanged(e);
             HookForm();
+            ApplyMemoryLevel();
         }
 
         private void HookForm()
@@ -263,12 +332,13 @@ namespace VSManager
 
         private async void InitializeBrowser()
         {
-            if (_initializing || _disposed) return;
+            if (_initializing || _disposed || !_shown) return;
             _initializing = true;
             try
             {
                 var environment = await SharedEnvironment();
                 if (_disposed) return;
+                if (!_shown) { _initializing = false; return; }
                 await _web.EnsureCoreWebView2Async(environment);
                 if (_disposed) return;
                 _core = _web.CoreWebView2;
@@ -333,45 +403,56 @@ namespace VSManager
         private void FlushLatest()
         {
             State state;
+            long revision;
             string done, activity, pending;
             lock (_gate)
             {
                 _scheduled = false;
-                if (_disposed || !_ready) return;
+                if (_disposed || !_ready || !_shown || _suspending) return;
                 state = _latest;
+                revision = _revision;
                 done = _done;
                 activity = _activity;
                 pending = _pending;
             }
             try
             {
-                var messages = new List<object>();
-                for (int i = 0; i < state.Messages.Count; i++)
-                {
-                    var source = state.Messages[i];
-                    CachedMessage cached = i < _cache.Count ? _cache[i] : null;
-                    if (cached == null || !SameMessage(cached.Source, source))
-                    {
-                        cached = new CachedMessage { Source = source, Html = RenderMessage(source) };
-                        if (i < _cache.Count) _cache[i] = cached;
-                        else _cache.Add(cached);
-                    }
-                    messages.Add(new { key = i.ToString(CultureInfo.InvariantCulture), user = source.User, html = cached.Html });
-                }
-                if (_cache.Count > messages.Count) _cache.RemoveRange(messages.Count, _cache.Count - messages.Count);
-                string json = _json.Serialize(new
-                {
-                    type = "render", revision = state.Revision, generation = state.Generation,
-                    empty = state.Empty ?? "", done, activity, pending, messages, bot = AssistantLabel ?? "Copilot", top = ScrollTopOnReset
-                });
+                if (revision == _sentRevision) return;
+                string json = BuildUpdate(state, revision, done, activity, pending);
                 lock (_gate)
                 {
-                    // Rendering is synchronous on the UI thread; a newer worker snapshot must win.
-                    if (_disposed || state != _latest) return;
+                    // Commit the baseline only after posting, never for an obsolete worker snapshot.
+                    if (_disposed || revision != _revision) return;
                     _core.PostWebMessageAsJson(json);
+                    _sent = state;
+                    _sentRevision = revision;
+                    _sentBot = AssistantLabel ?? "Copilot";
                 }
             }
             catch (Exception ex) { ShowError("对话渲染失败：" + ex.Message, false); }
+        }
+
+        private string BuildUpdate(State state, long revision, string done, string activity, string pending)
+        {
+            State sent;
+            lock (_gate) sent = _sent;
+            bool reset = sent == null || sent.Generation != state.Generation;
+            string bot = AssistantLabel ?? "Copilot";
+            var messages = new List<object>();
+            if (reset || state != sent || bot != _sentBot)
+            {
+                for (int i = 0; i < state.Messages.Count; i++)
+                {
+                    var source = state.Messages[i];
+                    if (!reset && bot == _sentBot && i < sent.Messages.Count && SameMessage(sent.Messages[i], source)) continue;
+                    messages.Add(new { index = i, user = source.User, html = RenderMessage(source) });
+                }
+            }
+            return _json.Serialize(new
+            {
+                type = "render", revision, generation = state.Generation, baseRevision = _sentRevision, reset,
+                count = state.Messages.Count, empty = state.Empty ?? "", done, activity, pending, messages, bot, top = ScrollTopOnReset
+            });
         }
 
         private string RenderMessage(SourceMessage source)
@@ -400,8 +481,30 @@ namespace VSManager
             return html.ToString();
         }
 
+        private static bool SameSource(SourceMessage source, bool user, ChatPart[] parts, bool showSteps)
+        {
+            if (source == null || source.User != user) return false;
+            int index = 0;
+            foreach (var part in parts)
+            {
+                if (part == null || (part.IsStep && !showSteps)) continue;
+                if (index >= source.Parts.Count || source.Parts[index].Step != part.IsStep || source.Parts[index].Text != (part.Text ?? "")) return false;
+                index++;
+            }
+            return index == source.Parts.Count;
+        }
+
+        private static bool SameState(State a, State b)
+        {
+            if (a.Empty != b.Empty || a.Messages.Count != b.Messages.Count) return false;
+            for (int i = 0; i < a.Messages.Count; i++)
+                if (!SameMessage(a.Messages[i], b.Messages[i])) return false;
+            return true;
+        }
+
         private static bool SameMessage(SourceMessage a, SourceMessage b)
         {
+            if (ReferenceEquals(a, b)) return true;
             if (a.User != b.User || a.Parts.Count != b.Parts.Count) return false;
             for (int i = 0; i < a.Parts.Count; i++)
                 if (a.Parts[i].Step != b.Parts[i].Step || a.Parts[i].Text != b.Parts[i].Text) return false;
@@ -472,18 +575,20 @@ namespace VSManager
                 object kind;
                 if (message == null || message.Count > 4 || !message.TryGetValue("type", out kind)) return;
                 string type = kind as string;
-                if (type == "ready")
+                if (type == "ready" || type == "resync")
                 {
+                    _sent = null;
+                    _sentRevision = -1;
                     _ready = true;
-                    _web.Visible = true;
                     _status.Visible = false;
+                    ApplyMemoryLevel();
                     ScheduleRender();
                     return;
                 }
                 object number;
                 if (!message.TryGetValue("revision", out number)) return;
                 long revision = Convert.ToInt64(number, CultureInfo.InvariantCulture);
-                lock (_gate) if (revision != _latest.Revision) return;
+                lock (_gate) if (revision != _revision || revision != _sentRevision) return;
                 object content;
                 if (!message.TryGetValue("value", out content)) return;
                 string value = content as string;
@@ -535,6 +640,7 @@ namespace VSManager
 
         private void NavigationCompleted(object sender, CoreWebView2NavigationCompletedEventArgs e)
         {
+            _initialNavigationUri = null;
             if (!e.IsSuccess && !_disposed)
                 ShowError("无法加载本地对话页面：" + e.WebErrorStatus, true);
         }
@@ -564,7 +670,9 @@ namespace VSManager
                 lock (_gate) { _disposed = true; _handleReady = false; _latest = new State(); }
                 if (_hostForm != null) { _hostForm.Resize -= HostFormResize; _hostForm = null; }
                 _ready = false;
-                _cache.Clear();
+                _sent = null;
+                _done = _activity = _pending = "";
+                _initialNavigationUri = null;
                 if (_core != null)
                 {
                     _core.NavigationStarting -= NavigationStarting;
@@ -583,7 +691,6 @@ namespace VSManager
 
         private sealed class State
         {
-            public long Revision;
             public long Generation;
             public string Empty;
             public readonly List<SourceMessage> Messages = new List<SourceMessage>();
@@ -599,12 +706,6 @@ namespace VSManager
         {
             public bool Step;
             public string Text;
-        }
-
-        private sealed class CachedMessage
-        {
-            public SourceMessage Source;
-            public string Html;
         }
     }
 }

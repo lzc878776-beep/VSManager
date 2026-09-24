@@ -14,6 +14,20 @@ namespace VSManager.Tests
     [TestClass]
     public class MenuStyleTests
     {
+        private static readonly string[] DisplayOrderPrefix =
+        {
+            "显示排序（与执行隔离）/ Display ordering (separate from execution)",
+            TaskDisplayOrder.DisplayOnly,
+            "实际执行：编号及前序规则，不随拖拽改变 / Execution: IDs and predecessors; unaffected by dragging",
+            "条目：手动显示顺序 / Entries: manual display order",
+            "条目：默认显示顺序 / Entries: default display order",
+            "分组：手动显示顺序 / Groups: manual display order",
+            "分组：执行中优先、最近活动 / Groups: running first, latest activity",
+            "分组：按 VS 编号 / Groups: by VS number",
+            "清除全部手动显示顺序 / Reset all manual display ordering",
+            "切换为平铺列表 / Switch to flat list"
+        };
+
         [TestMethod]
         public void TaskHeader_ManualStartIsVisible_AndButtonsDoNotOverlapHistory()
         {
@@ -214,7 +228,8 @@ namespace VSManager.Tests
                         "任务操作与历史 / Tasks and history", "立即尝试发布", "重新排队", cancelText,
                         "复制任务内容", "从清单中删除", "清除已完成（仅界面）", "显示已清除的历史",
                         "撤销清除（恢复显示全部历史）", "VS 操作 / Visual Studio", "查看该 VS 的对话"
-                    }, AvailableText(menu));
+                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
+                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs, Find(menu, "立即尝试发布").Enabled);
                     Assert.AreEqual(status == QueueStatus.Failed || status == QueueStatus.Cancelled, Find(menu, "重新排队").Enabled);
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs || status == QueueStatus.Running, Find(menu, cancelText).Enabled);
@@ -365,7 +380,8 @@ namespace VSManager.Tests
                         "任务操作与历史 / Tasks and history", "复制提问与回答", "从清单中移除", "清除已完成（仅界面）",
                         "显示已清除的历史", "撤销清除（恢复显示全部历史）", "AI 对话 / AI chat", "■ 停止生成",
                         "VS 操作 / Visual Studio", "打开该 VS 并定位对话"
-                    }, AvailableText(menu));
+                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
+                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
                     string requested = null;
                     panel.ExternalActionRequested += (c, action) => { Assert.AreSame(chat, c); requested = action; };
                     Find(menu, "■ 停止生成").PerformClick();

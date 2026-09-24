@@ -62,12 +62,14 @@ namespace VSManager
     {
         public const string SortByActivity = "activity";
         public const string SortByNumber = "number";
+        public const string SortManual = "manual";
         /// <summary>「等待打开」分组的键。/ Key of the "waiting to open" group.</summary>
         public const string WaitingOpenKey = "group:waiting-open";
         /// <summary>折叠状态最多保存的分组数。/ Maximum number of collapsed groups remembered.</summary>
         public const int MaxCollapsed = 100;
 
         public static string NormalizeSort(string sort) =>
+            string.Equals(sort, SortManual, StringComparison.OrdinalIgnoreCase) ? SortManual :
             string.Equals(sort, SortByNumber, StringComparison.OrdinalIgnoreCase) ? SortByNumber : SortByActivity;
 
         public static List<string> NormalizeCollapsed(IEnumerable<string> keys) =>
@@ -115,7 +117,7 @@ namespace VSManager
         /// Builds the grouped display sequence: one header per group followed by its items (in the incoming order, i.e. the
         /// existing in-group ordering); collapsed groups show the header only.
         /// </summary>
-        public static List<object> Build(IEnumerable<object> ordered, IReadOnlyList<TaskGroupVs> open, string sort, ICollection<string> collapsed)
+        public static List<object> Build(IEnumerable<object> ordered, IReadOnlyList<TaskGroupVs> open, string sort, ICollection<string> collapsed, IEnumerable<string> manualOrder = null)
         {
             var openByKey = new Dictionary<string, TaskGroupVs>(StringComparer.Ordinal);
             foreach (var v in open ?? new TaskGroupVs[0])
@@ -142,6 +144,7 @@ namespace VSManager
             IEnumerable<TaskGroupHeader> sorted = NormalizeSort(sort) == SortByNumber
                 ? groups.OrderBy(g => g.IsWaitingOpen ? 2 : g.IsOpen ? 0 : 1).ThenBy(g => g.Number).ThenBy(g => g.Title, StringComparer.CurrentCultureIgnoreCase)
                 : groups.OrderByDescending(g => g.HasRunning).ThenByDescending(g => g.LastActivity).ThenBy(g => g.Number);
+            if (NormalizeSort(sort) == SortManual) sorted = TaskDisplayOrder.Apply(sorted, manualOrder, g => g.Key);
             var result = new List<object>();
             foreach (var g in sorted)
             {

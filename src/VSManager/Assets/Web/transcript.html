@@ -75,7 +75,6 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
     const pendingText = pending.querySelector('.plain');
     const activity = document.getElementById('activity');
     const activityText = activity.querySelector('.text');
-    const nodes = new Map();
     let revision = -1;
     let generation = -1;
     const allowed = new Set(['P', 'BR', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI',
@@ -141,11 +140,14 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
     }
 
     function render(data) {
-        if (!Number.isSafeInteger(data.revision) || data.revision <= revision || !Array.isArray(data.messages)) return;
+        if (!Number.isSafeInteger(data.revision) || data.revision <= revision || !Array.isArray(data.messages) ||
+            !Number.isSafeInteger(data.generation) || data.generation < generation ||
+            !Number.isSafeInteger(data.count) || data.count < 0) return;
+        const reset = data.reset === true;
+        if (!reset && (data.baseRevision !== revision || data.generation !== generation)) { send('resync', ''); return; }
         const scroller = document.scrollingElement;
         const oldTop = scroller.scrollTop;
         const oldLeft = scroller.scrollLeft;
-        const reset = generation !== data.generation;
         const atBottom = reset || scroller.scrollHeight - oldTop - scroller.clientHeight <= 24;
         let anchor = null;
         let anchorOffset = 0;
@@ -155,14 +157,11 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
                 if (bounds.bottom > 0) { anchor = node; anchorOffset = bounds.top; break; }
             }
         }
-        if (reset) { root.replaceChildren(); nodes.clear(); }
-        revision = data.revision;
-        generation = data.generation;
-        const retained = new Set();
-        let position = 0;
+        if (reset) root.replaceChildren();
         for (const message of data.messages) {
-            retained.add(message.key);
-            let node = nodes.get(message.key);
+            if (!Number.isSafeInteger(message.index) || message.index < 0 || message.index >= data.count ||
+                message.index > root.children.length || typeof message.html !== 'string') throw new Error('Invalid transcript delta');
+            let node = root.children[message.index];
             if (!node) {
                 node = document.createElement('article');
                 const label = document.createElement('div');
@@ -170,24 +169,20 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
                 const body = document.createElement('div');
                 body.className = 'body';
                 node.append(label, body);
-                nodes.set(message.key, node);
+                root.appendChild(node);
             }
-            if (node._html !== message.html || node._user !== message.user) {
-                node.className = message.user ? 'user' : 'assistant';
-                node.firstChild.textContent = message.user ? '●  你' : '◆  ' + (typeof data.bot === 'string' && data.bot ? data.bot : 'Copilot');
-                node.lastChild.replaceChildren(content(message.html));
-                node._html = message.html;
-                node._user = message.user;
-            }
-            if (root.children[position] !== node) root.insertBefore(node, root.children[position] || null);
-            position++;
+            node.className = message.user ? 'user' : 'assistant';
+            node.firstChild.textContent = message.user ? '●  你' : '◆  ' + (typeof data.bot === 'string' && data.bot ? data.bot : 'Copilot');
+            node.lastChild.replaceChildren(content(message.html));
+            node._user = message.user;
         }
-        for (const [key, node] of nodes) {
-            if (!retained.has(key)) { node.remove(); nodes.delete(key); }
-        }
+        while (root.children.length > data.count) root.lastElementChild.remove();
+        if (root.children.length !== data.count) throw new Error('Incomplete transcript delta');
+        revision = data.revision;
+        generation = data.generation;
         if (empty.textContent !== data.empty) empty.textContent = data.empty;
-        empty.hidden = data.messages.length !== 0 || !data.empty;
-        const last = data.messages[data.messages.length - 1];
+        empty.hidden = data.count !== 0 || !data.empty;
+        const last = root.lastElementChild;
         const doneValue = typeof data.done === 'string' ? data.done : '';
         if (doneText.textContent !== doneValue) doneText.textContent = doneValue;
         const pendingValue = typeof data.pending === 'string' ? data.pending : '';
@@ -197,7 +192,7 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
         if (activityText.textContent !== activityValue) activityText.textContent = activityValue;
         activity.hidden = !activityValue;
         if (activityValue || pendingValue) empty.hidden = true;
-        done.hidden = !doneValue || !last || last.user || !!activityValue || !!pendingValue;
+        done.hidden = !doneValue || !last || last._user || !!activityValue || !!pendingValue;
         if (reset && data.top === true) scroller.scrollTop = 0;
         else if (atBottom) scroller.scrollTop = scroller.scrollHeight;
         else if (anchor && anchor.isConnected) scroller.scrollTop = oldTop + anchor.getBoundingClientRect().top - anchorOffset;
@@ -218,7 +213,10 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
     document.addEventListener('dragstart', function (event) { event.preventDefault(); });
     window.chrome.webview.addEventListener('message', function (event) {
         try { if (event.data && event.data.type === 'render') render(event.data); }
-        catch (error) { send('error', String(error.message || error).slice(0, 1024)); }
+        catch (error) {
+            send('error', String(error.message || error).slice(0, 1024));
+            send('resync', '');
+        }
     });
     window.chrome.webview.postMessage({ type: 'ready' });
 })();

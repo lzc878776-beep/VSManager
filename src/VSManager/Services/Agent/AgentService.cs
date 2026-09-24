@@ -788,7 +788,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             return Format(t, MaxToolText, MaxMessageText);
         }
 
-        [Description("只把任务加入界面任务清单，始终按编号排队，绝不直发或插队；目标未打开时暂存，任务结束后通知助手。Only enqueue in the visible task list, always in ID order; never send directly or jump the queue. Park tasks for closed targets and report their outcome.")]
+        [Description("只入队并按编号调度，绝不直发或插队。默认新发布 AI 任务保存成功后自动启动，无需另点 Start；手动前序仍可阻塞。模式可在属性配置，以返回的启动资格为准；入队不代表执行完成。目标未打开时暂存，任务结束后通知助手。/ Enqueue in ID order only. By default, persisted AI submissions become eligible automatically without Start; manual predecessors still block. Settings control the mode; follow returned eligibility, not assumed completion. Park closed targets and report outcomes.")]
         private async Task<string> SendTask(
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,

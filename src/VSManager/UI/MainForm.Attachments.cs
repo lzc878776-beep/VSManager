@@ -45,7 +45,9 @@ namespace VSManager
         /// Sends a task with attachments. When the text is delivered but images are not, the result still starts with "已发送"
         /// (the task does not fail); diagnostics are recorded and the user is told.
         /// </summary>
-        async Task<string> ITaskAttachmentDispatchHost.SendTaskAsync(VsInstance v, QueuedTask t)
+        Task<string> ITaskAttachmentDispatchHost.SendTaskAsync(VsInstance v, QueuedTask t) => SendTaskCore(v, t);
+
+        private async Task<string> SendTaskCore(VsInstance v, QueuedTask t, Func<bool> queueGuard = null)
         {
             string name = NameOf(v);
             int inline = AttachmentPolicy.ClampInlineMaxChars(_settings.AttachmentInlineMaxChars);
@@ -81,7 +83,7 @@ namespace VSManager
             string r;
             if (images.Count > 0)
             {
-                r = await SendChatCore(v, DispatchTextOf(t, body), images);
+                r = await SendChatCore(v, DispatchTextOf(t, body), images, queueGuard);
                 if (!SendRetryPolicy.IsDelivered(r) && IsPreSubmitImageFailure(r))
                 {
                     // 图片在提交前失败（VS 草稿未改动）：改为只发送文字，并把图片路径附在正文中
@@ -90,7 +92,7 @@ namespace VSManager
                     string refs = plan.ImageReferences(PathForTask, "图片未能粘贴到 Copilot", "image could not be pasted into Copilot");
                     string fallback = AttachmentSendPlan.Compose(t.Text, plan.Body, unreadableText, refs);
                     string reason = r;
-                    r = await SendChatCore(v, DispatchTextOf(t, fallback));
+                    r = await SendChatCore(v, DispatchTextOf(t, fallback), queueGuard: queueGuard);
                     if (SendRetryPolicy.IsDelivered(r))
                     {
                         lostImages = plan.Images.Count;
@@ -99,7 +101,7 @@ namespace VSManager
                     else r += "（图片 / images：" + reason + "）";
                 }
             }
-            else r = await SendChatCore(v, DispatchTextOf(t, body));
+            else r = await SendChatCore(v, DispatchTextOf(t, body), queueGuard: queueGuard);
 
             if (!SendRetryPolicy.IsDelivered(r))
             {

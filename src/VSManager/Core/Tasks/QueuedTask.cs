@@ -77,6 +77,8 @@ namespace VSManager
         [IgnoreDataMember] public DateTime NextTry;
         /// <summary>运行期：已送达任务跳过失败前序的提示。/ Runtime only: notice that a delivered task skipped failed predecessors.</summary>
         [IgnoreDataMember] public string PredecessorNotice;
+        /// <summary>会话内等待原因，不持久化、不改变业务状态。/ Session wait reason; never persisted and never changes business state.</summary>
+        [IgnoreDataMember] public string ManualChatWaitReason;
 
         public bool FromAgent => Source == "AI";
 

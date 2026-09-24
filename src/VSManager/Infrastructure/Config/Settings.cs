@@ -213,16 +213,30 @@ namespace VSManager
         [DataMember] public bool TaskPanelCollapsed;
         /// <summary>任务清单按目标 VS 分组显示（false = 平铺列表），默认开启。/ Group the task list by target VS (false = flat list); on by default.</summary>
         [DataMember] public bool TaskListGroupByVs;
-        /// <summary>分组排序："activity"（默认，执行中优先，再按最近活动倒序）或 "number"（按 VS 编号）。/ Group order: "activity" (default: running first, then latest activity) or "number" (by VS number).</summary>
+        /// <summary>分组显示排序：activity（默认活动）、number（VS 编号）、manual（手动）。/ Group display order: activity (default), number (VS number), manual.</summary>
         [DataMember] public string TaskListGroupSort;
         /// <summary>已折叠的任务分组（分组键，只保存在本机 settings.json）。/ Collapsed task groups (group keys, kept only in the local settings.json).</summary>
         [DataMember] public List<string> TaskListCollapsedGroups;
+        /// <summary>启用任务手动显示排序，与调度隔离。/ Enable manual entry display ordering, separate from dispatch.</summary>
+        [DataMember] public bool TaskListManualOrder;
+        /// <summary>条目显示键顺序，保留暂时隐藏的键。/ Entry display key order, retaining temporarily hidden keys.</summary>
+        [DataMember] public List<string> TaskListItemOrder;
+        /// <summary>分组显示键顺序，平铺时仍保留。/ Group display key order, retained in flat view.</summary>
+        [DataMember] public List<string> TaskListGroupOrder;
         /// <summary>监听各 VS 中手动进行的 Copilot 对话并显示在任务清单中。</summary>
         [DataMember] public bool WatchConversations;
+        /// <summary>队列礼让目标手动对话，独立于监听和归档。/ Queues yield to target manual chat independently of monitoring and archives.</summary>
+        [DataMember] public bool WaitForManualChat;
+        /// <summary>等待超时仅提示一次，仍等待，不强制发送。/ Timeout warns once and keeps waiting; never forces a send.</summary>
+        [DataMember] public int ManualChatWaitTimeoutSeconds;
         /// <summary>普通已结束任务保留上限；失败及维护重发关系所需记录除外，0 或负数保留全部。/ Completed history limit, excluding failures and required resend links; zero or negative keeps all.</summary>
         [DataMember] public int TaskHistoryLimit;
         /// <summary>默认跳过失败前序继续排队任务；关闭时失败阻塞后续。/ Skip failed predecessors by default; disabling pauses successors on failure.</summary>
         [DataMember] public bool SkipFailedPredecessors;
+        /// <summary>新发布的 AI 任务自动启动，默认开启；手动及恢复任务仍等待开始。/ Newly submitted AI tasks start automatically by default; manual and restored tasks await Start.</summary>
+        [DataMember] public bool AutoStartAiTasks;
+        /// <summary>全部自动优先，显式包含恢复任务；默认关闭。/ All automatic takes precedence and explicitly includes restored tasks; off by default.</summary>
+        [DataMember] public bool AutoStartAllTasks;
         /// <summary>下一个任务编号，保证清除历史后编号也不重复。</summary>
         [DataMember] public int TaskNextId;
         /// <summary>
@@ -501,9 +515,16 @@ namespace VSManager
             TaskListGroupByVs = true;
             TaskListGroupSort = TaskGrouping.SortByActivity;
             TaskListCollapsedGroups = new List<string>();
+            TaskListManualOrder = false;
+            TaskListItemOrder = new List<string>();
+            TaskListGroupOrder = new List<string>();
             WatchConversations = true;
             TaskHistoryLimit = 0;
             SkipFailedPredecessors = true;
+            AutoStartAiTasks = true;
+            AutoStartAllTasks = false;
+            WaitForManualChat = true;
+            ManualChatWaitTimeoutSeconds = ManualChatProtection.DefaultTimeoutSeconds;
             TaskNextId = 0;
             ArchiveEnabled = true;
             ArchiveRoot = Archive.DefaultRoot;
@@ -573,6 +594,8 @@ namespace VSManager
                 if (s.HiddenResentTasks == null) s.HiddenResentTasks = new List<HiddenTaskMark>();
                 s.TaskListGroupSort = TaskGrouping.NormalizeSort(s.TaskListGroupSort);
                 s.TaskListCollapsedGroups = TaskGrouping.NormalizeCollapsed(s.TaskListCollapsedGroups);
+                s.TaskListItemOrder = TaskDisplayOrder.Normalize(s.TaskListItemOrder);
+                s.TaskListGroupOrder = TaskDisplayOrder.Normalize(s.TaskListGroupOrder, true);
                 NormalizeTitleKeys(s.Aliases);
                 NormalizeTitleKeys(s.VsNotes);
                 s.Migrate();
@@ -589,6 +612,7 @@ namespace VSManager
                 s.AttachmentInlineMaxChars = AttachmentPolicy.ClampInlineMaxChars(s.AttachmentInlineMaxChars);
                 s.ClampRestart();
                 s.ClampSend();
+                s.ManualChatWaitTimeoutSeconds = ManualChatProtection.ClampTimeout(s.ManualChatWaitTimeoutSeconds);
                 s.ClampSolutions();
                 // 非法或缺失的语言值按中文处理 / Invalid or missing language values fall back to Chinese
                 s.VoiceLanguage = VoiceLanguages.Normalize(s.VoiceLanguage);
@@ -627,6 +651,7 @@ namespace VSManager
         /// <summary>先写临时文件再替换（保留 .bak），进程被强制结束也不会得到损坏的设置文件。</summary>
         public bool Save()
         {
+            ManualChatWaitTimeoutSeconds = ManualChatProtection.ClampTimeout(ManualChatWaitTimeoutSeconds);
             string error = null;
             lock (SaveLock)
             {

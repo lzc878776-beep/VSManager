@@ -112,6 +112,8 @@ namespace VSManager
         {
             while (_running)
             {
+                var instances = Instances?.Invoke();
+                if (instances != null) PruneCaches(new HashSet<int>(instances.Select(v => v.Pid)));
                 var vs = Target;
                 if (vs != null && !Paused && !Hidden)
                 {
@@ -168,6 +170,37 @@ namespace VSManager
         private readonly Dictionary<int, SyncState> _sync = new Dictionary<int, SyncState>();
         private int _syncCursor;
 
+        /// <summary>同步线程释放已关闭实例的缓存；不影响归档。/ Releases closed-instance caches on the sync thread, not archives.</summary>
+        internal void PruneCaches(ISet<int> alive)
+        {
+            lock (_lock)
+            {
+                PruneInstances(_panes, alive);
+                PruneInstances(_hosts, alive);
+                PruneInstances(_missUntil, alive);
+                PruneInstances(_tailSig, alive);
+                PruneInstances(_handledDialogs, alive);
+                foreach (var key in _msgCache.Keys.ToArray())
+                {
+                    int separator = key.IndexOf('|');
+                    if (separator > 0 && int.TryParse(key.Substring(0, separator), out int pid) && !alive.Contains(pid))
+                        _msgCache.Remove(key);
+                }
+            }
+            PruneInstances(_sync, alive);
+            if (_lastVs != null && !alive.Contains(_lastVs.Pid))
+            {
+                _lastVs = null;
+                _lastQuick = null;
+            }
+        }
+
+        private static void PruneInstances<T>(Dictionary<int, T> cache, ISet<int> alive)
+        {
+            foreach (int pid in cache.Keys.ToArray())
+                if (!alive.Contains(pid)) cache.Remove(pid);
+        }
+
         /// <summary>
         /// 每轮只检查一个未选中的 VS（轮询），用轻量签名判断是否变化，变化时才完整读取并通过 Updated 通知缓存。
         /// 运行中的 VS 约 4 秒检查一次，空闲的约 10 秒；不会自动打开对话窗格。
@@ -176,9 +209,6 @@ namespace VSManager
         {
             var all = Instances?.Invoke();
             if (all == null || all.Count == 0) return;
-            var alive = new HashSet<int>();
-            foreach (var x in all) alive.Add(x.Pid);
-            foreach (var pid in new List<int>(_sync.Keys)) if (!alive.Contains(pid)) _sync.Remove(pid);
 
             var now = DateTime.Now;
             for (int n = 0; n < all.Count; n++)
@@ -265,7 +295,7 @@ namespace VSManager
         private int _lastPaneCandidates;
 
         /// <param name="throttleMiss">为 true 时，最近未找到窗格的 VS 在冷却期内直接返回 null（完整搜索开销大）。</param>
-        public AutomationElement FindPane(VsInstance vs, bool throttleMiss = false)
+        public AutomationElement FindPane(VsInstance vs, bool throttleMiss = false, bool strict = false)
         {
             lock (_lock)
             {
@@ -293,9 +323,9 @@ namespace VSManager
             foreach (var h in Native.GetProcessWindows(vs.Pid))
             {
                 AutomationElement root;
-                try { root = AutomationElement.FromHandle(h); } catch { continue; }
+                try { root = AutomationElement.FromHandle(h); } catch { if (strict) throw; continue; }
                 AutomationElementCollection panes;
-                try { panes = root.FindAll(TreeScope.Descendants, GenericPaneCond); } catch { continue; }
+                try { panes = root.FindAll(TreeScope.Descendants, GenericPaneCond); } catch { if (strict) throw; continue; }
                 foreach (AutomationElement p in panes)
                 {
                     try
@@ -305,7 +335,7 @@ namespace VSManager
                         candidates++;
                         if (best == null || (!p.Current.IsOffscreen && best.Current.IsOffscreen)) { best = p; bestHost = h; }
                     }
-                    catch { }
+                    catch { if (strict) throw; }
                 }
                 if (best != null && !SafeOffscreen(best)) break;
             }
@@ -348,22 +378,26 @@ namespace VSManager
             var list = FindList(pane);
             if (list == null) return result;
 
+            // 只为请求的消息读取子树，避免长对话的全部历史驻留 UIA 缓存。/ Cache only requested subtrees, not the entire conversation.
+            var shallow = new CacheRequest { TreeScope = TreeScope.Element | TreeScope.Children, AutomationElementMode = AutomationElementMode.Full, TreeFilter = Automation.RawViewCondition };
+            shallow.Add(AutomationElement.ClassNameProperty);
+            List<AutomationElement> items;
+            using (shallow.Activate())
+                items = list.GetUpdatedCache(shallow).CachedChildren.Cast<AutomationElement>()
+                    .Where(e => e.Cached.ClassName == "ChatMessageItem").ToList();
+
             var cr = new CacheRequest { TreeScope = TreeScope.Subtree, AutomationElementMode = AutomationElementMode.Full, TreeFilter = Automation.RawViewCondition };
             cr.Add(AutomationElement.NameProperty);
             cr.Add(AutomationElement.ClassNameProperty);
             cr.Add(AutomationElement.AutomationIdProperty);
             cr.Add(AutomationElement.ControlTypeProperty);
             cr.Add(TextPattern.Pattern);
-            AutomationElement tree;
-            using (cr.Activate()) tree = list.GetUpdatedCache(cr);
-
-            var items = tree.CachedChildren.Cast<AutomationElement>()
-                .Where(e => e.Cached.ClassName == "ChatMessageItem").ToList();
             int start = Math.Max(0, items.Count - maxMessages);
             var used = new HashSet<string>();
             for (int i = start; i < items.Count; i++)
             {
-                var item = items[i];
+                AutomationElement item;
+                using (cr.Activate()) item = items[i].GetUpdatedCache(cr);
                 var chat = Child(item, e => e.Cached.AutomationId == "Chat");
                 if (chat == null) continue;
                 var listBox = Child(chat, e => e.Cached.ControlType == ControlType.List);
@@ -394,9 +428,10 @@ namespace VSManager
                 result.Messages.Add(msg);
             }
 
+            string cachePrefix = vs.Pid + "|";
             lock (_lock)
             {
-                foreach (var k in _msgCache.Keys.Where(k => k.StartsWith(vs.Pid + "|") && !used.Contains(k)).ToList())
+                foreach (var k in _msgCache.Keys.Where(k => k.StartsWith(cachePrefix, StringComparison.Ordinal) && !used.Contains(k)).ToList())
                     _msgCache.Remove(k);
             }
 
@@ -590,6 +625,7 @@ namespace VSManager
 
         private static string Short(string s, int max = 40)
         {
+            if (_queueGuard != null) return "输入内容已隐藏 / Input content redacted";
             s = (s ?? "").Replace("\r", " ").Replace("\n", " ");
             return s.Length > max ? s.Substring(0, max) + "…" : s;
         }
@@ -600,7 +636,7 @@ namespace VSManager
             {
                 var c = e.Current;
                 var r = c.BoundingRectangle;
-                return "「" + c.Name + "」offscreen=" + c.IsOffscreen + (r.IsEmpty ? " rect=空" : $" rect={(int)r.X},{(int)r.Y} {(int)r.Width}x{(int)r.Height}");
+                return "「" + (_queueGuard == null ? c.Name : "控件 / Control") + "」offscreen=" + c.IsOffscreen + (r.IsEmpty ? " rect=空" : $" rect={(int)r.X},{(int)r.Y} {(int)r.Width}x{(int)r.Height}");
             }
             catch (Exception ex) { return "(元素已失效：" + ex.Message + ")"; }
         }
@@ -678,6 +714,15 @@ namespace VSManager
             bool fgBefore = ForegroundIs(vs);
 
             var pane = FindPane(vs);
+            if (_queueGuard != null)
+            {
+                if (!_queueGuard()) return ManualChatProtection.WaitPrefix + "任务或目标已变化 / Task or target changed";
+                if (pane != null)
+                {
+                    blocked = GuardQueueInput(vs, pane, null);
+                    if (blocked != null) return blocked;
+                }
+            }
             bool autoOpen = AutoOpenPaneEnabled;
             string paneDetail = null;
             var mode = CopilotPaneMode.Conversation;
@@ -700,18 +745,21 @@ namespace VSManager
             }
             blocked = BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
-            if (pane == null) return InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
+            if (pane == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
             var loc = LocateWithRetry(vs, ref pane, out int locateAttempts);
             blocked = loc.Blocked ?? BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
             var edit = loc.Edit;
-            if (edit == null) return InputLocator.FailureMessage(loc.Outcome, locateAttempts);
-            T("输入框 " + Describe(edit) + " 焦点=" + HasFocus(edit) + " 现有草稿「" + Short(GetEditText(edit)) + "」 前台=" + ForegroundIs(vs));
+            if (edit == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : InputLocator.FailureMessage(loc.Outcome, locateAttempts);
+            blocked = GuardQueueInput(vs, pane, edit);
+            if (blocked != null) return blocked;
+            T("输入框 / Input " + Describe(edit) + " 焦点 / Focus=" + HasFocus(edit) + " 前台 / Foreground=" + ForegroundIs(vs));
 
             bool busyBefore = HasCancel(pane);
             int itemsBefore = ItemCount(pane);
             T($"发送前：对话条目 {itemsBefore}，停止按钮={busyBefore}");
-            if (busyBefore) return "Copilot 仍在处理上一条消息（VS 中存在停止按钮），请等待完成或先停止后再发送";
+            if (busyBefore) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Generating)
+                : "Copilot 仍在处理上一条消息（VS 中存在停止按钮），请等待完成或先停止后再发送";
 
             string r = null;
             if (hasImages) r = SendImages(vs, pane, edit, text, images, returnTo);
@@ -857,6 +905,8 @@ namespace VSManager
                 if (blocked != null) return blocked;
                 IntPtr target = FocusHwnd(host);
                 T("后台：输入框已聚焦，焦点窗口=0x" + target.ToString("X"));
+                blocked = GuardQueueInput(vs, pane, edit);
+                if (blocked != null) return blocked;
                 var cur = GetEditText(edit) ?? "";
                 if (cur.Length > 0)
                 {
@@ -871,6 +921,8 @@ namespace VSManager
 
                 blocked = BlockingDialogMessage(vs);
                 if (blocked != null) return blocked;
+                blocked = GuardQueueInput(vs, pane, edit, writing: true);
+                if (blocked != null) return blocked;
                 foreach (char c in text) PostMessageW(target, WM_CHAR, (IntPtr)c, (IntPtr)1);
                 if (!WaitText(edit, t => PasteVerifier.IsConfirmed(PasteVerifier.Classify(text, null, t)), Math.Max(ConfirmTimeoutMs, 2500 + text.Length * 3)))
                 {
@@ -883,10 +935,13 @@ namespace VSManager
                 if (blocked != null) return blocked;
                 if (!HasFocus(edit)) { T("后台：写入后输入框失去焦点"); return "Copilot 输入框失去焦点，已取消发送（内容保留在 VS 输入框中）"; }
 
+                blocked = GuardQueueSubmit(vs, pane, edit, text);
+                if (blocked != null) return blocked;
                 T("后台：内容已写入，发送 Enter");
                 PostKey(target, 0x0D, 0x1C); // Enter
                 if (WaitSent(pane, edit, 2000)) return "已发送";
                 T("后台：Enter 后输入框未清空，尝试点击发送按钮");
+                if (_queueGuard != null) return ManualChatProtection.UncertainPrefix + "已提交，等待核实 / Submitted; verification needed";
                 if (TryInvokeSend(pane) && WaitSent(pane, edit, 1500)) return "已发送";
                 T("后台：仍未发送，输入框内容「" + Short(GetEditText(edit)) + "」");
                 return "消息已填入输入框，但未能自动发送（请检查 VS 中的 Copilot 窗口）";
@@ -930,8 +985,13 @@ namespace VSManager
 
         private static string GetEditText(AutomationElement edit)
         {
-            try { return ((TextPattern)edit.GetCurrentPattern(TextPattern.Pattern)).DocumentRange.GetText(-1) ?? ""; }
-            catch { return null; }
+            try
+            {
+                if (edit.TryGetCurrentPattern(TextPattern.Pattern, out var text)) return ((TextPattern)text).DocumentRange.GetText(-1);
+                if (edit.TryGetCurrentPattern(ValuePattern.Pattern, out var value)) return ((ValuePattern)value).Current.Value;
+            }
+            catch { }
+            return null;
         }
 
         private string BlockingDialogMessage(VsInstance vs)
@@ -969,12 +1029,13 @@ namespace VSManager
         private string SendForeground(VsInstance vs, AutomationElement pane, AutomationElement edit, string text, IntPtr returnTo)
         {
             string oldClip = null;
+            bool clipboardTouched = false, focusAttempted = false;
             try { if (Clipboard.ContainsText()) oldClip = Clipboard.GetText(); } catch { }
             string clip = text.Replace("\n", "\r\n");
 
             try
             {
-                int retries = ConfirmRetries;
+                int retries = _queueGuard == null ? ConfirmRetries : 0;
                 PasteReport rep = null;
                 for (int attempt = 0; attempt <= retries; attempt++)
                 {
@@ -993,8 +1054,11 @@ namespace VSManager
                         T("前台：重试使用输入框 / retry uses input " + Describe(edit));
                     }
 
-                    string err = SetClipboardText(clip);
-                    if (err == null) err = FocusForPaste(vs, edit);
+                    string err = GuardQueueInput(vs, pane, edit);
+                    if (err != null) return err;
+                    clipboardTouched = true;
+                    err = SetClipboardText(clip);
+                    if (err == null) { focusAttempted = true; err = FocusForPaste(vs, edit); }
                     if (err != null)
                     {
                         if (last || SendRetryPolicy.IsBlocked(err)) return err;
@@ -1018,7 +1082,7 @@ namespace VSManager
                     T("前台：无法读取输入框文本，但水印已隐藏、剪贴板内容正确且焦点在输入框，继续发送并以送达确认为准 / " +
                       "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
 
-                string beforeSubmit = BlockingDialogMessage(vs);
+                string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text);
                 if (beforeSubmit != null) return beforeSubmit;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) { T("前台：回车前焦点已改变"); return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）"; }
                 T("前台：内容已粘贴，发送 Enter");
@@ -1026,6 +1090,7 @@ namespace VSManager
 
                 if (WaitSent(pane, edit, 1500)) return "已发送（已短暂切换到 VS）";
                 T("前台：Enter 后输入框未清空，尝试点击发送按钮");
+                if (_queueGuard != null) return ManualChatProtection.UncertainPrefix + "已提交，等待核实 / Submitted; verification needed";
                 if (TryInvokeSend(pane) && WaitSent(pane, edit, 1500)) return "已发送（已短暂切换到 VS）";
                 T("前台：仍未发送，输入框内容「" + Short(GetEditText(edit)) + "」");
                 return "消息已填入输入框，但未能自动发送（请检查 VS 中的 Copilot 窗口）";
@@ -1035,11 +1100,14 @@ namespace VSManager
                 Thread.Sleep(100);
                 try
                 {
-                    if (oldClip != null) Clipboard.SetDataObject(oldClip, true, 10, 50);
-                    else Clipboard.Clear();
+                    if (clipboardTouched)
+                    {
+                        if (oldClip != null) Clipboard.SetDataObject(oldClip, true, 10, 50);
+                        else Clipboard.Clear();
+                    }
                 }
                 catch { }
-                if (returnTo != IntPtr.Zero && ForegroundIs(vs)) Native.Activate(returnTo);
+                if (focusAttempted && returnTo != IntPtr.Zero && ForegroundIs(vs)) Native.Activate(returnTo);
                 Poke();
             }
         }

@@ -28,7 +28,7 @@ namespace VSManager
         public static readonly TimeSpan BlockedRetryDelay = TimeSpan.FromSeconds(3);
 
         public static bool IsBlocked(string result) =>
-            result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal);
+            ManualChatProtection.IsWait(result) || (result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal));
 
         /// <summary>最多尝试次数。/ Maximum number of attempts.</summary>
         public const int MaxAttempts = 3;
@@ -43,6 +43,6 @@ namespace VSManager
         /// <param name="result">本次发送结果。/ Result of this attempt.</param>
         public static SendDecision Decide(int attempts, string result) =>
             IsDelivered(result) ? SendDecision.Delivered : IsBlocked(result) ? SendDecision.Retry :
-            attempts >= MaxAttempts ? SendDecision.Fail : SendDecision.Retry;
+            result?.StartsWith(ManualChatProtection.UncertainPrefix, StringComparison.Ordinal) == true || attempts >= MaxAttempts ? SendDecision.Fail : SendDecision.Retry;
     }
 }

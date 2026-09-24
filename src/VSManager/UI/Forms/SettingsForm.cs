@@ -114,6 +114,15 @@ namespace VSManager
                     _s.AutoOpenCopilotPane, v => _s.AutoOpenCopilotPane = v),
                 Toggle("在任务清单中显示 VS 手动对话", "可停止、打开、复制；启用「归档」时会保存并在重启后恢复，关闭归档则仅保存在内存中",
                     _s.WatchConversations, v => _s.WatchConversations = v),
+                Toggle("等待手动对话结束 / Wait for manual chat",
+                    "生成中或存在草稿时队列等待；超时仅提醒，不强制发送；不依赖监听及归档 / Queues wait for generation or drafts; timeout only warns, never forces sending; independent of monitoring and archives",
+                    _s.WaitForManualChat, v => _s.WaitForManualChat = v),
+                Toggle("AI 任务自动启动 / Auto-start AI tasks",
+                    "默认开启：仅新发布 AI 任务自动，手动及恢复任务仍需 Start；不越过前序 / On by default: newly submitted AI tasks only; manual and restored tasks await Start; no queue jumping",
+                    _s.AutoStartAiTasks, v => _s.AutoStartAiTasks = v),
+                Toggle("全部任务自动启动 / Auto-start all tasks",
+                    "优先于仅 AI，启用时包含恢复任务；关闭只影响后续入队，既有授权继续 / Overrides AI-only; enabling includes restored tasks; disabling affects later admissions, existing grants continue",
+                    _s.AutoStartAllTasks, v => _s.AutoStartAllTasks = v),
                 Toggle("跳过失败前序任务 / Skip failed predecessors",
                     "默认开启：失败记录保留，后续按编号继续；关闭则失败暂停后续 / On by default: keep failed records and continue by ID; off pauses successors",
                     _s.SkipFailedPredecessors, v => _s.SkipFailedPredecessors = v),
@@ -1098,6 +1107,13 @@ namespace VSManager
             Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted,
                 Text = "仅在文档标签页数量严格大于阈值时执行；默认 10，范围 0–1000。\r\nRun only when document tabs strictly exceed the threshold; default 10, range 0–1000." }, Dpi.S(48), true);
 
+            var manualTimeout = new NumericUpDown { Name = nameof(AppSettings.ManualChatWaitTimeoutSeconds), Minimum = 10, Maximum = 86400, Increment = 10,
+                Value = ManualChatProtection.ClampTimeout(_s.ManualChatWaitTimeoutSeconds), Dock = DockStyle.Fill };
+            manualTimeout.ValueChanged += (_, __) => { _s.ManualChatWaitTimeoutSeconds = (int)manualTimeout.Value; Changed?.Invoke(); };
+            Row(NewLabel("手动等待秒数 / Manual wait seconds"), manualTimeout, Dpi.S(42));
+            Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted,
+                Text = "默认 300 秒；超时仍等待，仅提醒一次。通知及语音沿用暂存任务通知设置。\r\nDefault 300 seconds; timeout keeps waiting and warns once. Uses pending-task notification and voice settings." }, Dpi.S(64), true);
+
             Control timeoutHost, retriesHost;
             (timeoutHost, _sendTimeout) = NewTextBox(_s.SendConfirmTimeoutSeconds.ToString(), false);
             Row(NewLabel("确认超时 / Timeout"), NumberRow(_sendTimeout, timeoutHost,
@@ -1194,8 +1210,8 @@ namespace VSManager
                 "关闭前总会检查未保存的修改，有则拒绝；从不强制结束进程 / Unsaved changes are always checked first and block the close; the process is never killed",
                 _s.SolutionCloseConfirm, v => _s.SolutionCloseConfirm = v), Dpi.S(56), true);
 
-            Row(null, Toggle("任务暂存 / 自动推送时通知 / Notify when tasks are parked / pushed",
-                "弹出通知，开启语音播报时同时播报 / Shows a notification, and announces it when voice is on",
+            Row(null, Toggle("任务暂存、自动启动与完成通知 / Parked, automatic start and completion notices",
+                "自动启动每任务一次，含自动任务完成提示；语音仍需开启 / Automatic start once per task, plus automatic completion; speech requires voice enabled",
                 _s.PendingVsNotify, v => _s.PendingVsNotify = v), Dpi.S(56), true);
 
             Control waitHost, settleHost;

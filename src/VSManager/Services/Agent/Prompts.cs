@@ -114,7 +114,7 @@ namespace VSManager
             sb.AppendLine("   保留用户表达的性质：不得把疑问句改写成命令，不得把简单请求拆成多个子任务。不要为了看起来完整而套用目标、范围、约束、验收标准模板；不确定的内容按第 1 条先确认。");
             sb.AppendLine("   单段格式和第 10 条由工具自动附加的开源约束保持不变；开源约束不是擅自补写其他业务要求的理由。");
             sb.AppendLine("   发布编码任务前须明确用户确有编码意图，不把咨询当作编码授权；不要自己去读代码定位文件——目标 VS 的 Copilot 会自己查找，除非用户明确要求你先分析。");
-            sb.AppendLine("   send_task 只入队，不直接写入 Copilot；只有用户要求查看 VS 时才调用 activate_vs。");
+            sb.AppendLine("   send_task 只入队，不直接写入 Copilot。默认新发布 AI 任务保存成功后自动调度，无需另点 Start；手动或恢复前序仍可阻塞，绝不能插队。属性可切换全部自动或手动模式，以工具返回的启动资格为准；入队不代表已执行或完成。既有 AI 任务重复发布只复用一次，不能把手动条目变成 AI。只有用户要求查看 VS 时才调用 activate_vs。");
             sb.AppendLine("5. 职责边界：只发布、排队、跟踪与汇报界面任务清单中的任务。新任务必须通过 send_task 或 request_vsmanager_improvement 入队；不得通过脚本、UI 输入或其他工具绕过清单向 VS 发送内容。");
             sb.AppendLine("   AI 与用户文本任务走同一入队路径，无论目标是否空闲一律先排队，同一 VS 按任务编号等待前序结束后调度；不得插队。可用 list_tasks 查看、cancel_task 取消，诊断工具只辅助清单中的任务。");
             sb.AppendLine(skipFailedPredecessors
@@ -178,7 +178,7 @@ namespace VSManager
             sb.AppendLine("   Preserve the nature of the request: never turn questions into commands or split simple requests into multiple subtasks. Do not apply a goal/scope/constraints/acceptance-criteria template to make a request appear complete; clarify unknowns under rule 1 first.");
             sb.AppendLine("   The single-paragraph format and tool-appended open-source constraint in rule 10 stay unchanged; that constraint does not authorize adding other business requirements.");
             sb.AppendLine("   Before dispatching coding work, ensure the user actually intends coding; inquiries do not authorize code changes. Do not read code to locate files beforehand: the target VS's Copilot will find them, unless the user explicitly requests your analysis first.");
-            sb.AppendLine("   send_task only enqueues; it never writes directly into Copilot. Call activate_vs only when the user wants to see the VS.");
+            sb.AppendLine("   send_task only enqueues; it never writes directly into Copilot. Newly submitted AI tasks dispatch automatically after saving by default, without Start; manual/restored predecessors still block. Settings can select all-automatic or manual mode: follow returned eligibility. Admission does not mean execution or completion. Duplicate AI submissions reuse one entry and cannot convert manual entries to AI. Call activate_vs only when the user wants to see the VS.");
             sb.AppendLine("5. Scope: publish, queue, track and report only tasks in the visible task list. New tasks must enter through send_task or request_vsmanager_improvement. Never send content to VS through scripts, UI typing or other tools to bypass the task list.");
             sb.AppendLine("   AI and manual text tasks share one enqueue path, even for idle targets. Each VS dispatches in task ID order after predecessors finish; never jump the queue. Use list_tasks to view and cancel_task to cancel. Diagnostic tools only assist listed tasks.");
             sb.AppendLine(skipFailedPredecessors

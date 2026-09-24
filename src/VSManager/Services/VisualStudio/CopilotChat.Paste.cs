@@ -64,8 +64,9 @@ namespace VSManager
             public bool LikelyWritten =>
                 Check == PasteCheck.Unreadable && WatermarkHidden == true && ClipboardOk == true && !ClipboardChanged && Focused && Foreground;
 
-            public override string ToString() =>
-                $"粘贴校验 / paste check：{Check}，耗时 / elapsed {ElapsedMs}ms（{Polls} 次读取 / reads），" +
+            public override string ToString() => _queueGuard != null
+                ? $"粘贴校验 / Paste check: {Check}; 耗时 / Elapsed: {ElapsedMs}ms; 输入内容已隐藏 / Input content redacted"
+                : $"粘贴校验 / paste check：{Check}，耗时 / elapsed {ElapsedMs}ms（{Polls} 次读取 / reads），" +
                 $"读取到 / read {PasteVerifier.Snippet(Current)}，粘贴前 / before {PasteVerifier.Snippet(Before)}，" +
                 $"期望 / expected {PasteVerifier.Normalize(Want).Length} 字（规范化后 / normalized）";
         }
@@ -137,11 +138,15 @@ namespace VSManager
             rep.Blocked = BlockingDialogMessage(vs);
             if (rep.Blocked != null) return rep;
             if (!ForegroundIs(vs) || !HasFocus(edit)) { rep.Check = PasteCheck.NotWritten; return rep; }
+            rep.Blocked = GuardQueueInput(vs, pane, edit);
+            if (rep.Blocked != null) return rep;
             Combo(VK_CONTROL, VK_A);
             Thread.Sleep(60);
             rep.Blocked = BlockingDialogMessage(vs);
             if (rep.Blocked != null) return rep;
             if (!ForegroundIs(vs) || !HasFocus(edit)) { rep.Check = PasteCheck.NotWritten; return rep; }
+            rep.Blocked = GuardQueueInput(vs, pane, edit, writing: true);
+            if (rep.Blocked != null) return rep;
             Combo(VK_CONTROL, VK_V);
 
             long deadline = timeoutMs, hardLimit = timeoutMs * 2L;
@@ -225,6 +230,7 @@ namespace VSManager
         /// <summary>未能确认粘贴时写入发送日志的诊断信息。/ Diagnostics written to the send log when the paste is not confirmed.</summary>
         private static string Diagnose(VsInstance vs, AutomationElement pane, AutomationElement edit, PasteReport rep)
         {
+            if (_queueGuard != null) return rep.ToString();
             var sb = new StringBuilder();
             sb.Append("⚠ 粘贴确认诊断 / paste diagnostics：\r\n");
             sb.Append("           目标 VS / target：pid=").Append(vs.Pid).Append(" 「").Append(vs.DisplaySolution).Append("」 窗口 / window ").Append(WindowState(vs)).Append("\r\n");

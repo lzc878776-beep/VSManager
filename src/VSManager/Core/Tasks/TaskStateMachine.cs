@@ -72,7 +72,7 @@ namespace VSManager
                     t.Error = result;
                     bool blocked = SendRetryPolicy.IsBlocked(result);
                     if (blocked) t.Attempts = Math.Max(0, t.Attempts - 1);
-                    t.NextTry = now + (blocked ? SendRetryPolicy.BlockedRetryDelay : SendRetryPolicy.RetryDelay);
+                    if (!ManualChatProtection.IsWait(result)) t.NextTry = now + (blocked ? SendRetryPolicy.BlockedRetryDelay : SendRetryPolicy.RetryDelay);
                     break;
             }
             return d;
@@ -233,6 +233,7 @@ namespace VSManager
         /// <summary>任务状态的简短文字（界面、AI 工具返回共用）。/ Short status text (shared by the UI and AI tool results).</summary>
         public static string StatusText(QueuedTask t, DateTime now)
         {
+            if (t.Status == QueueStatus.Waiting && !string.IsNullOrEmpty(t.ManualChatWaitReason)) return t.ManualChatWaitReason;
             switch (t.Status)
             {
                 case QueueStatus.Waiting: return SendRetryPolicy.IsBlocked(t.Error) ? "等待处理 VS 弹窗" : t.Attempts > 0 ? "等待重试" : "排队中";

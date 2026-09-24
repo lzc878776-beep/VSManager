@@ -58,7 +58,7 @@ namespace VSManager
     /// Task dispatcher: tracks running tasks and publishes the oldest waiting task of every idle VS; also handles failure,
     /// completion, cancellation and retry. Status changes go through <see cref="TaskStateMachine"/>. UI thread only.
     /// </summary>
-    public sealed class TaskDispatcher
+    public sealed partial class TaskDispatcher
     {
         private readonly TaskQueue _tasks;
         private readonly ITaskDispatchHost _host;
@@ -83,12 +83,13 @@ namespace VSManager
             Pump();
         }
 
-        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null, IWorktreeTaskService worktrees = null)
+        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null, IWorktreeTaskService worktrees = null, Func<AppSettings> startSettings = null)
         {
             _tasks = tasks;
             _host = host;
             _clock = clock ?? (() => DateTime.Now);
             _worktrees = worktrees;
+            _startSettings = startSettings;
         }
 
         /// <summary>触发一轮调度（不等待）；异常只显示在状态栏。/ Starts a round without awaiting; errors only go to the status bar.</summary>
@@ -101,12 +102,15 @@ namespace VSManager
         /// <summary>执行一轮调度。/ Runs one dispatch round.</summary>
         public async Task PumpAsync()
         {
-            if (!IsStarted)
+            if (_pumping) return;
+            ForgetRemovedGrants();
+            GrantSavedMaintenance();
+            PruneManualWaits();
+            if (!HasDispatchActivity)
             {
                 _host.QueueActivityChanged(false);
                 return;
             }
-            if (_pumping) return;
             _pumping = true;
             try
             {
@@ -122,6 +126,7 @@ namespace VSManager
                             _pendingCompletions.Remove(task);
                             continue;
                         }
+                        if (!CanRun(task)) continue;
                         var target = _host.FindVs(task.VsKey);
                         if (target == null || target.Copilot == CopilotState.Busy || !_host.CanDispatch(target)) continue;
                         _pendingCompletions.Remove(task);
@@ -132,7 +137,7 @@ namespace VSManager
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
                     if (now < _host.TrackingReadyAt) break;
-                    if (_finishing.Contains(t)) continue;
+                    if (_finishing.Contains(t) || !CanRun(t)) continue;
                     var v = _host.FindVs(t.VsKey);
                     switch (TaskStateMachine.CheckRunning(t, v != null, v?.Copilot ?? CopilotState.Unknown, () => _host.CanDispatch(v), now))
                     {
@@ -145,11 +150,16 @@ namespace VSManager
                 foreach (var t in _tasks.NextToDispatch(now))
                 {
                     if (_host.IsSending) break;
+                    if (!CanRun(t) || (!IsStarted && _tasks.SaveError != null)) continue;
                     var v = _host.FindVs(t.VsKey);
                     if (t.Worktree != null) v = _host.FindTargetVs(t);
-                    if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting
-                        || _tasks.Find(t.Id) != t || _tasks.BlockingTask(t) != null) continue;
+                    if (v == null || t.Status != QueueStatus.Waiting
+                        || _tasks.Find(t.Id) != t || DispatchBlocker(t) != null) continue;
                     if (t.Worktree != null && !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath)) continue;
+                    string targetPath = v.SolutionPath, targetIdentity = v.InstanceKey;
+                    if (await WaitForManualAsync(t, v)) continue;
+                    if (!_host.CanDispatch(v) || _host.IsSending || t.Status != QueueStatus.Waiting || !CanRun(t)
+                        || !SameTarget(t, v, targetPath, targetIdentity) || DispatchBlocker(t) != null || (!IsStarted && _tasks.SaveError != null)) continue;
                     var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
                         && ResentTaskMatcher.SameTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
                     TaskStateMachine.BeginSend(t, _host.NameOf(v));
@@ -159,6 +169,7 @@ namespace VSManager
                     string r;
                     try
                     {
+                        if (_tasks.SaveError != null) throw new InvalidOperationException("任务保存失败，未发送 / Task save failed; not sent");
                         if (t.IsWorktreeMerge && t.Worktree == null)
                             throw new InvalidOperationException("缺少工作树元数据 / Missing worktree metadata");
                         if (t.Worktree != null)
@@ -172,9 +183,10 @@ namespace VSManager
                                     t.Status = QueueStatus.Running;
                                     t.Started = _clock();
                                     t.Result = "已验证主项目本地快进；未推送远程 / Verified local fast-forward; no remote push";
+                                    if (_manualWaits.ContainsKey(t)) { _yielded.Add(t); ClearManualWait(t); }
                                     TaskStateMachine.Complete(t, _clock());
-                                    _tasks.Commit();
-                                    _host.NotifyAgent($"Worktree 合并任务 #{t.Id} 已完成 / Integration completed", t.Result);
+                                    CommitCompletion(t);
+                                    _host.NotifyAgent($"工作树合并任务 #{t.Id} 已完成 / Worktree integration completed", t.Result + AutomaticCompletionText(t));
                                     continue;
                                 }
                             }
@@ -182,9 +194,14 @@ namespace VSManager
                             if (!SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath) || !_host.CanDispatch(v))
                                 throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
                         }
-                        r = t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
-                            ? await attachmentHost.SendTaskAsync(v, t)
-                            : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
+                        if (t.Status != QueueStatus.Sending || !CanRun(t)) continue;
+                        r = _host is IManualChatDispatchHost protectedHost
+                            ? await protectedHost.SendQueuedAsync(v, t, () => t.Status == QueueStatus.Sending && CanRun(t)
+                                && SameTarget(t, v, targetPath, targetIdentity) && DispatchBlocker(t) == null && _tasks.SaveError == null && _host.CanDispatch(v))
+                            : WaitForManualChat ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown)
+                            : t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
+                                ? await attachmentHost.SendTaskAsync(v, t)
+                                : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
                     }
                     catch (Exception ex)
                     {
@@ -195,12 +212,15 @@ namespace VSManager
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
                     {
                         case SendDecision.Delivered:
+                            ManualDelivery(t);
                             AnnounceDelivery(t, skipped);
                             break;
                         case SendDecision.Fail:
                             AfterFail(t, r);
                             break;
                         default:
+                            if (ManualChatProtection.IsWait(r) && WaitForManualChat && SameTarget(t, v, targetPath))
+                                RecordManualWait(t, v, ManualChatObservation.Unknown);
                             _tasks.Commit();
                             _host.SetStatus(SendRetryPolicy.IsBlocked(r)
                                 ? $"任务清单：#{t.Id} {r}；处理后自动继续，未消耗重试次数"
@@ -210,7 +230,7 @@ namespace VSManager
                 }
             }
             finally { _pumping = false; }
-            _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
+            _host.QueueActivityChanged(HasDispatchActivity);
         }
 
         /// <summary>
@@ -222,6 +242,7 @@ namespace VSManager
         {
             foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.WaitingVs).ToList())
             {
+                if (!CanRun(t) || _tasks.SaveError != null) continue;
                 var v = _host.FindTargetVs(t);
                 if (v == null) continue;
                 string target = t.Target ?? t.VsName;
@@ -270,6 +291,8 @@ namespace VSManager
 
         private void AfterFail(QueuedTask t, string error)
         {
+            ClearManualWait(t);
+            _yielded.Remove(t);
             _tasks.Commit();
             _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
             if (t.FromAgent)
@@ -289,7 +312,7 @@ namespace VSManager
         public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
         {
             if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
-            if (!IsStarted)
+            if (!CanRun(t))
             {
                 // 忙→闲事件可能仅触发一次；开始后继续核验，不重发。/ Keep one-shot completion events for verification after Start, never resend.
                 _pendingCompletions[t] = (dur, t.CompletionToken);
@@ -340,16 +363,16 @@ namespace VSManager
                 }
                 t.Result = TextUtil.Clip(result, 1500);
                 TaskStateMachine.Complete(t, _clock());
-                _tasks.Commit();
+                CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）",
-                        $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
-                        "Copilot 回复：" + t.Result +
+                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）/ Task completed",
+                        $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
+                        "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
-                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
+                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
                 }
             }
             finally { _finishing.Remove(t); _integrating.Remove(t); }
@@ -361,6 +384,8 @@ namespace VSManager
         {
             if (t != null && _integrating.Contains(t)) return false;
             if (!TaskStateMachine.Cancel(t, _clock())) return false;
+            ClearManualWait(t);
+            _yielded.Remove(t);
             _tasks.Commit();
             return true;
         }
@@ -368,7 +393,7 @@ namespace VSManager
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
         public void Retry(QueuedTask t)
         {
-            if (!IsStarted) { _host.SetStatus(WaitingForStart); return; }
+            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
                 || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled))
             {
@@ -383,7 +408,7 @@ namespace VSManager
         /// <summary>立即发布（跳过重试等待）；不能立即发布时说明原因。/ Publishes now (skips the retry delay); explains why when it cannot.</summary>
         public void DispatchNow(QueuedTask t)
         {
-            if (!IsStarted) { _host.SetStatus(WaitingForStart); return; }
+            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
             t.NextTry = DateTime.MinValue;
             if (t.Status == QueueStatus.WaitingVs)
             {
@@ -396,7 +421,7 @@ namespace VSManager
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
-            else if (_tasks.BlockingTask(t) is QueuedTask blocker)
+            else if (DispatchBlocker(t) is QueuedTask blocker)
                 _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id}（{TaskStateMachine.StatusText(blocker, _clock())}）/ Task #{t.Id} is blocked by predecessor #{blocker.Id}");
             Pump();
         }

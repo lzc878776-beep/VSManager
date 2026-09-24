@@ -18,8 +18,8 @@ namespace VSManager
             string text, IReadOnlyList<ChatImage> images, IntPtr returnTo)
         {
             string existing = GetEditText(edit);
-            if (existing == null) return "无法读取 VS 输入框，未发送图片";
-            if (!string.IsNullOrWhiteSpace(existing)) return "VS 输入框已有草稿，请先发送或清空后再发送图片（平台草稿已保留）";
+            if (existing == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : "无法读取 VS 输入框，未发送图片";
+            if (!string.IsNullOrWhiteSpace(existing)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Draft) : "VS 输入框已有草稿，请先发送或清空后再发送图片（平台草稿已保留）";
 
             uint clipboardVersion = GetClipboardSequenceNumber();
             ClipboardBackup backup;
@@ -74,14 +74,18 @@ namespace VSManager
                 edit.SetFocus();
                 if (!WaitFocus(edit, 1000) || !ForegroundIs(vs)) return "无法聚焦 Copilot 输入框，未发送图片";
                 string currentText = GetEditText(edit);
-                if (currentText == null || !string.IsNullOrWhiteSpace(currentText)) return "VS 输入框出现新草稿或无法读取，已取消图片发送";
+                if (currentText == null || !string.IsNullOrWhiteSpace(currentText)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : "VS 输入框出现新草稿或无法读取，已取消图片发送";
                 if (GetClipboardSequenceNumber() != clipboardVersion) return "剪贴板已被其他操作更改，已取消图片发送";
 
+                string blocked = GuardQueueInput(vs, pane, edit);
+                if (blocked != null) return blocked;
                 string prompt = string.IsNullOrWhiteSpace(text) ? "请分析这些图片。" : text;
                 Clipboard.SetDataObject(prompt.Replace("\n", "\r\n"), true, 10, 50);
                 clipboardVersion = GetClipboardSequenceNumber();
                 clipboardChanged = true;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送图片";
+                blocked = GuardQueueInput(vs, pane, edit, writing: true);
+                if (blocked != null) return blocked;
                 Combo(VK_CONTROL, VK_V);
                 if (!WaitText(edit, value => PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, value)), ConfirmTimeoutMs))
                     return "未能确认文字已粘贴，未发送（请检查 VS 草稿后重试）";
@@ -121,7 +125,9 @@ namespace VSManager
                     !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
 
-                // Invoke only once; a delayed acknowledgement must not cause a duplicate prompt.
+                blocked = GuardQueueSubmit(vs, pane, edit, prompt);
+                if (blocked != null) return blocked;
+                // 只提交一次，延迟确认不能触发重复发送。/ Submit once; delayed acknowledgement must not cause duplicate prompts.
                 if (!TryInvokeSend(pane)) return "图片已附加，但发送按钮不可用；请在 VS 中检查模型是否支持图片后发送";
                 var sentUntil = DateTime.UtcNow.AddSeconds(5);
                 do
