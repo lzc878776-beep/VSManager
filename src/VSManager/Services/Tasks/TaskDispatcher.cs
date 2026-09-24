@@ -63,14 +63,32 @@ namespace VSManager
         private readonly TaskQueue _tasks;
         private readonly ITaskDispatchHost _host;
         private readonly Func<DateTime> _clock;
+        private readonly IWorktreeTaskService _worktrees;
         private bool _pumping;
         private readonly HashSet<QueuedTask> _finishing = new HashSet<QueuedTask>();
+        private readonly HashSet<QueuedTask> _integrating = new HashSet<QueuedTask>();
+        private readonly Dictionary<QueuedTask, (TimeSpan? Duration, string Token)> _pendingCompletions
+            = new Dictionary<QueuedTask, (TimeSpan?, string)>();
 
-        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null)
+        public const string WaitingForStart = "等待手动开始：请点击任务清单「开始流程 / Start」/ Waiting for manual start: click Start in the task list";
+        public bool IsStarted { get; private set; }
+
+        /// <summary>仅本次会话有效；只能由用户开始，不持久化。/ User opt-in for this session only; never persisted.</summary>
+        public void Start()
+        {
+            if (IsStarted) return;
+            IsStarted = true;
+            _host.SetStatus("任务流程已启动 / Task workflow started");
+            _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
+            Pump();
+        }
+
+        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null, IWorktreeTaskService worktrees = null)
         {
             _tasks = tasks;
             _host = host;
             _clock = clock ?? (() => DateTime.Now);
+            _worktrees = worktrees;
         }
 
         /// <summary>触发一轮调度（不等待）；异常只显示在状态栏。/ Starts a round without awaiting; errors only go to the status bar.</summary>
@@ -83,11 +101,33 @@ namespace VSManager
         /// <summary>执行一轮调度。/ Runs one dispatch round.</summary>
         public async Task PumpAsync()
         {
+            if (!IsStarted)
+            {
+                _host.QueueActivityChanged(false);
+                return;
+            }
             if (_pumping) return;
             _pumping = true;
             try
             {
                 var now = _clock();
+                if (now >= _host.TrackingReadyAt)
+                {
+                    foreach (var pending in _pendingCompletions.ToArray())
+                    {
+                        var task = pending.Key;
+                        var completion = pending.Value;
+                        if (task.Status != QueueStatus.Running || _tasks.Find(task.Id) != task || task.CompletionToken != completion.Token)
+                        {
+                            _pendingCompletions.Remove(task);
+                            continue;
+                        }
+                        var target = _host.FindVs(task.VsKey);
+                        if (target == null || target.Copilot == CopilotState.Busy || !_host.CanDispatch(target)) continue;
+                        _pendingCompletions.Remove(task);
+                        await FinishAsync(task, target, completion.Duration);
+                    }
+                }
                 PushParked(now);
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
@@ -106,23 +146,50 @@ namespace VSManager
                 {
                     if (_host.IsSending) break;
                     var v = _host.FindVs(t.VsKey);
+                    if (t.Worktree != null) v = _host.FindTargetVs(t);
                     if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting
                         || _tasks.Find(t.Id) != t || _tasks.BlockingTask(t) != null) continue;
+                    if (t.Worktree != null && !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath)) continue;
                     var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
                         && ResentTaskMatcher.SameTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
                     TaskStateMachine.BeginSend(t, _host.NameOf(v));
+                    if (t.Worktree != null) t.VsKey = v.Key;
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
                     string r;
                     try
                     {
+                        if (t.IsWorktreeMerge && t.Worktree == null)
+                            throw new InvalidOperationException("缺少工作树元数据 / Missing worktree metadata");
+                        if (t.Worktree != null)
+                        {
+                            if (_tasks.SaveError != null) throw new InvalidOperationException("任务未持久化，工作树操作已暂停 / Task persistence failed");
+                            if (_worktrees == null) throw new InvalidOperationException("Worktree service unavailable");
+                            if (t.IsWorktreeMerge)
+                            {
+                                if (!await _worktrees.IntegrateAsync(t.Worktree))
+                                {
+                                    t.Status = QueueStatus.Running;
+                                    t.Started = _clock();
+                                    t.Result = "已验证主项目本地快进；未推送远程 / Verified local fast-forward; no remote push";
+                                    TaskStateMachine.Complete(t, _clock());
+                                    _tasks.Commit();
+                                    _host.NotifyAgent($"Worktree 合并任务 #{t.Id} 已完成 / Integration completed", t.Result);
+                                    continue;
+                                }
+                            }
+                            else await _worktrees.CheckDevelopmentAsync(t.Worktree);
+                            if (!SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath) || !_host.CanDispatch(v))
+                                throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
+                        }
                         r = t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
                             ? await attachmentHost.SendTaskAsync(v, t)
                             : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
                     }
                     catch (Exception ex)
                     {
-                        Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message);
+                        Fail(t, (t.Worktree == null ? "发送异常，送达状态未知，请检查后重试："
+                            : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message);
                         continue;
                     }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
@@ -178,9 +245,9 @@ namespace VSManager
             AfterFail(t, error);
         }
 
-        private string FailurePolicyText => _tasks.SkipFailedPredecessors
+        private string FailurePolicyText => "Worktree 合并失败或取消始终阻塞该工作线，请处理后重试同一任务 / Failed or cancelled worktree integration always blocks its lane; resolve and retry the same task. " + (_tasks.SkipFailedPredecessors
             ? "已启用跳过失败前序，后续排队任务可继续；失败记录保留 / Failed predecessors are skipped; queued successors may continue and failure history is retained"
-            : "严格模式：未被取代的失败前序会暂停该目标后续任务；失败记录保留 / Strict mode: unsuperseded failures pause this target's successors; failure history is retained";
+            : "严格模式：未被取代的失败前序会暂停该目标后续任务；失败记录保留 / Strict mode: unsuperseded failures pause this target's successors; failure history is retained");
 
         private void AnnounceDelivery(QueuedTask t, int[] skipped)
         {
@@ -221,7 +288,15 @@ namespace VSManager
 
         public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
         {
-            if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t || !_finishing.Add(t)) return;
+            if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+            if (!IsStarted)
+            {
+                // 忙→闲事件可能仅触发一次；开始后继续核验，不重发。/ Keep one-shot completion events for verification after Start, never resend.
+                _pendingCompletions[t] = (dur, t.CompletionToken);
+                return;
+            }
+            if (!_finishing.Add(t)) return;
+            _pendingCompletions.Remove(t);
             try
             {
                 string answer;
@@ -239,6 +314,30 @@ namespace VSManager
                     Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300));
                     return;
                 }
+                if (t.Worktree != null)
+                {
+                    try
+                    {
+                        if (v == null || !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath))
+                            throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
+                        if (_worktrees == null) throw new InvalidOperationException("Worktree service unavailable");
+                        if (t.IsWorktreeMerge)
+                        {
+                            if (_tasks.SaveError != null) throw new InvalidOperationException("任务保存失败 / Task persistence failed");
+                            _integrating.Add(t);
+                            if (await _worktrees.IntegrateAsync(t.Worktree))
+                                throw new InvalidOperationException("冲突仍未解决，主项目未更新 / Conflicts remain; main unchanged");
+                            result += "\n已验证本地主项目快进，未推送远程 / Verified local integration; no remote push";
+                        }
+                        else await _worktrees.CheckDevelopmentAsync(t.Worktree);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t) Fail(t, ex.Message);
+                        return;
+                    }
+                    if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+                }
                 t.Result = TextUtil.Clip(result, 1500);
                 TaskStateMachine.Complete(t, _clock());
                 _tasks.Commit();
@@ -253,13 +352,14 @@ namespace VSManager
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
                 }
             }
-            finally { _finishing.Remove(t); }
+            finally { _finishing.Remove(t); _integrating.Remove(t); }
             Pump();
         }
 
         /// <summary>取消排队中或执行中的任务。/ Cancels a waiting or running task.</summary>
         public bool Cancel(QueuedTask t)
         {
+            if (t != null && _integrating.Contains(t)) return false;
             if (!TaskStateMachine.Cancel(t, _clock())) return false;
             _tasks.Commit();
             return true;
@@ -268,6 +368,7 @@ namespace VSManager
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
         public void Retry(QueuedTask t)
         {
+            if (!IsStarted) { _host.SetStatus(WaitingForStart); return; }
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
                 || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled))
             {
@@ -282,6 +383,7 @@ namespace VSManager
         /// <summary>立即发布（跳过重试等待）；不能立即发布时说明原因。/ Publishes now (skips the retry delay); explains why when it cannot.</summary>
         public void DispatchNow(QueuedTask t)
         {
+            if (!IsStarted) { _host.SetStatus(WaitingForStart); return; }
             t.NextTry = DateTime.MinValue;
             if (t.Status == QueueStatus.WaitingVs)
             {

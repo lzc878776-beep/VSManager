@@ -49,6 +49,10 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public int QueueOrder;
         [DataMember(EmitDefaultValue = false)] public int[] Replaces;
         [DataMember(EmitDefaultValue = false)] public string CompletionToken;
+        [DataMember(EmitDefaultValue = false)] public WorktreeInfo Worktree;
+        [DataMember(EmitDefaultValue = false)] public bool IsWorktreeMerge;
+        [DataMember(EmitDefaultValue = false)] public bool WorktreeCounted;
+        [DataMember(EmitDefaultValue = false)] public int WorktreeBatch;
         public int Order => Id;
         /// <summary>
         /// 目标解决方案别名（按登记表别名分派时记录，用于显示等待原因）；普通任务为 null，不写入 tasks.json。
@@ -82,7 +86,8 @@ namespace VSManager
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
-            CompletionToken = CompletionToken,
+            CompletionToken = CompletionToken, Worktree = Worktree?.Clone(), IsWorktreeMerge = IsWorktreeMerge,
+            WorktreeCounted = WorktreeCounted, WorktreeBatch = WorktreeBatch,
             Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote
         };
     }

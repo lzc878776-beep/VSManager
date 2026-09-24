@@ -32,7 +32,12 @@ namespace VSManager.Tests
         }
 
         [TestCleanup]
-        public void Cleanup() { _agent.Dispose(); _data.Dispose(); }
+        public void Cleanup()
+        {
+            _agent.Dispose();
+            if (Directory.Exists(_data.File("Project\\.git"))) WorktreeTests.MakeFixtureWritable(_data.Path);
+            _data.Dispose();
+        }
 
         [DataTestMethod]
         [DataRow(false)]
@@ -222,6 +227,66 @@ namespace VSManager.Tests
             var task = _host.Queue.Items.Single();
             Assert.AreEqual(QueueStatus.WaitingVs, task.Status);
             Assert.AreEqual(0, task.Attempts);
+        }
+
+        [DataTestMethod]
+        [DataRow(false, "Project")]
+        [DataRow(false, " project ")]
+        [DataRow(true, "Project")]
+        public async Task SendTaskTool_ExactMainAlias_NeverRoutesToOpenWorktree(bool mainOpen, string target)
+        {
+            var main = RegisterSolution("Project", "Project\\Project.slnx");
+            var lane = RegisterSolution("Project.worktree.lane", "Project.worktree.lane\\Project.slnx");
+            lane.Worktree = new WorktreeInfo { MainRoot = _data.File("Project"), Root = _data.File("Project.worktree.lane"),
+                SolutionPath = lane.Path, MainBranch = "refs/heads/main", Branch = "refs/heads/task/lane" };
+            Assert.IsNull(_host.Solutions.Upsert(lane));
+            _host.Instances[0].SolutionPath = lane.Path;
+            _host.Instances[0].Key = lane.Path;
+            if (mainOpen) _host.Instances.Add(new VsInstance { Pid = 43, SolutionPath = main.Path, Key = main.Path });
+            _host.Queue.ResolveWorktree = key => _host.Solutions.FindByPath(key)?.Worktree;
+
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = target, ["task"] = "Main project task" });
+            var task = _host.Queue.Items.Single();
+            Assert.AreEqual(main.Path, task.VsKey);
+            Assert.AreEqual(mainOpen ? QueueStatus.Waiting : QueueStatus.WaitingVs, task.Status);
+            Assert.AreEqual(0, task.Attempts);
+            Assert.IsNull(task.Worktree);
+            Assert.IsFalse(task.WorktreeCounted);
+
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = lane.Alias, ["task"] = "Isolated feature" });
+            var isolated = _host.Queue.Items.Last();
+            Assert.AreEqual(2, _host.Queue.Items.Count);
+            Assert.AreEqual(lane.Path, isolated.VsKey);
+            Assert.AreEqual(QueueStatus.Waiting, isolated.Status);
+            Assert.AreEqual(lane.Worktree.Branch, isolated.Worktree.Branch);
+        }
+
+        [DataTestMethod]
+        [DataRow("1")]
+        [DataRow("#1")]
+        [DataRow("1号")]
+        [DataRow(" # 1号 ")]
+        public async Task SendTaskTool_ExplicitNumber_TakesPrecedenceOverRegisteredAlias(string target)
+        {
+            RegisterSolution(target.Trim(), "Closed.slnx");
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = target, ["task"] = "Numbered target task" });
+            var task = _host.Queue.Items.Single();
+            Assert.AreEqual(_host.Instances[0].Key, task.VsKey);
+            Assert.AreEqual(QueueStatus.Waiting, task.Status);
+        }
+
+        [DataTestMethod]
+        [DataRow("Test VS")]
+        [DataRow("Test")]
+        [DataRow("Project")]
+        public async Task SendTaskTool_WithoutExactAlias_PreservesNameAndPathMatching(string target)
+        {
+            RegisterSolution("Other", "Closed.slnx");
+            _host.Instances[0].SolutionPath = _data.File("Project\\Project.slnx");
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = target, ["task"] = "Open target task" });
+            var task = _host.Queue.Items.Single();
+            Assert.AreEqual(_host.Instances[0].Key, task.VsKey);
+            Assert.AreEqual(QueueStatus.Waiting, task.Status);
         }
 
         [DataTestMethod]
@@ -507,6 +572,36 @@ namespace VSManager.Tests
                 await InvokeTool("close_vs", new AIFunctionArguments { ["target"] = target });
             Assert.AreEqual(0, _host.CloseChecks);
             Assert.AreEqual(0, _host.Closes);
+        }
+
+        [TestMethod]
+        public async Task WorktreeTools_CreateRegisterOpenAndQueueToExactIsolatedSolution()
+        {
+            string main = _data.File("Project");
+            Directory.CreateDirectory(main);
+            WorktreeService.Git(main, "init", "-b", "main");
+            var source = RegisterSolution("Project", "Project\\Project.slnx");
+            File.WriteAllText(source.Path, "<Solution />");
+            WorktreeService.Git(main, "add", "--", "Project.slnx");
+            WorktreeService.Git(main, "commit", "-m", "initial");
+            _settings.AgentFileRoots = new List<string> { _data.Path };
+            _host.Instances[0].SolutionPath = source.Path;
+            _host.OpenAfterLaunch = true;
+            _host.Queue.ResolveWorktree = key => _host.Solutions.FindByPath(_host.Instances.FirstOrDefault(v => v.Key == key)?.SolutionPath ?? key)?.Worktree;
+            string result = (await InvokeTool("create_worktree", new AIFunctionArguments { ["project"] = "Project", ["name"] = "lane" })).ToString();
+            StringAssert.Contains(result, "Worktree registered");
+            var lane = _host.Solutions.Items.Single(e => e.Worktree != null);
+            Assert.AreEqual("Project.worktree.lane", lane.Alias);
+            Assert.AreEqual(lane.Path, _host.Launched.Single());
+            StringAssert.Contains((await InvokeTool("list_worktrees", new AIFunctionArguments())).ToString(), lane.Alias);
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = lane.Alias, ["task"] = "Implement isolated feature" });
+            var task = _host.Queue.Items.Single();
+            Assert.AreEqual(lane.Path, task.VsKey);
+            Assert.AreEqual(lane.Worktree.Branch, task.Worktree.Branch);
+            _host.Instances.RemoveAt(1);
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = lane.Alias, ["task"] = "Next isolated feature" });
+            Assert.AreEqual(QueueStatus.WaitingVs, _host.Queue.Items.Last().Status);
+            Assert.AreEqual(lane.Path, _host.Queue.Items.Last().VsKey);
         }
 
         private SolutionEntry RegisterSolution(string alias, string filename, params string[] synonyms)

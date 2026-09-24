@@ -8,14 +8,29 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 - **应用内 Copilot 对话**：在 VSManager 中向任意 VS 的 Copilot 发送消息（支持图片），实时查看回复（Markdown 渲染）。
 - **调试控制**：开始 / 停止 / 中断 / 重新启动调试，生成 / 重新生成，读取错误列表。
 - **AI 总控助手**：接入任意 OpenAI 兼容接口（默认 DeepSeek），通过函数调用查看各 VS 状态、分派任务、等待结果。
-- **任务清单**：助手或用户发布的任务在 VS 忙碌时自动排队，空闲后自动发布；同时显示各 VS 中手动进行的 Copilot 对话。
-- **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，打开后自动推送。
+- **任务清单**：每次启动都等待用户点击「开始流程 / Start」，未完成任务保留但不自动推送；开始后按队列在 VS 空闲时发布。同时显示各 VS 中手动进行的 Copilot 对话。
+- **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，本次会话手动开始流程后，打开目标才会自动推送。
 - **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换），并支持按住说话输入。
 - **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
 - **发布到 GitHub**：一键 git init / 提交 / 创建或关联远程仓库 / 推送，发布前自动做敏感信息自检。
 - **内存监控**：按 VSManager / 各 VS 实例（含子进程）/ 共享组件分组显示工作集与私有字节，支持温和清理与超阈值提醒。
 - **自动重启**：AI 助手出现异常、请求连续失败或长时间无响应时自动重建；可选进程看门狗在 VSManager 异常退出后自动拉起，并有防重启风暴限制。
+
+## Worktree 工作线 / Worktree lanes
+
+- 每次启动须先在任务清单点击「开始流程 / Start」，才会发送开发任务或执行 / 恢复自动合并；等待期间即使收到完成回调也不会合并主项目。已有 VS 中的 Copilot 不会被停止或重发。
+  Click **Start** in the task list after every launch before development dispatch or automatic integration/resumption. Completion callbacks cannot integrate the main checkout before Start; existing Copilot work is not stopped or resent.
+- 显式告诉 AI 助手「为已登记项目创建 worktree 工作线，名字为 feature1」，使用 `create_worktree(project, name)`；`list_worktrees` 查询工作线，之后将返回的**精确别名**用于 `send_task`。普通项目任务不受影响。
+  Explicitly request a worktree lane with `create_worktree(project, name)`, inspect it with `list_worktrees`, then use its **exact returned alias** with `send_task`. Ordinary project tasks are unchanged.
+- 需要标准安装位置的 Git for Windows（`Program Files\Git` 或 `%LOCALAPPDATA%\Programs\Git`）、已提交且干净的主仓库，以及在「属性 → AI 文件授权」授权仓库及其共同父目录。不会从仓库或 PATH 查找可执行程序。工作目录命名为 `项目目录.worktree.名字`，分支为 `task/名字`，从创建时捕获的主项目当前分支建立；自动登记、打开对应 VS，未就绪的任务暂存后发送到该工作树，不发送到同名主项目。
+  Requires Git for Windows in a standard install location (`Program Files\Git` or `%LOCALAPPDATA%\Programs\Git`), a clean committed main checkout, and existing file grants for the repository and its parent. Repository/PATH executables are not used. The sibling `Project.worktree.name` uses `task/name` based on the captured current main branch. It is registered and opened in its own VS; queued tasks wait for that exact solution, not a similarly named main project.
+- 每个开发任务开始及成功回执后检查工作树干净；Copilot 只提交本任务修改，不自动提交用户的未提交文件。每 **5 个成功开发任务**持久化插入一个可见「本地推送/合并」任务，优先于该工作线后续开发任务；合并任务不计数。失败、取消和重复回执不增加计数，重启不重复生成批次。
+  Development starts and finishes clean; Copilot commits only its own task changes, never unrelated user edits. Every **five successful development tasks** inserts a durable visible local-integration task ahead of subsequent lane work. Integration tasks do not count; failures, cancellations, duplicate receipts and restarts do not inflate batches.
+- 合并先在工作树吸收主分支，冲突交给该工作树的 Copilot；验证冲突解决、提交、干净状态和祖先关系后，主项目仅 `--ff-only` 快进，不切换分支、不远程 push、不强推、不 reset/clean。主项目脏、分支切换、权限撤销、保存失败或 Git 错误都会失败并保留屏障；处理后在任务清单**重试原合并任务**。取消合并也不会放行后续任务。工作线历史保留作计数账本，不可删除或按历史上限裁剪（可用界面隐藏）。
+  Merge main into the worktree first; Copilot resolves conflicts there. Only after clean committed resolution and ancestry checks does the main checkout fast-forward (`--ff-only`), with no branch switching, remote push, force push, reset or clean. Dirty main, switched branches, revoked grants, persistence failures and Git errors retain the barrier; resolve the cause and **retry the original integration task**. Cancelling does not release the lane. Workflow history is retained as the durable ledger, exempt from removal/trimming (UI hiding is available).
+- 同一主仓库的自动合并串行执行；不要同时在外部 Git/VS 中修改主仓库。暂不支持子模块、符号链接、配置 include、自定义 filter/merge driver 或 worktreeConfig；Git hooks 不运行。少于 5 个成功任务时不会自动合并；当前不提供自动删除工作树或远程推送功能。
+  Automatic integrations sharing a main checkout are serialized; do not modify that checkout concurrently through external Git/VS. Submodules, symlinks, config includes, custom filters/merge drivers and worktreeConfig are unsupported; Git hooks are disabled. Fewer than five successes do not auto-integrate. Automatic worktree removal and remote pushing are not provided.
 
 ## 运行环境
 
@@ -261,6 +276,12 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 - 随任务发送：AI 调用 `send_task` 时用 `attachments` 参数（编号或 `last`）指定附件，只能引用用户在本次对话中提供的文件。发送时图片复用现有的图片发送流程粘贴到 VS Copilot（单条最多 4 张，webp 与超出的图片改为路径引用）；文本文件以带文件名的代码块内联到正文（超长截断并注明）；二进制与文档只发送路径。图片在提交前失败时改为只发送文字（附图片路径），记为「文字已送达、图片未送达」并提示，不判为任务失败。图片内容不会发给 AI 模型。
 - 任务清单显示 `📎 N`，右键「查看附件」可打开或定位文件。设置窗口可调整上限与保留天数（`AttachmentKeepDays` 默认 30，0 表示不限制），并提供「立即清理过期附件」；仍被未结束任务引用的附件不会被清理。
 
+### 手动开始任务流程 / Manual workflow start
+
+每次启动（含手动重启和看门狗恢复）都显示「等待手动开始」，右侧任务清单展开提供「开始流程 / Start」按钮。未完成任务仍保留；新增用户 / AI 任务只入队，VS 打开、计时器、立即发布、重试和完成回调均不会暗中启动队列或合并工作树。点击开始后恢复原有编号顺序、目标就绪等待及执行中任务追踪；已在 VS 中执行的任务不会被取消或重发。开始状态仅本次会话有效，不写入配置，按钮变为「已启动 / Started」。未开始时的完成事件保留待开始后核验回执；崩溃中断的发送仍按原规则保留失败保护，开始后需明确重试。
+
+Every launch, including watchdog recovery, waits for **Start** in the expanded task list. Unfinished tasks are retained, and new manual/AI tasks only enqueue. Timers, VS readiness, retry/dispatch actions and completion callbacks cannot start dispatch or worktree integration. Start resumes normal ordering and tracking without cancelling or resending running VS tasks. This opt-in is session-only; restarting requires Start again. Completion events are verified after Start, and crash-interrupted sends retain their existing explicit-retry protection.
+
 ### 任务清单分组
 
 右侧任务清单默认按目标 VS 分组（`TaskListGroupByVs` 默认 true），每组一个标题行：已打开的 VS 显示「@编号 名称」（编号与左侧列表一致），未打开的显示「名称（未打开）」，并统计任务数、执行中、排队、待打开与失败数量。组内沿用原排序（执行中 / 排队按编号在前，已结束的按完成时间倒序）；组间默认「有执行中的优先，再按最近活动倒序」（`TaskListGroupSort = activity`），也可选按 VS 编号（`number`）。「等待目标 VS」的任务在目标已打开时归入该 VS 分组，否则归入单独的「等待打开」分组。点击标题折叠 / 展开（折叠状态保存在本机 settings.json 的 `TaskListCollapsedGroups`），右键标题可全部折叠 / 展开、切换排序或改为平铺列表；标题栏的 ▤ / ≡ 按钮在分组与平铺之间切换。分组只影响显示，标题行不可选中；排队、发布与清除 / 历史等操作不变。
@@ -279,7 +300,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 ### 自动重启
 
 - **AI 助手自动重启**（默认开启，`AgentAutoRestart`）：AI 助手内部出现未处理异常、请求连续失败 `AgentFailureThreshold` 次（默认 3，仅统计网络错误 / 超时 / 5xx 等临时故障）或运行中 `AgentHangTimeoutSeconds` 秒没有任何进展（默认 120；等待用户确认时不计）时，自动取消当前一轮、重建 AI 客户端并恢复可用，对话中与状态栏会显示「AI 助手已自动重启」。任务清单不受影响。
-- **进程看门狗**（默认关闭，`ProcessWatchdogEnabled`）：开启后会启动一个独立的看门狗进程；VSManager 异常退出（崩溃、被结束）后约 2 秒自动重新拉起。任务清单每次变更都会写盘，崩溃时还会再尽力保存一次；重启后恢复任务队列，执行中的任务继续跟踪，退出时「发送中」的任务可能已送达，因此标为失败并提示手动重新排队，避免重复发布。正常退出不会被拉起。
+- **进程看门狗**（默认关闭，`ProcessWatchdogEnabled`）：开启后会启动一个独立的看门狗进程；VSManager 异常退出（崩溃、被结束）后约 2 秒自动重新拉起。任务清单每次变更都会写盘，崩溃时还会再尽力保存一次；重启后恢复任务队列但等待手动「开始流程」，开始后执行中的任务继续跟踪；退出时「发送中」的任务可能已送达，因此标为失败并提示手动重新排队，避免重复发布。正常退出不会被拉起。
 - **防重启风暴**：`AutoRestartWindowMinutes` 分钟内最多自动重启 `AutoRestartMaxCount` 次（默认 5 分钟 3 次，AI 助手与进程分别计数），超过后停止自动重启并提示查看日志。
 - **手动入口**：主窗口顶部「⟳ 重启」菜单与托盘菜单提供「重启 AI 助手」「重启 VSManager…」（需确认；正在发送时拒绝，任务清单与配置先保存），菜单内还可切换上述两个开关、打开日志目录。
 - 日志：`%APPDATA%\VSManager\logs\agent.log`（AI 助手故障与重启）、`watchdog.log`（看门狗）、`crash.log`（未处理异常）。
@@ -330,7 +351,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 | `list_vs` | 无 | 列出已打开的 VS、其解决方案及对应的登记别名 |
 | `send_task` | `vs` 可填登记别名 | 目标 VS 未打开时任务进入「等待目标 VS」并暂存 |
 
-**暂存与自动推送**：`send_task` 的目标是登记别名且对应 VS 未打开时，任务以 `waiting_vs`（等待目标 VS）状态写入 tasks.json（重启后仍保留），任务清单显示「⏳ 「别名」打开后自动推送」，并弹出通知 / 播报「任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open」。调度器每 2 秒检查一次；无论 VS 由 `open_solution` 还是用户手动打开，只要检测到对应解决方案，就把任务转为排队（`waiting`），再等待 `PendingVsSettleSeconds` 秒后按正常流程发布。状态流转：`waiting_vs → waiting → sending → running → done`；`waiting_vs` 也可直接取消（`cancelled`）。
+**暂存与自动推送**：以下自动调度仅在本次启动手动点击「开始流程 / Start」后生效；此前显示「等待手动开始」，打开 VS 不会触发推送。`send_task` 的目标是登记别名且对应 VS 未打开时，任务以 `waiting_vs`（等待目标 VS）状态写入 tasks.json（重启后仍保留），任务清单显示「⏳ 「别名」打开后自动推送」，并弹出通知 / 播报「任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open」。调度器每 2 秒检查一次；无论 VS 由 `open_solution` 还是用户手动打开，只要检测到对应解决方案，就把任务转为排队（`waiting`），再等待 `PendingVsSettleSeconds` 秒后按正常流程发布。状态流转：`waiting_vs → waiting → sending → running → done`；`waiting_vs` 也可直接取消（`cancelled`）。
 
 > 兼容性：旧版本 VSManager 读取到 `waiting_vs` 状态会把该任务视为已取消。
 
@@ -422,8 +443,8 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 - **In-app Copilot chat**: send messages (images supported) to the Copilot of any instance and read the replies live (Markdown rendering).
 - **Debug control**: start / stop / break / restart debugging, build / rebuild, read the error list.
 - **AI assistant**: works with any OpenAI-compatible endpoint (DeepSeek by default) and uses function calling to inspect instances, dispatch tasks and wait for results.
-- **Task list**: tasks from the assistant or the user are queued while the target instance is busy and sent automatically when it becomes idle; manual Copilot chats in each instance are listed as well.
-- **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a solution that is not open are parked and pushed automatically once it opens.
+- **Task list**: every launch waits for manual **Start**; unfinished tasks are retained without dispatch. After Start, queued tasks are sent when the target becomes idle; manual Copilot chats are listed as well.
+- **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a closed solution are parked, and dispatch once it opens only after manual Start in this session.
 - **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it), plus push-to-talk input.
 - **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents.
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
@@ -693,7 +714,7 @@ Click "🧠 内存" (Memory) at the top of the main window to open the memory pa
 ### Auto restart
 
 - **AI assistant auto-restart** (on by default, `AgentAutoRestart`): when the assistant hits an unhandled error, `AgentFailureThreshold` consecutive request failures (default 3; only transient failures such as network errors, timeouts and 5xx count) or makes no progress for `AgentHangTimeoutSeconds` while running (default 120; waiting for the user's confirmation does not count), the current round is cancelled, the AI client is rebuilt and the assistant becomes usable again. The chat and the status bar show "AI 助手已自动重启" (AI assistant restarted). The task list is not affected.
-- **Process watchdog** (off by default, `ProcessWatchdogEnabled`): starts a separate watchdog process that relaunches VSManager about 2 seconds after an abnormal exit (crash, killed). The task list is saved on every change and once more on a crash; after the restart the queue is restored and running tasks are tracked again. Tasks that were "sending" at the exit may already have been delivered, so they are marked failed with a hint to requeue manually instead of being published twice. A normal exit is never relaunched.
+- **Process watchdog** (off by default, `ProcessWatchdogEnabled`): starts a separate watchdog process that relaunches VSManager about 2 seconds after an abnormal exit (crash, killed). The task list is saved on every change and once more on a crash; after the restart the queue is restored but waits for manual **Start**, then running tasks are tracked again. Tasks that were "sending" at the exit may already have been delivered, so they are marked failed with a hint to requeue manually instead of being published twice. A normal exit is never relaunched.
 - **Restart-storm guard**: at most `AutoRestartMaxCount` automatic restarts per `AutoRestartWindowMinutes` minutes (default 3 per 5 minutes, counted separately for the assistant and the process); beyond that automatic restarts stop and you are asked to check the logs.
 - **Manual entries**: the "⟳ 重启" (Restart) menu at the top of the main window and the tray menu provide "Restart AI assistant" and "Restart VSManager…" (asks for confirmation; refused while a message is being sent; tasks and settings are saved first). The menu also toggles both switches and opens the log folder.
 - Logs: `%APPDATA%\VSManager\logs\agent.log` (assistant faults and restarts), `watchdog.log` (watchdog), `crash.log` (unhandled exceptions).
@@ -744,7 +765,7 @@ An unmatched explicit directory path never falls back to fuzzy aliases; multiple
 | `list_vs` | none | Lists open VS instances, their solutions and matching registry aliases |
 | `send_task` | `vs` may be a registered alias | If that VS is not open, the task is parked as "waiting for target VS" |
 
-**Parking and auto push**: when `send_task` targets a registered alias whose VS is not open, the task is saved in tasks.json with status `waiting_vs` (kept across restarts), the task list shows "⏳ pushed once it opens", and a notification / voice message says "任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open". The dispatcher checks every 2 seconds; as soon as the solution is detected — whether opened by `open_solution` or manually — the task moves to `waiting` and is published through the normal flow after `PendingVsSettleSeconds`. Transitions: `waiting_vs → waiting → sending → running → done`; `waiting_vs` can also be cancelled (`cancelled`).
+**Parking and auto push**: automatic dispatch below requires manually clicking **Start** after this launch; before that the list shows "Waiting for Start", and opening VS does not dispatch tasks. When `send_task` targets a registered alias whose VS is not open, the task is saved in tasks.json with status `waiting_vs` (kept across restarts), the task list shows "⏳ pushed once it opens", and a notification / voice message says "任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open". The dispatcher checks every 2 seconds; as soon as the solution is detected — whether opened by `open_solution` or manually — the task moves to `waiting` and is published through the normal flow after `PendingVsSettleSeconds`. Transitions: `waiting_vs → waiting → sending → running → done`; `waiting_vs` can also be cancelled (`cancelled`).
 
 > Compatibility: older VSManager versions treat a `waiting_vs` task as cancelled.
 

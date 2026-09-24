@@ -270,6 +270,8 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
                 AIFunctionFactory.Create((Func<string>)ListSolutions, "list_solutions"),
+                AIFunctionFactory.Create((Func<string, string, Task<string>>)CreateWorktree, "create_worktree"),
+                AIFunctionFactory.Create((Func<string>)ListWorktrees, "list_worktrees"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)OpenSolution, "open_solution"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)CloseVs, "close_vs"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)CaptureVsScreenshot, "capture_vs_screenshot"),
@@ -775,7 +777,17 @@ namespace VSManager
             var files = ResolveTaskAttachments(attachments, out string attachmentError);
             if (attachmentError != null) return attachmentError;
             SolutionEntry parkFor = null;
-            if (!Resolve(vs, out var v, out var err))
+            VsInstance v;
+            string query = (vs ?? "").Trim();
+            string selector = query.TrimStart('#').Trim();
+            if (selector.EndsWith("号")) selector = selector.Substring(0, selector.Length - 1);
+            var entry = int.TryParse(selector, out _) ? null : _host.Solutions.Items.FirstOrDefault(e => string.Equals(e.Alias, query, StringComparison.OrdinalIgnoreCase));
+            if (entry != null)
+            {
+                v = _host.Instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, entry.Path));
+                if (v == null) parkFor = entry;
+            }
+            else if (!Resolve(vs, out v, out var err))
             {
                 // 不是正在运行的 VS：按登记表别名解析，已打开则直接使用，未打开则暂存
                 // Not a running VS: resolve it as a registry alias; use the VS if open, otherwise park the task

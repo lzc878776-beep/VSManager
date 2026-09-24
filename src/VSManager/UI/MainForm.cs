@@ -123,6 +123,7 @@ namespace VSManager
 			});
 			AgentChatLog.Limits = () => Tuple.Create(_settings.AgentChatKeepDays, _settings.AgentChatMaxRecords);
 			_tasks = new TaskQueue(_settings);
+			_tasks.ResolveWorktree = key => _solutions.FindByPath(FindVs(key)?.SolutionPath ?? key)?.Worktree;
 			// 异常退出后由看门狗重启：上次正在发送的任务可能已送达 VS，改为失败待手动重新排队，避免重复发布
 			// Restarted by the watchdog after an abnormal exit: tasks that were being sent may already have reached VS, so they
 			// are marked failed for a manual requeue instead of being published twice
@@ -130,7 +131,7 @@ namespace VSManager
 				_pausedAfterCrash = _tasks.PauseInterruptedSends("VSManager 异常退出时正在发送，可能已送达；为避免重复发布已暂停，确认后请手动重新排队 / " +
 					"Was being sent when VSManager exited abnormally and may have been delivered; paused to avoid a duplicate, requeue manually if needed");
 			AppDomain.CurrentDomain.UnhandledException += (s, e) => EmergencySave();
-			_dispatcher = new TaskDispatcher(_tasks, this);
+			_dispatcher = new TaskDispatcher(_tasks, this, worktrees: new WorktreeService(WorktreeFileRoots));
 
 			_chatSvc = new CopilotChat(() => _settings);
 			_chatSvc.Updated += (vs, t) => SafeInvoke(() => OnChatUpdated(vs, t));
@@ -1294,12 +1295,13 @@ namespace VSManager
 				: _tasks.Add(v.Key, name, text.Trim(), source));
 			string hidden = duplicate == null ? HideResentFailed(q) : null;
 			if (_taskPanel.Collapsed) { _taskPanel.SetCollapsed(false); _settings.TaskPanelCollapsed = false; _settings.Save(); }
-			_taskTimer.Start();
+			UpdateTaskTimer();
 			string result = $"已加入任务清单：@{q.Id}「{name}」（{StatusText(q)}，前面 {_tasks.Ahead(q)} 个）；按编号调度 / "
 				+ $"Accepted into task list: @{q.Id}; {_tasks.Ahead(q)} ahead, dispatched in ID order";
-			result += _settings.SkipFailedPredecessors
-				? "；前序结束后自动推送，失败跳过 / Dispatch after predecessors finish, skipping failures"
-				: "；失败前序会暂停后续 / Failed predecessors pause successors";
+			result += !_dispatcher.IsStarted ? "；" + TaskDispatcher.WaitingForStart
+				: _settings.SkipFailedPredecessors
+					? "；前序结束后自动推送，失败跳过 / Dispatch after predecessors finish, skipping failures"
+					: "；失败前序会暂停后续 / Failed predecessors pause successors";
 			if (duplicate != null) result += "；已有相同任务，未重复添加 / Existing task reused; no duplicate added";
 			if (q.HasAttachments) result += "\n" + AttachmentQueuedNote(q);
 			if (hidden != null) result += "\n" + hidden;
@@ -1313,9 +1315,15 @@ namespace VSManager
 			int recent = Math.Max(8, AppSettings.ClampQuota(nameof(AppSettings.AgentMaxReadCount), _settings.AgentMaxReadCount) * 2 / 5);
 			int taskText = AppSettings.ClampQuota(nameof(AppSettings.AgentMaxTaskText), _settings.AgentMaxTaskText);
 			var items = _tasks.Items.Where(t => QueueStatus.Active(t.Status))
-				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).ToList();
+				.Concat(_tasks.Items.Where(t => t.IsWorktreeMerge && t.Status != QueueStatus.Done))
+				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).Distinct().ToList();
 			if (items.Count == 0) return "任务清单为空。";
 			var sb = new System.Text.StringBuilder();
+			if (!_dispatcher.IsStarted) sb.AppendLine(TaskDispatcher.WaitingForStart);
+			foreach (var lane in _tasks.Items.Where(t => t.Worktree != null).GroupBy(t => t.Worktree.Root, StringComparer.OrdinalIgnoreCase))
+				sb.Append("Worktree ").Append(lane.Key).Append(" | 成功开发任务 / Successful development tasks: ")
+					.Append(lane.Count(t => t.WorktreeCounted && !t.IsWorktreeMerge)).Append(" | 已合并批次 / Integrated batches: ")
+					.Append(lane.Count(t => t.IsWorktreeMerge && t.Status == QueueStatus.Done)).AppendLine();
 			foreach (var t in items)
 			{
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
@@ -1555,7 +1563,7 @@ namespace VSManager
 			UpdateAgentVisibility();
 			_agentPanel.RefreshConfig();
 			_taskPanel.RefreshItems();
-			if (_tasks.Items.Any(t => QueueStatus.Active(t.Status))) _taskTimer.Start();
+			UpdateTaskTimer();
 			_web.Apply();
 			string dogErr = ProcessWatchdog.Apply(_settings);
 			if (dogErr != null) SetStatus("⚠ 看门狗启动失败 / Watchdog failed to start：" + dogErr);
@@ -1751,6 +1759,8 @@ namespace VSManager
 
 		private void PumpTasks() => _dispatcher.Pump();
 
+		private void UpdateTaskTimer() => _taskTimer.Enabled = _dispatcher.IsStarted && _tasks.Items.Any(x => QueueStatus.Active(x.Status));
+
 		/// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task and notifies the AI assistant.</summary>
 		private Task FinishTask(QueuedTask t, VsInstance v, TimeSpan? dur) => _dispatcher.FinishAsync(t, v, dur);
 
@@ -1760,6 +1770,11 @@ namespace VSManager
 		{
 			switch (action)
 			{
+				case "start":
+					_dispatcher.Start();
+					_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
+					UpdateTaskTimer();
+					return;
 				case "clear":
 					// 只在界面隐藏已完成的条目：记录清除时间点（settings.json），不修改 tasks.json 与归档
 					// Hide completed items in the UI only: remember the clear time (settings.json); tasks.json and the archive stay untouched
@@ -1786,7 +1801,12 @@ namespace VSManager
 					}
 					return;
 				case "open":
-					var v = FindVs(t.VsKey);
+					var v = t.Worktree == null ? FindVs(t.VsKey) : ((ITaskDispatchHost)this).FindTargetVs(t);
+					if (v == null && t.Worktree != null)
+					{
+						var lane = _solutions.FindByPath(t.Worktree.SolutionPath);
+						if (lane != null) { OpenSolutionFromUi(lane); return; }
+					}
 					if (v == null && t.Status == QueueStatus.WaitingVs)
 					{
 						// 暂存任务：打开登记的解决方案，打开后自动推送 / Parked task: open the registered solution; the task is pushed once it opens
@@ -1798,9 +1818,15 @@ namespace VSManager
 					return;
 				case "cancel": CancelQueued(t); return;
 				case "remove":
+					if (t.Worktree != null)
+					{
+						SetStatus("Worktree 记录保留用于批次计数和合并屏障；请取消或隐藏，不可删除 / Worktree ledger entries cannot be removed; cancel or hide instead");
+						return;
+					}
 					if (_tasks.Remove(t.Id) && TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					return;
 				case "retry":
+					if (!_dispatcher.IsStarted) { SetStatus(TaskDispatcher.WaitingForStart); return; }
 					// 手动重新排队复用原条目，不再隐藏 / A manual requeue reuses the entry, which is no longer hidden
 					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					_dispatcher.Retry(t);
@@ -1855,7 +1881,7 @@ namespace VSManager
 		void ITaskDispatchHost.SetStatus(string text) => SetStatus(text);
 		void ITaskDispatchHost.LogEvent(string vsName, string text) => SendLog.Event(vsName, text);
 		void ITaskDispatchHost.NotifyAgent(string title, string body) => _agent.Notify(title, body);
-		void ITaskDispatchHost.QueueActivityChanged(bool anyActive) => _taskTimer.Enabled = anyActive;
+		void ITaskDispatchHost.QueueActivityChanged(bool anyActive) => _taskTimer.Enabled = _dispatcher.IsStarted && anyActive;
 
 		#endregion
 
@@ -2232,6 +2258,7 @@ namespace VSManager
 			StartAutoTrim();
 			StartAttachmentCleanup();
 			_tasksReadyAt = DateTime.Now.AddSeconds(45);
+			SetStatus(TaskDispatcher.WaitingForStart);
 			if (_tasks.LoadWarning != null) SetStatus("任务清单：" + _tasks.LoadWarning);
 			RestoreExternals();
 			AgentChatLog.TrimAsync();
@@ -2251,8 +2278,10 @@ namespace VSManager
 				ShowBalloon("多 VS 管理工具 / VSManager", note, ToolTipIcon.Warning);
 				AppLog.Write(ProcessWatchdog.LogFile, "重启后恢复 / Recovered after restart：" + _tasks.Items.Count + " 条任务 / tasks，暂停 / paused " + _pausedAfterCrash);
 			}
-			_tasks.Changed += () => { if (_tasks.Items.Any(x => QueueStatus.Active(x.Status))) _taskTimer.Start(); };
-			if (_tasks.Items.Any(x => QueueStatus.Active(x.Status))) _taskTimer.Start();
+			_tasks.Changed += UpdateTaskTimer;
+			UpdateTaskTimer();
+			_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
+			_taskPanel.SetCollapsed(false);
 		}
 
 		protected override void OnResize(EventArgs e)

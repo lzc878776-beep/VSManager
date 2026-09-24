@@ -20,7 +20,16 @@ namespace VSManager
         /// Matches current / launch paths first; uses an unambiguous title or explicit default only when both paths are unknown.
         /// </summary>
         internal VsInstance FindOpenSolution(SolutionEntry e, IList<VsInstance> list = null) =>
-            SolutionMatcher.FindOpenSolution(e, list ?? _instances, _solutions.Items);
+            e?.Worktree != null ? (list ?? _instances).FirstOrDefault(v => SolutionMatcher.SamePath(v.SolutionPath, e.Path))
+                : SolutionMatcher.FindOpenSolution(e, list ?? _instances, _solutions.Items);
+
+        private IEnumerable<string> WorktreeFileRoots()
+        {
+            var roots = new List<string>(_settings.AgentFileRoots ?? new List<string>());
+            if (_settings.AgentIncludeSolutionRoots)
+                roots.AddRange(_solutions.Items.Select(e => System.IO.Path.GetDirectoryName(e.Path)));
+            return roots;
+        }
 
         /// <summary>登记条目当前是否已打开的简短文字。/ Short text telling whether the entry is open.</summary>
         private string SolutionStateText(SolutionEntry e)
@@ -85,6 +94,8 @@ namespace VSManager
 
         VsInstance ITaskDispatchHost.FindTargetVs(QueuedTask t)
         {
+            if (t.Worktree != null)
+                return _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath));
             var v = FindVs(t.VsKey) ?? _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.VsKey));
             if (v != null) return v;
             var e = _solutions.FindByPath(t.VsKey) ??
@@ -136,7 +147,8 @@ namespace VSManager
         private string ParkTaskCore(SolutionEntry e, string text, AttachmentRef[] attachments)
         {
             var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), e.Path, text);
-            if (dup != null) return $"「{e.Alias}」的任务清单中已有相同任务 #{dup.Id}（{StatusText(dup)}），未重复添加。";
+            if (dup != null) return $"「{e.Alias}」的任务清单中已有相同任务 #{dup.Id}（{StatusText(dup)}），未重复添加。"
+                + (_dispatcher.IsStarted ? "" : "\n" + TaskDispatcher.WaitingForStart);
             var q = attachments != null && attachments.Length > 0
                 ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
                 : _tasks.AddParked(e.Path, e.Alias, text, "AI");
@@ -145,7 +157,13 @@ namespace VSManager
             SendLog.Event(e.Alias, $"任务清单：任务 #{q.Id} 已暂存，等待打开「{e.Alias}」/ task #{q.Id} parked, waiting for \"{e.Alias}\" to open");
             SetStatus($"任务清单：#{q.Id} 已暂存，等待打开「{e.Alias}」/ Task #{q.Id} parked, waiting for \"{e.Alias}\"");
             AnnounceTask(q, $"任务已暂存，等待打开{e.Alias}", $"Task parked, waiting for {e.Alias} to open");
-            _taskTimer.Start();
+            UpdateTaskTimer();
+            if (!_dispatcher.IsStarted)
+            {
+                note += "\n" + TaskDispatcher.WaitingForStart;
+                _taskPanel.SetCollapsed(false);
+                SetStatus(TaskDispatcher.WaitingForStart);
+            }
             return $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度；不会立即发送 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch; not sent immediately" + note;
         }
 

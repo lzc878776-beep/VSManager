@@ -129,10 +129,27 @@ namespace VSManager
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
                 Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
                 QueueOrder = Math.Max(0, I("QueueOrder")), CompletionToken = S("CompletionToken"),
+                IsWorktreeMerge = S("IsWorktreeMerge") == "true", WorktreeCounted = S("WorktreeCounted") == "true",
+                WorktreeBatch = Math.Max(0, I("WorktreeBatch")),
                 Replaces = e.Element("Replaces")?.Elements("item")
                     .Select(x => int.TryParse(x.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int id) ? id : 0)
                     .Where(id => id > 0).Distinct().ToArray()
             };
+            var worktree = e.Element("Worktree");
+            if (worktree != null && worktree.Attribute("type")?.Value != "null")
+            {
+                t.Worktree = new WorktreeInfo
+                {
+                    MainRoot = worktree.Element("MainRoot")?.Value, Root = worktree.Element("Root")?.Value,
+                    SolutionPath = worktree.Element("SolutionPath")?.Value, MainBranch = worktree.Element("MainBranch")?.Value,
+                    Branch = worktree.Element("Branch")?.Value
+                };
+                if (new[] { t.Worktree.MainRoot, t.Worktree.Root, t.Worktree.SolutionPath, t.Worktree.MainBranch, t.Worktree.Branch }.Any(string.IsNullOrWhiteSpace))
+                {
+                    t.Status = QueueStatus.Failed;
+                    t.Error = "工作树元数据损坏；请恢复备份 / Damaged worktree metadata; restore a backup";
+                }
+            }
             if (string.IsNullOrWhiteSpace(t.Text)) return null;
             t.Created = ParseDate(S("Created")) ?? t.Started ?? t.Finished ?? DateTime.Now;
             if (string.IsNullOrEmpty(t.VsName)) t.VsName = string.IsNullOrEmpty(t.VsKey) ? "（未知 VS）" : Path.GetFileNameWithoutExtension(t.VsKey);

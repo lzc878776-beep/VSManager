@@ -15,6 +15,56 @@ namespace VSManager.Tests
     public class MenuStyleTests
     {
         [TestMethod]
+        public void TaskHeader_ManualStartIsVisible_AndButtonsDoNotOverlapHistory()
+        {
+            RunSta(() =>
+            {
+                using (var data = new TempDataFolder())
+                using (var panel = new TaskPanel())
+                {
+                    var queue = NewQueue();
+                    var done = queue.Add("A", "A", "done", "AI");
+                    done.Status = QueueStatus.Done;
+                    done.Finished = DateTime.Now.AddMinutes(-1);
+                    panel.Bind(queue, clearedAt: () => DateTime.Now);
+                    panel.SetCollapsed(false);
+                    panel.PerformLayout();
+                    var top = panel.Controls.OfType<Panel>().Single();
+                    var buttons = top.Controls.OfType<FlatButton>().Where(b => b.Visible).ToArray();
+                    var start = buttons.Single(b => b.Text == "开始流程 / Start");
+                    Assert.IsTrue(start.Enabled);
+                    Assert.IsTrue(buttons.Any(b => b.Text == "历史"));
+                    Assert.IsTrue(start.Width >= Dpi.S(120));
+                    foreach (var button in buttons)
+                    {
+                        Assert.IsTrue(top.ClientRectangle.Contains(button.Bounds), button.Text);
+                        foreach (var other in buttons.Where(b => b != button))
+                            Assert.IsFalse(button.Bounds.IntersectsWith(other.Bounds), button.Text + " / " + other.Text);
+                    }
+                    int clicks = 0;
+                    panel.ActionRequested += (task, action) =>
+                    {
+                        Assert.IsNull(task);
+                        Assert.AreEqual("start", action);
+                        clicks++;
+                        panel.SetWorkflowStarted(true);
+                    };
+                    typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(start, new object[] { EventArgs.Empty });
+                    Assert.AreEqual(1, clicks);
+                    Assert.IsFalse(start.Enabled);
+                    Assert.AreEqual("已启动 / Started", start.Text);
+                    start.PerformClick();
+                    Assert.AreEqual(1, clicks);
+                    panel.SetCollapsed(true);
+                    Assert.IsFalse(start.Visible);
+                    panel.SetCollapsed(false);
+                    Assert.IsTrue(start.Visible);
+                    Assert.IsFalse(start.Enabled);
+                }
+            });
+        }
+
+        [TestMethod]
         public void Headings_FollowVisibilityAfterOpeningHandlers_WithoutEmptyGroups()
         {
             RunSta(() =>

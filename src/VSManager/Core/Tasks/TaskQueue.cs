@@ -48,6 +48,7 @@ namespace VSManager
         public static string LogPath => AppLog.PathOf(AppLog.TasksFile);
 
         public IReadOnlyList<QueuedTask> Items => _items;
+        public Func<string, WorktreeInfo> ResolveWorktree { get; set; }
 
         /// <summary>实时读取失败前序策略；修改后下轮调度生效。/ Live failed-predecessor policy; changes apply on the next dispatch round.</summary>
         public bool SkipFailedPredecessors
@@ -83,6 +84,7 @@ namespace VSManager
             _clock = clock ?? (() => DateTime.Now);
             Load();
             foreach (var t in _items) _archived[t.Id] = t.Clone();
+            if (ReconcileWorktreeBatches()) Commit();
         }
 
         private void Load()
@@ -174,7 +176,9 @@ namespace VSManager
             var t = new QueuedTask
             {
                 Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
-                Status = status, Created = _clock(), Target = target, Attachments = attachments
+                Status = status, Created = _clock(), Target = target, Attachments = attachments,
+                Worktree = ResolveWorktree?.Invoke(vsKey)?.Clone()
+                    ?? _items.LastOrDefault(x => string.Equals(x.VsKey, vsKey, StringComparison.OrdinalIgnoreCase) && x.Worktree != null)?.Worktree.Clone()
             };
             ReplaceFailed(t);
             _items.Add(t);
@@ -188,7 +192,7 @@ namespace VSManager
 
         private bool ReplaceFailed(QueuedTask t)
         {
-            var matches = ResentTaskMatcher.Find(_items, t);
+            var matches = ResentTaskMatcher.Find(_items.Where(x => !x.IsWorktreeMerge), t);
             foreach (var kept in matches.Kept)
                 Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id} / Task #{t.Id} retains failed task #{kept.Task.Id}: {kept.Reason}");
             if (matches.Hide.Count == 0) return false;
@@ -202,7 +206,7 @@ namespace VSManager
         public bool Remove(int id)
         {
             var t = Find(id);
-            if (!TaskStateMachine.CanRemove(t)) return false;
+            if (!TaskStateMachine.CanRemove(t) || t.Worktree != null) return false;
             _items.Remove(t);
             Commit();
             return true;
@@ -211,13 +215,14 @@ namespace VSManager
         /// <summary>提交修改：裁剪历史（若配置了上限）、写归档流水、保存并通知界面。/ Commits changes: trims history (if limited), archives, saves and notifies.</summary>
         public void Commit()
         {
+            ReconcileWorktreeBatches();
             // 历史上限：TaskHistoryLimit <= 0 表示保留全部（默认）/ History limit: TaskHistoryLimit <= 0 keeps everything (default)
             int limit = _settings.TaskHistoryLimit;
             if (limit > 0)
             {
                 // 保留重发关系，防止裁剪后严格模式再次被旧失败阻塞。/ Preserve resend links so trimming cannot resurrect a strict-mode failure barrier.
                 var failures = _items.Where(t => t.Status == QueueStatus.Failed).ToList();
-                var old = _items.Where(t => (t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
+                var old = _items.Where(t => t.Worktree == null && (t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
                         && !(t.Replaces != null && failures.Any(f => t.Replaces.Contains(f.Id) && ResentTaskMatcher.SameTarget(f, t))))
                     .OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
                 foreach (var t in old) _items.Remove(t);
@@ -292,6 +297,35 @@ namespace VSManager
                 else if (!wasFailing) Log("保存任务清单失败：" + error + "（内存中的 " + _items.Count + " 条任务已保留，将自动重试）");
             }
             return error == null;
+        }
+
+        private bool ReconcileWorktreeBatches()
+        {
+            bool changed = false;
+            foreach (var t in _items.Where(t => t.Worktree != null && !t.IsWorktreeMerge && t.Status == QueueStatus.Done && !t.WorktreeCounted))
+            {
+                t.WorktreeCounted = true;
+                changed = true;
+            }
+            foreach (var group in _items.Where(t => t.Worktree != null).GroupBy(t => t.Worktree.Root, StringComparer.OrdinalIgnoreCase).ToList())
+            {
+                int batches = group.Count(t => t.WorktreeCounted && !t.IsWorktreeMerge) / 5;
+                for (int batch = 1; batch <= batches; batch++)
+                {
+                    if (group.Any(t => t.IsWorktreeMerge && t.WorktreeBatch == batch)) continue;
+                    var last = group.Where(t => !t.IsWorktreeMerge).OrderBy(t => t.Id).Last();
+                    _items.Add(new QueuedTask
+                    {
+                        Id = _nextId++, VsKey = last.VsKey, VsName = last.VsName, Target = last.Target,
+                        Text = "Worktree 本地推送 / Local integration — batch " + batch + ". " + WorktreeInfo.MergeInstructions,
+                        Source = "AI", Created = _clock(), Status = QueueStatus.Waiting,
+                        Worktree = last.Worktree.Clone(), IsWorktreeMerge = true, WorktreeBatch = batch
+                    });
+                    changed = true;
+                }
+            }
+            if (changed) { _settings.TaskNextId = _nextId; _settings.Save(); }
+            return changed;
         }
 
         private static void Log(string text) => AppLog.Write(AppLog.TasksFile, text);

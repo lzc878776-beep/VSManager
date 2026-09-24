@@ -13,11 +13,13 @@ namespace VSManager
         private readonly VsListBox _list = new VsListBox();
         private readonly FlatButton _btnClear = new FlatButton { Text = "清除已完成", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
+        private readonly FlatButton _btnStart = new FlatButton { Text = "开始流程 / Start" };
+        private bool _workflowStarted;
         private Func<DateTime?> _clearedAt;
         private Func<IList<HiddenTaskMark>> _hiddenMarks;
         private bool _showHistory;
         private int _hiddenCount;
-        private const string DefaultEmptyText = "暂无任务 / No tasks\r\n\r\nAI 与用户文本任务一律在此排队\r\n前序结束后按编号自动推送\r\nAI and manual text tasks always queue here\r\nDispatch in ID order after predecessors finish";
+        private const string DefaultEmptyText = "暂无任务 / No tasks\r\n\r\nAI 与用户文本任务一律在此排队\r\n手动开始流程后按编号推送\r\nAI and manual text tasks always queue here\r\nDispatch in ID order after manual Start";
         private readonly FlatButton _btnCollapse = new FlatButton { Text = "»", Ghost = true };
         private readonly FlatButton _btnView = new FlatButton { Text = "▤", Ghost = true };
         private bool _groupByVs = true;
@@ -35,7 +37,7 @@ namespace VSManager
         private bool _loadWarningSeen;
         private string _tip;
 
-        /// <summary>请求对任务执行操作：dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
+        /// <summary>请求对任务执行操作：start / dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
         public event Action<QueuedTask, string> ActionRequested;
         public event Action<bool> CollapsedChanged;
 
@@ -47,7 +49,7 @@ namespace VSManager
             Padding = new Padding(1, 0, 0, 0);
 
             _top.Dock = DockStyle.Top;
-            _top.Height = Dpi.S(52);
+            _top.Height = Dpi.S(88);
             _top.BackColor = Theme.Sidebar;
             _top.Paint += Top_Paint;
             _top.MouseClick += (s, e) =>
@@ -74,6 +76,10 @@ namespace VSManager
             UpdateViewButton();
             _top.Controls.Add(_btnClear);
             _top.Controls.Add(_btnCollapse);
+            _btnStart.Font = Theme.Small;
+            _btnStart.Click += (s, e) => ActionRequested?.Invoke(null, "start");
+            _tips.SetToolTip(_btnStart, TaskDispatcher.WaitingForStart);
+            _top.Controls.Add(_btnStart);
             _top.Resize += (s, e) => LayoutTop();
 
             _list.Dock = DockStyle.Fill;
@@ -155,6 +161,16 @@ namespace VSManager
         public int ExpandedWidth { get; set; } = Dpi.S(300);
 
         public bool Collapsed => _collapsed;
+
+        public void SetWorkflowStarted(bool started)
+        {
+            _workflowStarted = started;
+            _btnStart.Text = started ? "已启动 / Started" : "开始流程 / Start";
+            _btnStart.Enabled = !started;
+            _tips.SetToolTip(_btnStart, started ? "本次会话已启动；下次启动需重新手动开始 / Started for this session only" : TaskDispatcher.WaitingForStart);
+            _top.Invalidate();
+            _list.Invalidate();
+        }
 
         /// <summary>是否按目标 VS 分组显示。/ Whether the list is grouped by target VS.</summary>
         public bool GroupByVs => _groupByVs;
@@ -267,11 +283,12 @@ namespace VSManager
             _list.Visible = !collapsed;
             _btnClear.Visible = !collapsed;
             _btnView.Visible = !collapsed;
+            _btnStart.Visible = !collapsed;
             _btnHistory.Visible = !collapsed && (_hiddenCount > 0 || _showHistory);
             _btnCollapse.Text = collapsed ? "«" : "»";
             _tips.SetToolTip(_btnCollapse, collapsed ? "展开任务清单" : "收起任务清单");
             LayoutTop();
-            _top.Height = collapsed ? Height : Dpi.S(52);
+            _top.Height = collapsed ? Height : Dpi.S(88);
             _top.Invalidate();
             if (raise) CollapsedChanged?.Invoke(collapsed);
         }
@@ -290,16 +307,17 @@ namespace VSManager
 
         private void LayoutTop()
         {
-            int y = Dpi.S(12);
+            int y = Dpi.S(6);
             if (_collapsed) { _btnCollapse.Location = new Point((_top.Width - _btnCollapse.Width) / 2, y); return; }
             _btnCollapse.Location = new Point(_top.Width - _btnCollapse.Width - Dpi.S(10), y);
-            _btnClear.Location = new Point(_btnCollapse.Left - _btnClear.Width - Dpi.S(4), y);
-            _btnView.Location = new Point(_btnClear.Left - _btnView.Width - Dpi.S(4), y);
-            _btnHistory.Location = new Point(_btnView.Left - _btnHistory.Width - Dpi.S(4), y);
+            _btnView.Location = new Point(_btnCollapse.Left - _btnView.Width - Dpi.S(4), y);
+            _btnClear.Location = new Point(_top.Width - _btnClear.Width - Dpi.S(10), Dpi.S(52));
+            _btnHistory.Location = new Point(_btnClear.Left - _btnHistory.Width - Dpi.S(4), Dpi.S(52));
+            _btnStart.SetBounds(Dpi.S(10), Dpi.S(52), Math.Max(0, _btnHistory.Left - Dpi.S(14)), Dpi.S(28));
         }
 
-        /// <summary>标题副文字可用的右边界（避开按钮）。</summary>
-        private int SubRight => _btnHistory.Visible ? _btnHistory.Left : _btnView.Left;
+        /// <summary>标题副文字使用独立一行。/ Subtitle has its own row.</summary>
+        private int SubRight => _top.Width - Dpi.S(10);
 
         private void Reload()
         {
@@ -497,8 +515,9 @@ namespace VSManager
             if (paused > 0) sub += $" · 暂停 {paused}";
             if (parked > 0) sub = (running + waiting == 0 ? "" : sub + " · ") + $"待打开 {parked}";
             if (chatting > 0) sub = (running + waiting + parked == 0 ? "" : sub + " · ") + $"对话 {chatting}";
-            Color subColor = running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
-            string tip = null;
+            if (!_workflowStarted) sub = "等待手动开始 / Waiting for Start";
+            Color subColor = !_workflowStarted ? Theme.Warning : running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
+            string tip = _workflowStarted ? null : TaskDispatcher.WaitingForStart;
             if (_queue?.SaveError != null)
             {
                 // 保存失败：清单仍在内存中，提示用户并自动重试
@@ -513,7 +532,7 @@ namespace VSManager
                 tip = _queue.LoadWarning + "\r\n日志：" + TaskQueue.LogPath + "\r\n（点击此处关闭提示）";
             }
             if (_tip != tip) { _tip = tip; _tips.SetToolTip(_top, tip ?? ""); }
-            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(Dpi.S(16), Dpi.S(31), Math.Max(0, SubRight - Dpi.S(20)), Dpi.S(16)), subColor,
+            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(Dpi.S(16), Dpi.S(34), Math.Max(0, SubRight - Dpi.S(20)), Dpi.S(16)), subColor,
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             using (var pen = new Pen(Theme.Divider)) g.DrawLine(pen, 0, _top.Height - 1, _top.Width, _top.Height - 1);
         }
@@ -617,6 +636,7 @@ namespace VSManager
             string body = OneLine(t.Text);
             string tail = t.Status == QueueStatus.Done && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
                 : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error)
+                : !_workflowStarted && QueueStatus.Active(t.Status) ? "等待手动开始 / Waiting for Start"
                 : t.Status == QueueStatus.WaitingVs ? "⏳ 「" + (t.Target ?? t.VsName) + "」打开后自动推送 / pushed once it opens" : null;
             if (!string.IsNullOrEmpty(t.PredecessorNotice)) tail = t.PredecessorNotice + (tail == null ? "" : " · " + tail);
             if (IsResentHidden(t))

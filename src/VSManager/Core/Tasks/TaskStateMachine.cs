@@ -82,6 +82,7 @@ namespace VSManager
         public static string FailureReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":FAILED]";
 
         public static string DispatchText(QueuedTask t) => t.Text + " "
+            + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
             + "任务队列回执（仅用于确认本次结果）：只有本任务全部成功完成，才在最终回复最后单独一行输出 " + SuccessReceipt(t)
             + "；遇到错误、未完成、需要用户处理或无法确认成功时，说明原因并在最后单独一行输出 " + FailureReceipt(t)
             + "。不要在过程消息中输出回执。";
@@ -181,14 +182,27 @@ namespace VSManager
         internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors)
         {
             var all = items.ToList();
-            return all.Where(x => x != task && ResentTaskMatcher.SameTarget(x, task)
-                && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
-                    || (x.Id < task.Id && (QueueStatus.Active(x.Status)
-                        || (!skipFailedPredecessors && x.Status == QueueStatus.Failed
-                            && !all.Any(replacement => replacement.Id > x.Id
-                                && ResentTaskMatcher.SameTarget(x, replacement)
-                                && replacement.Replaces != null && replacement.Replaces.Contains(x.Id)))))))
+            return all.Where(x => x != task &&
+                ((x.IsWorktreeMerge || task.IsWorktreeMerge)
+                    && (WorktreeInfo.Same(x.Worktree, task.Worktree) || ResentTaskMatcher.SameTarget(x, task))
+                    ? WorktreeBlocks(x, task)
+                    : (WorktreeInfo.Same(x.Worktree, task.Worktree) || ResentTaskMatcher.SameTarget(x, task))
+                        && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
+                            || (x.Id < task.Id && (QueueStatus.Active(x.Status)
+                                || (!skipFailedPredecessors && x.Status == QueueStatus.Failed
+                                    && !all.Any(replacement => replacement.Id > x.Id
+                                        && ResentTaskMatcher.SameTarget(x, replacement)
+                                        && replacement.Replaces != null && replacement.Replaces.Contains(x.Id))))))))
                 .OrderBy(x => x.Id);
+        }
+
+        private static bool WorktreeBlocks(QueuedTask predecessor, QueuedTask task)
+        {
+            if (predecessor.Status == QueueStatus.Sending || predecessor.Status == QueueStatus.Running) return true;
+            if (predecessor.IsWorktreeMerge && predecessor.Status != QueueStatus.Done)
+                return !task.IsWorktreeMerge || predecessor.Id < task.Id;
+            if (task.IsWorktreeMerge) return false;
+            return predecessor.Id < task.Id && QueueStatus.Active(predecessor.Status);
         }
 
         public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now, bool skipFailedPredecessors = true)
@@ -210,6 +224,8 @@ namespace VSManager
         public static string StatusText(QueuedTask t, DateTime now, IEnumerable<QueuedTask> items, bool skipFailedPredecessors = true)
         {
             var blocker = t.Status == QueueStatus.Waiting ? BlockingTask(items, t, skipFailedPredecessors) : null;
+            if (blocker != null && blocker.IsWorktreeMerge)
+                return $"等待 Worktree 合并 #{blocker.Id}（{StatusText(blocker, now)}）/ Waiting for worktree integration #{blocker.Id}";
             return blocker?.Status == QueueStatus.Failed
                 ? $"已暂停（前序 #{blocker.Id} 失败）/ Paused (predecessor #{blocker.Id} failed)" : StatusText(t, now);
         }
