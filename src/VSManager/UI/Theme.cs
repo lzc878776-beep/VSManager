@@ -111,10 +111,21 @@ namespace VSManager
 
         public static void Apply(ToolStrip strip)
         {
-            strip.Renderer = new ToolStripProfessionalRenderer(new MenuColors()) { RoundedEdges = false };
+            strip.Renderer = new MenuRenderer();
             strip.Font = Regular;
             strip.BackColor = Elevated;
             strip.ForeColor = Text;
+        }
+
+        private sealed class MenuRenderer : ToolStripProfessionalRenderer
+        {
+            public MenuRenderer() : base(new MenuColors()) { RoundedEdges = false; }
+
+            protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+            {
+                Color color = e.Item is MenuGroupHeader ? TextSecondary : e.Item.Enabled ? e.TextColor : TextMuted;
+                TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, e.TextRectangle, color, e.TextFormat);
+            }
         }
 
         private class MenuColors : ProfessionalColorTable
@@ -432,8 +443,54 @@ namespace VSManager
 
         protected override void OnSelectedIndexChanged(EventArgs e)
         {
+            // 不可选中的行（如分组标题）：按移动方向跳到相邻的可选条目 / Non-selectable rows (e.g. group headers): jump to the neighbouring selectable item in the direction of travel
+            if (!_adjusting && IsItemSelectable != null && SelectedIndex >= 0 && SelectedIndex < Items.Count && !IsItemSelectable(Items[SelectedIndex]))
+            {
+                int from = SelectedIndex, dir = from >= _lastSelected ? 1 : -1;
+                int target = FindSelectable(from, dir);
+                if (target < 0) target = FindSelectable(from, -dir);
+                _adjusting = true;
+                try { SelectedIndex = target; }
+                finally { _adjusting = false; }
+                return;
+            }
+            _lastSelected = SelectedIndex;
             base.OnSelectedIndexChanged(e);
             Invalidate();
+        }
+
+        /// <summary>
+        /// 判断条目是否可选中；为 null 时全部可选。不可选的行被点击时不改变选中项，而是触发 <see cref="InertItemClicked"/>。
+        /// Whether an item can be selected; null means all can. Clicking a non-selectable row does not change the selection and
+        /// raises <see cref="InertItemClicked"/> instead.
+        /// </summary>
+        public Func<object, bool> IsItemSelectable { get; set; }
+
+        /// <summary>不可选的行被鼠标点击（行号、按钮）。/ A non-selectable row was clicked (index, button).</summary>
+        public event Action<int, MouseButtons> InertItemClicked;
+
+        private int _lastSelected = -1;
+        private bool _adjusting;
+
+        private int FindSelectable(int from, int dir)
+        {
+            for (int i = from + dir; i >= 0 && i < Items.Count; i += dir)
+                if (IsItemSelectable(Items[i])) return i;
+            return -1;
+        }
+
+        private bool HandleInertClick(ref Message m)
+        {
+            if (IsItemSelectable == null) return false;
+            var p = new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16)));
+            int idx = IndexFromPoint(p);
+            if (idx < 0 || idx >= Items.Count || !GetItemRectangle(idx).Contains(p) || IsItemSelectable(Items[idx])) return false;
+            if (!Focused) Focus();
+            var button = m.Msg == 0x0204 || m.Msg == 0x0206 ? MouseButtons.Right : MouseButtons.Left;
+            if (button == MouseButtons.Right) { _lastSelected = -1; SelectedIndex = -1; }
+            InertItemClicked?.Invoke(idx, button);
+            m.Result = IntPtr.Zero;
+            return true;
         }
 
         protected override void OnMouseMove(MouseEventArgs e)
@@ -464,8 +521,7 @@ namespace VSManager
             int notches = _wheelDelta / 120;
             if (notches == 0) return true;
             _wheelDelta -= notches * 120;
-            int visible = Math.Max(1, ClientSize.Height / Math.Max(1, ItemHeight));
-            int max = Math.Max(0, Items.Count - visible);
+            int max = MaxTopIndex();
             int top = Math.Max(0, Math.Min(max, TopIndex - notches * WheelItemsPerNotch));
             if (top != TopIndex)
             {
@@ -476,6 +532,24 @@ namespace VSManager
                 SetHover(idx);
             }
             return true;
+        }
+
+        /// <summary>
+        /// 最大顶部行号：从末尾累加行高，兼容固定与可变行高（分组标题比任务卡片矮）。
+        /// Largest top index: accumulates row heights from the end, so it works for fixed and variable heights (group headers are
+        /// shorter than task cards).
+        /// </summary>
+        private int MaxTopIndex()
+        {
+            int h = ClientSize.Height, used = 0, fit = 0;
+            for (int i = Items.Count - 1; i >= 0; i--)
+            {
+                int ih = Math.Max(1, DrawMode == DrawMode.OwnerDrawVariable ? GetItemHeight(i) : ItemHeight);
+                if (used + ih > h) break;
+                used += ih;
+                fit++;
+            }
+            return Math.Max(0, Items.Count - Math.Max(1, fit));
         }
 
         protected override void OnMouseDown(MouseEventArgs e)
@@ -507,6 +581,8 @@ namespace VSManager
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x0014) { m.Result = (IntPtr)1; return; } // WM_ERASEBKGND
+            // WM_LBUTTONDOWN / WM_LBUTTONDBLCLK / WM_RBUTTONDOWN / WM_RBUTTONDBLCLK 落在不可选行上 / on a non-selectable row
+            if ((m.Msg == 0x0201 || m.Msg == 0x0203 || m.Msg == 0x0204 || m.Msg == 0x0206) && HandleInertClick(ref m)) return;
             if (m.Msg == 0x020A && WheelItemsPerNotch > 0)        // WM_MOUSEWHEEL
             {
                 ScrollByWheel(unchecked((short)((long)m.WParam >> 16)));

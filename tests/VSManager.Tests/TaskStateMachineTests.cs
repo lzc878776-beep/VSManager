@@ -37,6 +37,43 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void BlockedSend_PreservesRetryBudget_AndCanResume()
+        {
+            var t = Waiting();
+            t.Attempts = SendRetryPolicy.MaxAttempts - 1;
+            string blocked = SendRetryPolicy.BlockedPrefix + "Inconsistent line endings";
+            Assert.IsFalse(SendRetryPolicy.IsBlocked(null));
+            Assert.IsFalse(SendRetryPolicy.IsBlocked("Failed: " + blocked));
+            for (int i = 0; i < 5; i++)
+            {
+                TaskStateMachine.BeginSend(t, "A");
+                Assert.AreEqual(SendDecision.Retry, TaskStateMachine.ApplySendResult(t, blocked, T0));
+                Assert.AreEqual(QueueStatus.Waiting, t.Status);
+                Assert.AreEqual(2, t.Attempts);
+                Assert.AreEqual(T0 + SendRetryPolicy.BlockedRetryDelay, t.NextTry);
+                Assert.AreEqual(blocked, t.Error);
+                Assert.IsNull(t.Finished);
+                StringAssert.Contains(TaskStateMachine.StatusText(t, T0), "VS");
+            }
+            TaskStateMachine.BeginSend(t, "A");
+            Assert.AreEqual(SendDecision.Delivered, TaskStateMachine.ApplySendResult(t, "已发送", T0));
+            Assert.AreEqual(QueueStatus.Running, t.Status);
+            Assert.IsNull(t.Error);
+        }
+
+        [TestMethod]
+        public void BlockedSend_DoesNotResetEarlierFailures()
+        {
+            var t = Waiting();
+            t.Attempts = 2;
+            TaskStateMachine.BeginSend(t, "A");
+            TaskStateMachine.ApplySendResult(t, SendRetryPolicy.BlockedPrefix + "dialog", T0);
+            TaskStateMachine.BeginSend(t, "A");
+            Assert.AreEqual(SendDecision.Fail, TaskStateMachine.ApplySendResult(t, "failure", T0));
+            Assert.AreEqual(3, t.Attempts);
+        }
+
+        [TestMethod]
         public void BeginSend_OnlyFromWaiting_CountsAttempt()
         {
             var t = Waiting();
@@ -238,12 +275,100 @@ namespace VSManager.Tests
             var next = Waiting(2, "a");
             var other = Waiting(3, "B");
             var items = new[] { failed, next, other };
-            CollectionAssert.AreEqual(new[] { other }, TaskStateMachine.NextToDispatch(items, T0));
-            StringAssert.Contains(TaskStateMachine.StatusText(next, T0, items), "已暂停");
+            CollectionAssert.AreEqual(new[] { other }, TaskStateMachine.NextToDispatch(items, T0, false));
+            StringAssert.Contains(TaskStateMachine.StatusText(next, T0, items, false), "已暂停");
             failed.Status = QueueStatus.WaitingVs;
             CollectionAssert.AreEqual(new[] { other }, TaskStateMachine.NextToDispatch(items, T0));
             failed.Status = QueueStatus.Cancelled;
             CollectionAssert.AreEqual(new[] { next, other }, TaskStateMachine.NextToDispatch(items, T0));
+        }
+
+        [TestMethod]
+        public void DefaultPolicy_SkipsTerminalFailuresWithoutMutatingThem()
+        {
+            var failed = Waiting(1); failed.Status = QueueStatus.Failed;
+            failed.Error = "original error"; failed.Result = "original result"; failed.Finished = T0;
+            var next = Waiting(2);
+            var items = new[] { failed, next };
+            CollectionAssert.AreEqual(new[] { next }, TaskStateMachine.NextToDispatch(items, T0));
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, next));
+            Assert.AreEqual("排队中", TaskStateMachine.StatusText(next, T0, items));
+            Assert.AreEqual(QueueStatus.Failed, failed.Status);
+            Assert.AreEqual("original error", failed.Error);
+            Assert.AreEqual("original result", failed.Result);
+            Assert.AreEqual(T0, failed.Finished);
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(items, next, false));
+        }
+
+        [DataTestMethod]
+        [DataRow(QueueStatus.Waiting)]
+        [DataRow(QueueStatus.WaitingVs)]
+        [DataRow(QueueStatus.Sending)]
+        [DataRow(QueueStatus.Running)]
+        public void ActivePredecessors_BlockInBothPolicies(string status)
+        {
+            var predecessor = Waiting(1); predecessor.Status = status;
+            predecessor.NextTry = T0.AddHours(1);
+            var next = Waiting(2);
+            var independent = Waiting(3, "B");
+            var items = new[] { predecessor, next, independent };
+            foreach (bool skip in new[] { true, false })
+            {
+                Assert.AreSame(predecessor, TaskStateMachine.BlockingTask(items, next, skip));
+                CollectionAssert.AreEqual(new[] { independent }, TaskStateMachine.NextToDispatch(items, T0, skip));
+            }
+        }
+
+        [DataTestMethod]
+        [DataRow(QueueStatus.Sending)]
+        [DataRow(QueueStatus.Running)]
+        public void RequeuedOlderId_CannotPassNewerInFlightTask(string status)
+        {
+            var older = Waiting(1); older.Status = QueueStatus.Failed;
+            TaskStateMachine.Requeue(older);
+            var inFlight = Waiting(2); inFlight.Status = status;
+            foreach (bool skip in new[] { true, false })
+            {
+                var items = new[] { older, inFlight };
+                Assert.AreSame(inFlight, TaskStateMachine.BlockingTask(items, older, skip));
+                Assert.AreEqual(0, TaskStateMachine.NextToDispatch(items, T0, skip).Count);
+            }
+        }
+
+        [TestMethod]
+        public void Ordering_UsesNumericId_NotLegacyQueueOrder()
+        {
+            var first = Waiting(2); first.QueueOrder = 100;
+            var resend = Waiting(10); resend.QueueOrder = 1;
+            var other = Waiting(3, "B");
+            CollectionAssert.AreEqual(new[] { first, other }, TaskStateMachine.NextToDispatch(new[] { resend, other, first }, T0));
+            Assert.AreEqual(10, resend.Order);
+        }
+
+        [TestMethod]
+        public void StrictPolicy_OnlySameTargetReplacementSupersedesFailure()
+        {
+            var failed = Waiting(1); failed.Status = QueueStatus.Failed;
+            var next = Waiting(2);
+            var resend = Waiting(3, "B"); resend.Replaces = new[] { failed.Id };
+            var items = new[] { failed, next, resend };
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(items, next, false));
+            resend.VsKey = "A";
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, next, false));
+            Assert.AreSame(next, TaskStateMachine.BlockingTask(items, resend, false));
+            failed.Status = QueueStatus.Waiting;
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(items, next, false));
+        }
+
+        [DataTestMethod]
+        [DataRow(QueueStatus.Done)]
+        [DataRow(QueueStatus.Cancelled)]
+        public void SuccessfulAndCancelledPredecessors_NeverBlock(string status)
+        {
+            var terminal = Waiting(1); terminal.Status = status;
+            var next = Waiting(2);
+            foreach (bool skip in new[] { true, false })
+                CollectionAssert.AreEqual(new[] { next }, TaskStateMachine.NextToDispatch(new[] { terminal, next }, T0, skip));
         }
 
         [TestMethod]

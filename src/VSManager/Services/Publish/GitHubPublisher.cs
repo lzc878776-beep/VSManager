@@ -198,8 +198,20 @@ namespace VSManager
             @"(^|/)(settings\.json(\.bak|\.corrupt-.*)?|tasks\.json(\.bak)?|solutions\.json(\.bak|\.corrupt-.*)?|agent-chat[^/]*|publish-scan-terms\.txt|[^/]+\.jsonl)$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        /// <summary>是否为不得提交的本机私有数据文件。/ Whether the path is a local private data file that must never be committed.</summary>
-        public static bool IsPrivateFile(string relativePath) => PrivateFile.IsMatch((relativePath ?? "").Replace('\\', '/'));
+        /// <summary>是否为不得提交的本机私有数据文件（含 AI 助手附件目录 attachments/ 下的文件）。/ Whether the path is a local private data file that must never be committed (including files under the AI assistant attachment folder attachments/).</summary>
+        public static bool IsPrivateFile(string relativePath) => IsSolutionRegistryFile(relativePath) || IsAttachmentFile(relativePath) || PrivateFile.IsMatch((relativePath ?? "").Replace('\\', '/'));
+
+        private static readonly Regex AttachmentFile = new Regex(
+            @"(^|/)attachments/", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        internal static bool IsAttachmentFile(string relativePath)
+            => AttachmentFile.IsMatch((relativePath ?? "").Replace('\\', '/'));
+
+        private static readonly Regex SolutionRegistryFile = new Regex(
+            @"(^|/)solutions\.json([.~_-][^/]*)?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.Compiled);
+
+        internal static bool IsSolutionRegistryFile(string relativePath)
+            => SolutionRegistryFile.IsMatch((relativePath ?? "").Replace('\\', '/'));
 
         /// <summary>扫描仓库中的待提交文件（相对路径）。/ Scans the files (relative paths) that are about to be committed.</summary>
         public static List<PublishFinding> ScanFiles(string root, IEnumerable<string> relativeFiles, IEnumerable<string> knownSecrets, out int scanned)
@@ -247,7 +259,9 @@ namespace VSManager
             "bin/", "obj/", "dist/", "publish/", ".vs/", "*.user",
             "settings.json", "settings.json.bak", "settings.json.corrupt-*", "tasks.json", "tasks.json.bak",
             "solutions.json", "solutions.json.bak", "solutions.json.corrupt-*",
-            "*.log", "logs/", "archive/", "Archive/", "*.jsonl", "agent-chat*"
+            "[sS][oO][lL][uU][tT][iI][oO][nN][sS].[jJ][sS][oO][nN]",
+            "[sS][oO][lL][uU][tT][iI][oO][nN][sS].[jJ][sS][oO][nN][.~_-]*",
+            "*.log", "logs/", "archive/", "Archive/", "*.jsonl", "agent-chat*", "attachments/"
         };
 
         public static string LogFile => Path.Combine(AppPaths.LogFolder, "publish-" + DateTime.Now.ToString("yyyyMMdd") + ".log");
@@ -481,9 +495,46 @@ namespace VSManager
         {
             var files = CandidateFiles();
             var list = PublishScanner.ScanFiles(_o.RepoPath, files, _o.KnownSecrets, out scanned);
+            list.AddRange(RegistryFindings().Where(f => !list.Any(existing => string.Equals(existing.File, f.File, StringComparison.OrdinalIgnoreCase))));
             list.AddRange(PublishScanner.ScanText("<提交信息 / commit message>", _o.CommitMessage, _o.KnownSecrets));
             list.AddRange(PublishScanner.ScanText("<提交作者 / commit author>", (_o.AuthorName ?? "") + " " + (_o.AuthorEmail ?? ""), _o.KnownSecrets));
             return list;
+        }
+
+        private List<PublishFinding> RegistryFindings()
+        {
+            var findings = new List<PublishFinding>();
+            if (!IsOwnRepo()) return findings;
+            var files = Git("ls-files -z --cached --others --exclude-standard");
+            if (!files.Ok) throw new IOException("无法检查注册表文件 / Cannot inspect registry files: " + files.Text);
+            var paths = files.Out.Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries).ToList();
+            var head = Git("rev-parse --verify -q HEAD");
+            if (head.Ok)
+            {
+                // 推送会包含历史提交；仅从当前索引删除不能清除旧数据。/ Push includes history; removing an index entry does not erase old data.
+                var history = Git("log --format= --name-only -z -m --no-renames HEAD", 120000);
+                if (!history.Ok) throw new IOException("无法检查注册表历史 / Cannot inspect registry history: " + history.Text);
+                paths.AddRange(history.Out.Split(new[] { '\0' }, StringSplitOptions.RemoveEmptyEntries).Select(p => p.Trim('\r', '\n')));
+            }
+            else if (head.Code != 1) throw new IOException("无法检查提交历史 / Cannot inspect commit history: " + head.Text);
+            foreach (var path in paths.Where(PublishScanner.IsSolutionRegistryFile).Distinct(StringComparer.OrdinalIgnoreCase))
+                findings.Add(new PublishFinding { File = path, Line = 0, Rule = "本机解决方案注册表 / Local solution registry", Text = "注册表及其副本不得发布 / Registry files and their copies must not be published" });
+            return findings;
+        }
+
+        private bool RejectRegistryFindings(PublishResult result)
+        {
+            if (!result.Findings.Any(f => PublishScanner.IsSolutionRegistryFile(f.File))) return false;
+            result.Aborted = true;
+            Fail(result, "解决方案注册表不得发布 / Solution registry must not be published",
+                "从索引及待推送历史中移除注册表和副本，仅保留本机数据 / Remove registry files and copies from the index and history being pushed; keep data local");
+            return true;
+        }
+
+        private bool CheckRegistryPrivacy(PublishResult result)
+        {
+            result.Findings.AddRange(RegistryFindings().Where(f => !result.Findings.Any(existing => string.Equals(existing.File, f.File, StringComparison.OrdinalIgnoreCase))));
+            return !RejectRegistryFindings(result);
         }
 
         private bool IsOwnRepo()
@@ -538,6 +589,7 @@ namespace VSManager
 
             if (string.IsNullOrWhiteSpace(_o.RepoPath) || !Directory.Exists(_o.RepoPath))
                 return Fail(r, "本地仓库目录不存在 / Local folder not found: " + _o.RepoPath, "在发布窗口中设置本地仓库目录 / Set the local repository folder");
+            if (!CheckRegistryPrivacy(r)) return r;
             if (!Regex.IsMatch(name, @"^[A-Za-z0-9._-]{1,100}$"))
                 return Fail(r, "仓库名无效 / Invalid repository name: " + name, "仅使用字母、数字、. _ - / Use letters, digits, '.', '_' or '-'");
             if (!Regex.IsMatch(branch, @"^[A-Za-z0-9._/-]{1,100}$"))
@@ -583,6 +635,7 @@ namespace VSManager
             Log("⑤ 敏感信息自检 / Sensitive-content scan…");
             r.Findings = ScanCandidates(out int scanned);
             Log($"  扫描 {scanned} 个文件，命中 {r.Findings.Count} 处 / {scanned} files scanned, {r.Findings.Count} hit(s)");
+            if (RejectRegistryFindings(r)) return r;
             if (r.Findings.Count > 0)
             {
                 foreach (var f in r.Findings) Log("  " + f);
@@ -599,6 +652,7 @@ namespace VSManager
             Log("⑥ 提交 / Committing…");
             var add = Git("add -A", 120000);
             if (!add.Ok) return Fail(r, "git add 失败 / git add failed: " + add.Text, null);
+            if (!CheckRegistryPrivacy(r)) return r;
             var status = Git("status --porcelain");
             bool hasHead = Git("rev-parse --verify -q HEAD").Ok;
             if (status.Out.Trim().Length > 0)
@@ -654,6 +708,7 @@ namespace VSManager
             }
 
             // 8. push
+            if (!CheckRegistryPrivacy(r)) return r;
             Log("⑧ 推送 / Pushing " + branch + "…");
             var push = Git("push -u origin " + Q(branch), 600000, auth: true);
             if (!push.Ok)

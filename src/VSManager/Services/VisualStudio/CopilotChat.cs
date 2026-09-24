@@ -121,11 +121,14 @@ namespace VSManager
                         string quick = QuickSignature(vs, _force || vs != _lastVs);
                         // 选中新的 VS（或手动请求）时，若未找到对话窗格则自动在该 VS 中打开
                         bool wantOpen = _openRequested || (vs != _lastVs && (_getSettings()?.AutoOpenChat ?? false));
-                        if (quick == null && wantOpen)
+                        // 手动请求且开启 AutoOpenCopilotPane 时，即使找到窗格也要确保不在历史记录 / A manual request with AutoOpenCopilotPane also leaves history mode when the pane exists
+                        bool autoOpen = _getSettings()?.AutoOpenCopilotPane ?? true;
+                        if (wantOpen && (quick == null || (_openRequested && autoOpen)))
                         {
                             _openRequested = false;
                             Opening?.Invoke(vs);
-                            if (OpenPane(vs, 6000) != null) quick = QuickSignature(vs, true);
+                            bool opened = autoOpen ? EnsureChatOpen(vs, false, 6000, out var p).Ok || p != null : OpenPane(vs, 6000) != null;
+                            if (opened) quick = QuickSignature(vs, true);
                         }
                         _openRequested = false;
                         bool full = _force || vs != _lastVs || quick != _lastQuick || vs.Copilot == CopilotState.Busy ||
@@ -258,6 +261,8 @@ namespace VSManager
         }
 
         private readonly Dictionary<int, DateTime> _missUntil = new Dictionary<int, DateTime>();
+        /// <summary>最近一次完整搜索找到的窗格候选数量（诊断用）。/ Pane candidates of the latest full search (diagnostics).</summary>
+        private int _lastPaneCandidates;
 
         /// <param name="throttleMiss">为 true 时，最近未找到窗格的 VS 在冷却期内直接返回 null（完整搜索开销大）。</param>
         public AutomationElement FindPane(VsInstance vs, bool throttleMiss = false)
@@ -306,6 +311,7 @@ namespace VSManager
             }
             lock (_lock)
             {
+                _lastPaneCandidates = candidates;
                 if (best != null) { _panes[vs.Pid] = best; _hosts[vs.Pid] = bestHost; _missUntil.Remove(vs.Pid); }
                 else _missUntil[vs.Pid] = DateTime.Now.AddSeconds(10);
             }
@@ -519,6 +525,7 @@ namespace VSManager
         /// <summary>通过 DTE 命令在 VS 中打开对话窗格，并等待其出现在 UIA 树中。</summary>
         public AutomationElement OpenPane(VsInstance vs, int timeoutMs)
         {
+            if (BlockingDialogMessage(vs) != null) return null;
             try
             {
                 var t = DteWorker.Run(() => VsService.OpenCopilotChat(vs));
@@ -664,19 +671,39 @@ namespace VSManager
             bool hasImages = images != null && images.Count > 0;
             if (string.IsNullOrWhiteSpace(text) && !hasImages) return "消息为空";
             if (vs == null || !Native.IsWindow(vs.MainHwnd)) return "该 VS 已关闭";
+            string blocked = BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
             // 在任何 DTE 命令（可能把 VS 带到前台）之前记录 / Record before any DTE command (which may bring VS to the front)
             bool fgBefore = ForegroundIs(vs);
 
             var pane = FindPane(vs);
-            if (pane == null || SafeOffscreen(pane))
+            bool autoOpen = AutoOpenPaneEnabled;
+            string paneDetail = null;
+            var mode = CopilotPaneMode.Conversation;
+            if (autoOpen) mode = Observe(pane, out paneDetail);
+            if (autoOpen && (mode == CopilotPaneMode.NotFound || mode == CopilotPaneMode.Hidden || mode == CopilotPaneMode.History))
+            {
+                // 窗格未真正打开（缺失、不可见或停留在历史记录）：自动打开对话助手 / Pane not really open: auto-open the chat
+                T($"对话窗格未真正打开（{CopilotPaneModes.Describe(mode)}，{paneDetail}），自动打开对话助手 / pane not really open, auto-opening (AutoOpenCopilotPane)");
+                var open = EnsureChatOpen(vs, false, 6000, out var opened);
+                pane = opened ?? pane;
+                T("自动打开结果 / auto-open result：" + (open.Ok ? "成功 / ok" : "失败 / failed") + "，" + CopilotPaneModes.Describe(open.Final) + "，" + open.ElapsedMs + "ms");
+                if (open.Blocked != null) return open.Blocked;
+                if (!open.Ok && open.Final == CopilotPaneMode.History) return open.MessageZh(null) + " / " + open.MessageEn(null);
+            }
+            else if (pane == null || SafeOffscreen(pane))
             {
                 T(pane == null ? "未找到对话窗格，尝试通过 DTE 打开" : "对话窗格不可见（offscreen），尝试通过 DTE 切回");
                 pane = OpenPane(vs, 6000) ?? pane;
                 if (pane != null) T("打开后窗格 " + Describe(pane));
             }
+            blocked = BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             if (pane == null) return InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
             var loc = LocateWithRetry(vs, ref pane, out int locateAttempts);
+            blocked = loc.Blocked ?? BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             var edit = loc.Edit;
             if (edit == null) return InputLocator.FailureMessage(loc.Outcome, locateAttempts);
             T("输入框 " + Describe(edit) + " 焦点=" + HasFocus(edit) + " 现有草稿「" + Short(GetEditText(edit)) + "」 前台=" + ForegroundIs(vs));
@@ -796,6 +823,8 @@ namespace VSManager
         /// </summary>
         private string SendBackground(VsInstance vs, AutomationElement pane, AutomationElement edit, string text)
         {
+            string blocked = BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             IntPtr host;
             lock (_lock) if (!_hosts.TryGetValue(vs.Pid, out host)) host = vs.MainHwnd;
             if (!Native.IsWindow(host)) host = vs.MainHwnd;
@@ -807,12 +836,16 @@ namespace VSManager
                 if (!realFg) { FakeActivate(host); faked = true; }
                 if (!WaitFocus(edit, 300))
                 {
+                    blocked = BlockingDialogMessage(vs);
+                    if (blocked != null) return blocked;
                     T("后台：模拟激活后输入框未获得焦点，执行 View.GitHub.Copilot.Chat");
                     // 对话窗格命令会把焦点移到输入框
                     try { DteWorker.Run(() => VsService.OpenCopilotChat(vs)).Wait(3000); } catch { }
                     if (faked) FakeActivate(host);
                     if (!WaitFocus(edit, 800))
                     {
+                        blocked = BlockingDialogMessage(vs);
+                        if (blocked != null) return blocked;
                         T("后台：仍未获得焦点，模拟点击输入框");
                         ClickElement(host, edit);
                         if (!WaitFocus(edit, 600)) { T("后台：无法聚焦输入框"); return null; }
@@ -820,6 +853,8 @@ namespace VSManager
                 }
                 if (!realFg && ForegroundIs(vs)) realFg = true;
 
+                blocked = BlockingDialogMessage(vs);
+                if (blocked != null) return blocked;
                 IntPtr target = FocusHwnd(host);
                 T("后台：输入框已聚焦，焦点窗口=0x" + target.ToString("X"));
                 var cur = GetEditText(edit) ?? "";
@@ -834,12 +869,18 @@ namespace VSManager
                     if (!WaitText(edit, t => t.Trim().Length == 0, 2000)) { T("后台：草稿未能清除"); return null; }
                 }
 
+                blocked = BlockingDialogMessage(vs);
+                if (blocked != null) return blocked;
                 foreach (char c in text) PostMessageW(target, WM_CHAR, (IntPtr)c, (IntPtr)1);
                 if (!WaitText(edit, t => PasteVerifier.IsConfirmed(PasteVerifier.Classify(text, null, t)), Math.Max(ConfirmTimeoutMs, 2500 + text.Length * 3)))
                 {
+                    blocked = BlockingDialogMessage(vs);
+                    if (blocked != null) return blocked;
                     T("后台：写入后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
                     return "未能把消息完整写入 Copilot 输入框，已取消发送（内容保留在 VS 输入框中）";
                 }
+                blocked = BlockingDialogMessage(vs);
+                if (blocked != null) return blocked;
                 if (!HasFocus(edit)) { T("后台：写入后输入框失去焦点"); return "Copilot 输入框失去焦点，已取消发送（内容保留在 VS 输入框中）"; }
 
                 T("后台：内容已写入，发送 Enter");
@@ -893,10 +934,31 @@ namespace VSManager
             catch { return null; }
         }
 
+        private string BlockingDialogMessage(VsInstance vs)
+        {
+            if (vs == null) return null;
+            if (!Native.IsWindow(vs.MainHwnd) || Native.IsWindowEnabled(vs.MainHwnd))
+            {
+                lock (_lock) _handledDialogs.Remove(vs.Pid);
+                return null;
+            }
+            var popup = Native.GetLastActivePopup(vs.MainHwnd);
+            Native.GetWindowThreadProcessId(popup, out uint pid);
+            string title = popup != vs.MainHwnd && pid == (uint)vs.Pid && Native.IsWindowVisible(popup)
+                ? Native.GetText(popup) : "";
+            string resolution = TryResolveDialog(vs, popup, title);
+            ForgetPane(vs);
+            string message = SendRetryPolicy.BlockedPrefix + (string.IsNullOrWhiteSpace(title) ? "VS 窗口暂不可操作" : title)
+                + "。" + (resolution ?? "请处理弹窗；队列任务将自动继续 / Resolve the dialog; queued tasks will resume automatically");
+            T(message);
+            return message;
+        }
+
         private static bool ForegroundIs(VsInstance vs)
         {
             Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
-            return pid == (uint)vs.Pid;
+            // A modal dialog belongs to the VS process too, but must never receive our keys.
+            return pid == (uint)vs.Pid && Native.IsWindowEnabled(vs.MainHwnd);
         }
 
         /// <summary>
@@ -916,6 +978,8 @@ namespace VSManager
                 PasteReport rep = null;
                 for (int attempt = 0; attempt <= retries; attempt++)
                 {
+                    string blocked = BlockingDialogMessage(vs);
+                    if (blocked != null) return blocked;
                     bool last = attempt == retries;
                     if (attempt > 0)
                     {
@@ -933,13 +997,14 @@ namespace VSManager
                     if (err == null) err = FocusForPaste(vs, edit);
                     if (err != null)
                     {
-                        if (last) return err;
+                        if (last || SendRetryPolicy.IsBlocked(err)) return err;
                         Thread.Sleep(300);
                         continue;
                     }
 
                     // 粘贴未生效时不能回车：空输入框回车会被误判为“已发送”
                     rep = PasteAndVerify(vs, pane, ref edit, text, ConfirmTimeoutMs);
+                    if (rep.Blocked != null) return rep.Blocked;
                     T("前台：" + rep);
                     if (PasteVerifier.IsConfirmed(rep.Check) || rep.LikelyWritten) break;
                 }
@@ -953,6 +1018,8 @@ namespace VSManager
                     T("前台：无法读取输入框文本，但水印已隐藏、剪贴板内容正确且焦点在输入框，继续发送并以送达确认为准 / " +
                       "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
 
+                string beforeSubmit = BlockingDialogMessage(vs);
+                if (beforeSubmit != null) return beforeSubmit;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) { T("前台：回车前焦点已改变"); return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）"; }
                 T("前台：内容已粘贴，发送 Enter");
                 Key(VK_RETURN, false); Key(VK_RETURN, true);
@@ -972,7 +1039,7 @@ namespace VSManager
                     else Clipboard.Clear();
                 }
                 catch { }
-                if (returnTo != IntPtr.Zero) Native.Activate(returnTo);
+                if (returnTo != IntPtr.Zero && ForegroundIs(vs)) Native.Activate(returnTo);
                 Poke();
             }
         }

@@ -439,6 +439,52 @@ namespace VSManager
             catch (Exception ex) { return "切换失败：" + ex.Message; }
         }
 
+        /// <summary>
+        /// 显示 Copilot 对话工具窗口：执行 View.GitHub.Copilot.Chat，找到窗口后若为自动隐藏则固定显示、若不可见则设为可见；不改变停靠方式，也不强制前置 VS。
+        /// 返回诊断文字，<paramref name="wasAutoHide"/> 为窗口原本是否自动隐藏（未知为 null）。必须在 DteWorker 线程调用。
+        /// Shows the Copilot chat tool window: runs View.GitHub.Copilot.Chat, then pins it when auto-hidden and makes it visible;
+        /// never changes the docking style or forces VS to the front. Returns diagnostics; <paramref name="wasAutoHide"/> tells
+        /// whether the window was auto-hidden (null = unknown). Must run on the DteWorker thread.
+        /// </summary>
+        public static bool ShowCopilotChatWindow(VsInstance vs, string keyword, out bool? wasAutoHide, out string diagnostics)
+        {
+            wasAutoHide = null;
+            if (vs?.Dte == null) { diagnostics = "无法连接 DTE / DTE unavailable"; return false; }
+            if (string.IsNullOrWhiteSpace(keyword)) keyword = "Copilot";
+            try
+            {
+                dynamic dte = vs.Dte;
+                try { dte.ExecuteCommand(CopilotChatCommand); }
+                catch (Exception ex) { diagnostics = CopilotChatCommand + " 失败 / failed: " + ex.Message; return false; }
+
+                dynamic win = null;
+                try { if (IsCopilotWindow(dte.ActiveWindow, keyword)) win = dte.ActiveWindow; } catch { }
+                if (win == null)
+                    foreach (dynamic w in dte.Windows)
+                        if (IsCopilotWindow(w, keyword)) { win = w; break; }
+                if (win == null) { diagnostics = "命令已执行，但 DTE 窗口列表中没有对话窗格 / command ran but no chat window in DTE.Windows"; return true; }
+
+                var notes = new List<string> { "命令已执行 / command ran" };
+                try
+                {
+                    bool autoHide = (bool)win.AutoHides;
+                    wasAutoHide = autoHide;
+                    if (autoHide) { win.AutoHides = false; notes.Add("已取消自动隐藏 / auto-hide unpinned"); }
+                }
+                catch { notes.Add("无法读取自动隐藏 / auto-hide unknown"); }
+                try
+                {
+                    bool visible = (bool)win.Visible;
+                    notes.Add("可见 / visible=" + visible);
+                    if (!visible) { win.Visible = true; notes.Add("已设为可见 / made visible"); }
+                }
+                catch { }
+                diagnostics = string.Join("，", notes);
+                return true;
+            }
+            catch (Exception ex) { diagnostics = "显示对话窗格失败 / show failed: " + ex.Message; return false; }
+        }
+
         private static bool IsStrip(dynamic dte, dynamic win)
         {
             try

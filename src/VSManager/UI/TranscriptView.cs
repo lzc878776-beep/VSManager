@@ -48,6 +48,9 @@ namespace VSManager
         /// <summary>助手消息的标签名称。</summary>
         public string AssistantLabel { get; set; } = "Copilot";
 
+        /// <summary>点击本机附件链接（参数为附件编号）。/ An attachment link was clicked (argument: attachment id).</summary>
+        public event Action<string> AttachmentClicked;
+
         /// <summary>
         /// 重置视图后滚动到顶部而不是底部（用于倒序显示的历史记录）。
         /// Scroll to the top instead of the bottom after a reset (used for newest-first history).
@@ -379,7 +382,7 @@ namespace VSManager
                 if (part.Step)
                     html.Append("<div class=\"step\">› ").Append(WebUtility.HtmlEncode(part.Text)).Append("</div>");
                 else if (source.User)
-                    html.Append("<div class=\"plain\">").Append(WebUtility.HtmlEncode(part.Text)).Append("</div>");
+                    html.Append("<div class=\"plain\">").Append(PlainWithAttachments(part.Text)).Append("</div>");
                 else
                 {
                     using (var writer = new StringWriter(CultureInfo.InvariantCulture))
@@ -405,18 +408,48 @@ namespace VSManager
             return true;
         }
 
+        private static readonly System.Text.RegularExpressions.Regex AttachmentLine = new System.Text.RegularExpressions.Regex(
+            @"^\[📎 (?<name>(?:\\.|[^\]\\])+)\]\(vsm-attachment:(?<id>\d{8}-\d{9}-[0-9a-f]{6})\)(?<rest>[^\r\n]*)$",
+            System.Text.RegularExpressions.RegexOptions.Multiline | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// 用户消息按纯文本显示，只把整行的附件引用「[📎 文件名](vsm-attachment:编号)」显示为可点击链接。
+        /// User messages stay plain text; only whole-line attachment references "[📎 name](vsm-attachment:id)" become clickable links.
+        /// </summary>
+        internal static string PlainWithAttachments(string text)
+        {
+            text = text ?? "";
+            var sb = new StringBuilder();
+            int last = 0;
+            foreach (System.Text.RegularExpressions.Match m in AttachmentLine.Matches(text))
+            {
+                sb.Append(WebUtility.HtmlEncode(text.Substring(last, m.Index - last)));
+                string name = System.Text.RegularExpressions.Regex.Replace(m.Groups["name"].Value, @"\\(.)", "$1");
+                sb.Append("<a href=\"").Append(AttachmentPolicy.LinkScheme).Append(m.Groups["id"].Value).Append("\" title=\"")
+                  .Append(WebUtility.HtmlEncode("点击在资源管理器中定位 / Click to locate in Explorer")).Append("\">📎 ")
+                  .Append(WebUtility.HtmlEncode(name)).Append("</a>").Append(WebUtility.HtmlEncode(m.Groups["rest"].Value));
+                last = m.Index + m.Length;
+            }
+            sb.Append(WebUtility.HtmlEncode(text.Substring(last)));
+            return sb.ToString();
+        }
+
         private sealed class SafeLinkRenderer : HtmlObjectRenderer<LinkInline>
         {
             protected override void Write(HtmlRenderer renderer, LinkInline link)
             {
                 string target = link.GetDynamicUrl != null ? link.GetDynamicUrl() : link.Url;
                 Uri uri;
-                bool enabled = !link.IsImage && TryWebUri(target, out uri);
+                bool enabled = !link.IsImage && (TryWebUri(target, out uri) || IsAttachmentLink(target));
                 if (enabled) renderer.Write("<a href=\"").Write(WebUtility.HtmlEncode(target)).Write("\" rel=\"noreferrer noopener\">");
                 renderer.WriteChildren(link);
                 if (enabled) renderer.Write("</a>");
             }
         }
+
+        private static bool IsAttachmentLink(string value) =>
+            value != null && value.StartsWith(AttachmentPolicy.LinkScheme, StringComparison.Ordinal)
+            && AttachmentPolicy.IsValidId(value.Substring(AttachmentPolicy.LinkScheme.Length));
 
         private static bool TryWebUri(string value, out Uri uri)
         {
@@ -466,6 +499,13 @@ namespace VSManager
                     if (!TryWebUri(value, out uri)) throw new InvalidOperationException("仅支持有效的 HTTP/HTTPS 链接。");
                     Process.Start(new ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true });
                     _status.Visible = false;
+                }
+                else if (type == "attachment")
+                {
+                    if (!AttachmentPolicy.IsValidId(value)) throw new InvalidOperationException("无效的附件链接 / Invalid attachment link。");
+                    _status.Visible = false;
+                    if (AttachmentClicked != null) AttachmentClicked(value);
+                    else { string error = AttachmentStore.Reveal(value); if (error != null) ShowError(error, false); }
                 }
                 else if (type == "error" && value.Length <= 1024)
                     ShowError("对话视图：" + value, false);

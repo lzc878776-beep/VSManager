@@ -50,7 +50,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void SaveThenLoad_PreservesCompletionReceiptAndResendPosition()
+        public void SaveThenLoad_PreservesReceiptAndLegacyOrder_ButDispatchesById()
         {
             var task = T(7, QueueStatus.Waiting);
             task.QueueOrder = 2;
@@ -61,7 +61,8 @@ namespace VSManager.Tests
             Assert.IsNull(store.Save(new[] { task }));
             var loaded = store.Load(new List<string>()).Single();
             Assert.AreEqual(task.CompletionToken, loaded.CompletionToken);
-            Assert.AreEqual(2, loaded.Order);
+            Assert.AreEqual(2, loaded.QueueOrder);
+            Assert.AreEqual(7, loaded.Order);
             CollectionAssert.AreEqual(task.Replaces, loaded.Replaces);
             Assert.IsTrue(TaskStateMachine.TryReadSuccess(loaded, "Completed\r\n" + TaskStateMachine.SuccessReceipt(task), out _));
         }

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.Serialization;
 using System.Runtime.Serialization.Json;
 
@@ -132,6 +133,8 @@ namespace VSManager
         [DataMember] public bool AgentEnabled;
         /// <summary>Copilot 对话窗格被切到后台（如切换到其他文档标签）时自动切回。</summary>
         [DataMember] public bool RestoreCopilotPane;
+        /// <summary>对话窗格未真正打开（缺失、不可见或停留在历史记录）时，发送前与手动打开时自动打开到当前会话，默认开启。/ Auto-open the current conversation before sending and on manual open when the pane is missing, hidden or on the history list (default on).</summary>
+        [DataMember] public bool AutoOpenCopilotPane;
         [DataMember] public string AgentEndpoint;
         [DataMember] public string AgentModel;
         [DataMember] public string AgentKeyProtected;
@@ -141,9 +144,17 @@ namespace VSManager
         [DataMember] public bool AgentConfirm;
         /// <summary>任务清单中的任务完成后，自动让 AI 助手跟进（汇报结果 / 发布后续任务）。</summary>
         [DataMember] public bool AgentAutoFollowUp;
+        /// <summary>允许经预览批准的截图分析；需要视觉模型。/ Allow approved screenshot analysis; requires a vision model.</summary>
+        [DataMember] public bool AgentScreenshotEnabled;
+        /// <summary>保留旧配置字段；严格文件白名单模式下不再允许 AI 执行任意脚本。/ Legacy field retained; strict file allowlisting no longer permits arbitrary AI scripts.</summary>
+        [DataMember] public bool AgentPowerShellEnabled;
+        /// <summary>将已登记解决方案目录加入文件授权范围，默认开启。/ Include registered solution directories in file authorization; enabled by default.</summary>
+        [DataMember] public bool AgentIncludeSolutionRoots;
+        /// <summary>用户显式授权的额外文件根目录，支持环境变量，默认空。/ Additional file roots explicitly authorized by the user, supporting environment variables; empty by default.</summary>
+        [DataMember] public List<string> AgentFileRoots;
 
-        // ---- AI 额度（单次上限，默认值为旧硬编码值 ×20）----
-        /// <summary>单次工具返回文本上限（字符）：读取对话 / 等待结果 / 错误列表 / 读取文件；代码扫描为其 1.5 倍。</summary>
+        // ---- AI 额度（单次上限）/ AI per-call quotas ----
+        /// <summary>单次工具返回字符上限；文件工具另受 16000 字符硬上限约束，取较小值。/ Per-tool character quota; file tools also enforce a 16000-character hard cap, using the lower limit.</summary>
         [DataMember] public int AgentMaxToolText;
         /// <summary>读取 VS 对话时单条消息的文本上限（字符）。</summary>
         [DataMember] public int AgentMaxMessageText;
@@ -195,12 +206,23 @@ namespace VSManager
             AgentMaxIterations = ClampQuota(nameof(AgentMaxIterations), AgentMaxIterations);
             AgentMaxFileLines = ClampQuota(nameof(AgentMaxFileLines), AgentMaxFileLines);
             AgentMaxReadCount = ClampQuota(nameof(AgentMaxReadCount), AgentMaxReadCount);
+            AgentFileRoots = (AgentFileRoots ?? new List<string>()).Where(p => !string.IsNullOrWhiteSpace(p))
+                .Select(p => p.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            AgentPowerShellEnabled = false;
         }
         [DataMember] public bool TaskPanelCollapsed;
+        /// <summary>任务清单按目标 VS 分组显示（false = 平铺列表），默认开启。/ Group the task list by target VS (false = flat list); on by default.</summary>
+        [DataMember] public bool TaskListGroupByVs;
+        /// <summary>分组排序："activity"（默认，执行中优先，再按最近活动倒序）或 "number"（按 VS 编号）。/ Group order: "activity" (default: running first, then latest activity) or "number" (by VS number).</summary>
+        [DataMember] public string TaskListGroupSort;
+        /// <summary>已折叠的任务分组（分组键，只保存在本机 settings.json）。/ Collapsed task groups (group keys, kept only in the local settings.json).</summary>
+        [DataMember] public List<string> TaskListCollapsedGroups;
         /// <summary>监听各 VS 中手动进行的 Copilot 对话并显示在任务清单中。</summary>
         [DataMember] public bool WatchConversations;
-        /// <summary>任务清单保留的已结束任务条数上限；0 或负数表示全部保留（默认）。</summary>
+        /// <summary>普通已结束任务保留上限；失败及维护重发关系所需记录除外，0 或负数保留全部。/ Completed history limit, excluding failures and required resend links; zero or negative keeps all.</summary>
         [DataMember] public int TaskHistoryLimit;
+        /// <summary>默认跳过失败前序继续排队任务；关闭时失败阻塞后续。/ Skip failed predecessors by default; disabling pauses successors on failure.</summary>
+        [DataMember] public bool SkipFailedPredecessors;
         /// <summary>下一个任务编号，保证清除历史后编号也不重复。</summary>
         [DataMember] public int TaskNextId;
         /// <summary>
@@ -258,6 +280,28 @@ namespace VSManager
         /// When exceeded: false = notify only; true = gentle clean automatically (skipped, notify only, while debugging / building / Copilot is running).
         /// </summary>
         [DataMember] public bool VsMemoryAutoClean;
+        /// <summary>
+        /// 定期自动温和清理 VS 内存，默认关闭；调试 / 生成 / Copilot 运行 / 任务执行中的实例会被跳过。
+        /// Periodically gently clean VS memory; off by default. Instances that are debugging, building, running Copilot or a task are skipped.
+        /// </summary>
+        [DataMember] public bool AutoTrimVsMemory;
+        /// <summary>定期清理间隔（分钟），默认 30，范围 5–1440。/ Periodic cleanup interval in minutes; default 30, range 5–1440.</summary>
+        [DataMember] public int AutoTrimIntervalMinutes;
+        /// <summary>
+        /// 定期清理阈值（MB，VS 实例及其子进程的工作集合计）；0 表示不限制，大于 0 时只清理超过该值的实例。
+        /// Periodic cleanup threshold in MB (working set of a VS instance plus children); 0 = no limit, otherwise only larger instances are cleaned.
+        /// </summary>
+        [DataMember] public int AutoTrimThresholdMB;
+
+        // ---- AI 助手附件 / AI assistant attachments ----
+        /// <summary>单个附件大小上限（MB），默认 10，范围 1–100。/ Maximum size of one attachment in MB; default 10, range 1–100.</summary>
+        [DataMember] public int AttachmentMaxFileMB;
+        /// <summary>单条消息附件数量上限，默认 5，范围 1–20。/ Maximum attachments per message; default 5, range 1–20.</summary>
+        [DataMember] public int AttachmentMaxCount;
+        /// <summary>附件保留天数，默认 30；0 表示不限制（不自动清理）。/ Days to keep attachments; default 30, 0 = unlimited (no automatic cleanup).</summary>
+        [DataMember] public int AttachmentKeepDays;
+        /// <summary>文本附件内联到任务正文的字数上限（单文件），默认 20000，范围 1000–200000。/ Characters of one text attachment inlined into a task; default 20000, range 1000–200000.</summary>
+        [DataMember] public int AttachmentInlineMaxChars;
 
         // ---- 自动重启 / Auto restart ----
         /// <summary>
@@ -298,6 +342,10 @@ namespace VSManager
         [DataMember] public int SendConfirmTimeoutSeconds;
         /// <summary>粘贴未能确认时是否在本次发送内自动重试，默认开启。/ Retry automatically within the same send when the paste cannot be confirmed (on by default).</summary>
         [DataMember] public bool SendAutoRetry;
+        /// <summary>仅自动确认 Windows CR LF 的行尾标准化弹窗。/ Only auto-confirm the Windows CR LF normalization dialog.</summary>
+        [DataMember] public bool SendAutoNormalizeLineEndings;
+        /// <summary>自动关闭白名单中的单按钮完成通知；未知弹窗仍需确认。/ Dismiss allowlisted single-button notices; unknown dialogs remain manual.</summary>
+        [DataMember] public bool SendAutoDismissNotices;
         /// <summary>自动重试次数，默认 1，范围 0–5。/ Number of automatic retries (default 1, range 0–5).</summary>
         [DataMember] public int SendRetryCount;
         /// <summary>
@@ -307,6 +355,11 @@ namespace VSManager
         [DataMember] public int SendLocateTimeoutSeconds;
         /// <summary>定位失败后刷新窗格并重试的次数，默认 1，范围 0–5（SendAutoRetry 关闭时不重试）。/ Retries after a failed locate, refreshing the pane (default 1, range 0–5; none when SendAutoRetry is off).</summary>
         [DataMember] public int SendLocateRetryCount;
+        /// <summary>发送前关闭已保存文档标签页，默认关闭；未保存、状态未知及调试中均跳过。/ Close saved document tabs before sending; off by default, skipping unsaved, unknown and debugging states.</summary>
+        [DataMember] public bool CloseVsDocumentsBeforeSend;
+        /// <summary>文档标签页数量严格超过此值才清理，默认 10，范围 0–1000。/ Clean only when document tabs strictly exceed this threshold; default 10, range 0–1000.</summary>
+        [DataMember] public int CloseVsDocumentsThreshold;
+        public const int DefaultCloseVsDocumentsThreshold = 10;
 
         public const int DefaultSendConfirmTimeoutSeconds = PasteVerifier.DefaultTimeoutSeconds, DefaultSendRetryCount = 1;
         public const int DefaultSendLocateTimeoutSeconds = InputLocator.DefaultTimeoutSeconds, DefaultSendLocateRetryCount = InputLocator.DefaultRetryCount;
@@ -318,6 +371,7 @@ namespace VSManager
             SendRetryCount = Math.Min(Math.Max(0, SendRetryCount), 5);
             SendLocateTimeoutSeconds = SendLocateTimeoutSeconds <= 0 ? DefaultSendLocateTimeoutSeconds : Math.Min(SendLocateTimeoutSeconds, 60);
             SendLocateRetryCount = Math.Min(Math.Max(0, SendLocateRetryCount), 5);
+            CloseVsDocumentsThreshold = CloseVsDocumentsThreshold < 0 ? DefaultCloseVsDocumentsThreshold : Math.Min(CloseVsDocumentsThreshold, 1000);
         }
 
         // ---- 解决方案登记与 VS 开关 / Solution registry and VS open / close ----
@@ -426,10 +480,15 @@ namespace VSManager
             VoiceSpeakerEn = DoubaoVoice.DefaultVoiceFor(DoubaoVoice.DefaultResource, true);
             AgentEnabled = true;
             RestoreCopilotPane = true;
+            AutoOpenCopilotPane = true;
             AgentEndpoint = AgentPresets.Default.Endpoint;
             AgentModel = AgentPresets.Default.Model;
             AgentConfirm = false;
             AgentAutoFollowUp = true;
+            AgentScreenshotEnabled = true;
+            AgentPowerShellEnabled = false;
+            AgentIncludeSolutionRoots = true;
+            AgentFileRoots = new List<string>();
             AgentMaxToolText = DefaultAgentMaxToolText;
             AgentMaxMessageText = DefaultAgentMaxMessageText;
             AgentMaxTaskText = DefaultAgentMaxTaskText;
@@ -439,8 +498,12 @@ namespace VSManager
             AgentMaxFileLines = DefaultAgentMaxFileLines;
             AgentMaxReadCount = DefaultAgentMaxReadCount;
             TaskPanelCollapsed = false;
+            TaskListGroupByVs = true;
+            TaskListGroupSort = TaskGrouping.SortByActivity;
+            TaskListCollapsedGroups = new List<string>();
             WatchConversations = true;
             TaskHistoryLimit = 0;
+            SkipFailedPredecessors = true;
             TaskNextId = 0;
             ArchiveEnabled = true;
             ArchiveRoot = Archive.DefaultRoot;
@@ -452,6 +515,13 @@ namespace VSManager
             VsMemoryAutoEnabled = false;
             VsMemoryThresholdMB = VsMemory.DefaultThresholdMB;
             VsMemoryAutoClean = false;
+            AutoTrimVsMemory = false;
+            AutoTrimIntervalMinutes = VsAutoMemoryTrimmer.DefaultIntervalMinutes;
+            AutoTrimThresholdMB = 0;
+            AttachmentMaxFileMB = AttachmentPolicy.DefaultMaxFileMB;
+            AttachmentMaxCount = AttachmentPolicy.DefaultMaxCount;
+            AttachmentKeepDays = AttachmentPolicy.DefaultKeepDays;
+            AttachmentInlineMaxChars = AttachmentPolicy.DefaultInlineMaxChars;
             AgentAutoRestart = true;
             AgentHangTimeoutSeconds = DefaultAgentHangTimeoutSeconds;
             AgentFailureThreshold = DefaultAgentFailureThreshold;
@@ -460,9 +530,13 @@ namespace VSManager
             AutoRestartWindowMinutes = DefaultAutoRestartWindowMinutes;
             SendConfirmTimeoutSeconds = DefaultSendConfirmTimeoutSeconds;
             SendAutoRetry = true;
+            SendAutoNormalizeLineEndings = true;
+            SendAutoDismissNotices = true;
             SendRetryCount = DefaultSendRetryCount;
             SendLocateTimeoutSeconds = DefaultSendLocateTimeoutSeconds;
             SendLocateRetryCount = DefaultSendLocateRetryCount;
+            CloseVsDocumentsBeforeSend = false;
+            CloseVsDocumentsThreshold = DefaultCloseVsDocumentsThreshold;
             SolutionCloseConfirm = true;
             SolutionOpenWaitSeconds = DefaultSolutionOpenWaitSeconds;
             PendingVsSettleSeconds = DefaultPendingVsSettleSeconds;
@@ -497,6 +571,8 @@ namespace VSManager
                 if (s.Aliases == null) s.Aliases = new List<AliasEntry>();
                 if (s.VsNotes == null) s.VsNotes = new List<AliasEntry>();
                 if (s.HiddenResentTasks == null) s.HiddenResentTasks = new List<HiddenTaskMark>();
+                s.TaskListGroupSort = TaskGrouping.NormalizeSort(s.TaskListGroupSort);
+                s.TaskListCollapsedGroups = TaskGrouping.NormalizeCollapsed(s.TaskListCollapsedGroups);
                 NormalizeTitleKeys(s.Aliases);
                 NormalizeTitleKeys(s.VsNotes);
                 s.Migrate();
@@ -505,6 +581,12 @@ namespace VSManager
                 s.AgentChatKeepDays = Math.Min(Math.Max(0, s.AgentChatKeepDays), 36500);
                 s.AgentChatMaxRecords = Math.Min(Math.Max(0, s.AgentChatMaxRecords), 1000000);
                 s.VsMemoryThresholdMB = VsMemory.ClampThreshold(s.VsMemoryThresholdMB);
+                s.AutoTrimIntervalMinutes = VsAutoMemoryTrimmer.ClampInterval(s.AutoTrimIntervalMinutes);
+                s.AutoTrimThresholdMB = VsAutoMemoryTrimmer.ClampThreshold(s.AutoTrimThresholdMB);
+                s.AttachmentMaxFileMB = AttachmentPolicy.ClampMaxFileMB(s.AttachmentMaxFileMB);
+                s.AttachmentMaxCount = AttachmentPolicy.ClampMaxCount(s.AttachmentMaxCount);
+                s.AttachmentKeepDays = AttachmentPolicy.ClampKeepDays(s.AttachmentKeepDays);
+                s.AttachmentInlineMaxChars = AttachmentPolicy.ClampInlineMaxChars(s.AttachmentInlineMaxChars);
                 s.ClampRestart();
                 s.ClampSend();
                 s.ClampSolutions();

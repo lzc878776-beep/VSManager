@@ -43,6 +43,7 @@ namespace VSManager
         private sealed class PasteReport
         {
             public string Want, Before, Current;
+            public string Blocked;
             public PasteCheck Check;
             public long ElapsedMs;
             public int Polls;
@@ -87,12 +88,16 @@ namespace VSManager
         /// </summary>
         private string FocusForPaste(VsInstance vs, AutomationElement edit)
         {
+            string blocked = BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             // 松开可能仍按住的修饰键，避免组合成其他快捷键 / Release modifiers that may still be down
             Key(VK_SHIFT, true); Key(VK_MENU, true); Key(VK_CONTROL, true);
 
             T("前台：激活 VS 窗口 / activating VS " + WindowState(vs));
             Native.Activate(vs.MainHwnd);
             for (int i = 0; i < 20 && !ForegroundIs(vs); i++) Thread.Sleep(50);
+            blocked = BlockingDialogMessage(vs);
+            if (blocked != null) return blocked;
             if (!ForegroundIs(vs))
             {
                 T("前台：激活失败，前台窗口=0x" + Native.GetForegroundWindow().ToString("X"));
@@ -102,6 +107,8 @@ namespace VSManager
             try { edit.SetFocus(); } catch (Exception ex) { T("前台：SetFocus 异常 " + ex.Message); }
             if (!WaitFocus(edit, 600))
             {
+                blocked = BlockingDialogMessage(vs);
+                if (blocked != null) return blocked;
                 T("前台：输入框未获得焦点，执行 View.GitHub.Copilot.Chat 把对话窗格切到前台 / input not focused, bringing the chat pane to the front");
                 try { DteWorker.Run(() => VsService.OpenCopilotChat(vs)).Wait(3000); } catch { }
                 try { edit.SetFocus(); } catch (Exception ex) { T("前台：SetFocus 异常 " + ex.Message); }
@@ -127,8 +134,14 @@ namespace VSManager
             uint seq = GetClipboardSequenceNumber();
             var sw = Stopwatch.StartNew();
 
+            rep.Blocked = BlockingDialogMessage(vs);
+            if (rep.Blocked != null) return rep;
+            if (!ForegroundIs(vs) || !HasFocus(edit)) { rep.Check = PasteCheck.NotWritten; return rep; }
             Combo(VK_CONTROL, VK_A);
             Thread.Sleep(60);
+            rep.Blocked = BlockingDialogMessage(vs);
+            if (rep.Blocked != null) return rep;
+            if (!ForegroundIs(vs) || !HasFocus(edit)) { rep.Check = PasteCheck.NotWritten; return rep; }
             Combo(VK_CONTROL, VK_V);
 
             long deadline = timeoutMs, hardLimit = timeoutMs * 2L;
@@ -136,6 +149,8 @@ namespace VSManager
             for (int step = 0; ; step++)
             {
                 Thread.Sleep(PasteVerifier.NextDelayMs(step));
+                rep.Blocked = BlockingDialogMessage(vs);
+                if (rep.Blocked != null) return rep;
                 rep.Current = GetEditText(edit);
                 rep.Polls++;
                 if (rep.Current == null && ++unreadable % 3 == 0)

@@ -28,6 +28,7 @@ namespace VSManager
         {
             public AutomationElement Edit;
             public string Level;
+            public string Blocked;
             public LocateOutcome Outcome;
             public readonly List<InputCandidate> Seen = new List<InputCandidate>();
             public readonly List<string> Log = new List<string>();
@@ -257,10 +258,14 @@ namespace VSManager
                     ForgetPane(vs);
                     var p = OpenPane(vs, 4000);
                     if (p != null) pane = p;
+                    // 刷新后仍可能停留在历史记录：按 AutoOpenCopilotPane 点「返回」/ Still on the history list after refreshing: press Back per AutoOpenCopilotPane
+                    pane = LeaveHistoryIfNeeded(vs, pane);
                 }
                 var sw = Stopwatch.StartNew();
                 for (int step = 0; ; step++)
                 {
+                    string blocked = BlockingDialogMessage(vs);
+                    if (blocked != null) return new EditLocate { Blocked = blocked };
                     if (step > 0)
                     {
                         // 缓存的窗格元素可能已随窗格重建而过期 / The cached pane element may be outdated after the pane was rebuilt

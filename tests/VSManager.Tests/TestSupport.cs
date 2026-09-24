@@ -7,9 +7,8 @@ using System.Threading.Tasks;
 namespace VSManager.Tests
 {
     /// <summary>
-    /// 临时数据目录：测试期间把 %APPDATA%\VSManager 重定向到系统临时目录，结束后删除，绝不触碰真实用户数据。
-    /// Temporary data folder: redirects %APPDATA%\VSManager to the system temp folder during a test and deletes it
-    /// afterwards, so real user data is never touched.
+    /// 临时数据目录：测试期间把用户数据重定向到测试输出下的独立目录，结束后删除，绝不触碰真实用户数据。
+    /// Temporary data folder: redirects user data to an isolated directory under the test output and deletes it afterwards.
     /// </summary>
     internal sealed class TempDataFolder : IDisposable
     {
@@ -18,7 +17,7 @@ namespace VSManager.Tests
 
         public TempDataFolder()
         {
-            Path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "VSManager.Tests", Guid.NewGuid().ToString("N"));
+            Path = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "TestData", Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(Path);
             _override = AppPaths.OverrideDataFolder(Path);
         }
@@ -80,6 +79,8 @@ namespace VSManager.Tests
         public readonly List<string> Sent = new List<string>();
         public readonly List<string> Status = new List<string>();
         public readonly List<string> Notices = new List<string>();
+        public readonly List<string> NoticeBodies = new List<string>();
+        public readonly List<string> Events = new List<string>();
         public string Answer = "完成了";
         public bool IncludeSuccessReceipt = true;
         public Func<QueuedTask, Task<string>> AnswerReader;
@@ -113,8 +114,12 @@ namespace VSManager.Tests
             : Task.FromResult(IncludeSuccessReceipt && !string.IsNullOrWhiteSpace(Answer)
                 ? Answer + "\r\n" + TaskStateMachine.SuccessReceipt(expectedTask) : Answer);
         public void SetStatus(string text) => Status.Add(text);
-        public void LogEvent(string vsName, string text) { }
-        public void NotifyAgent(string title, string body) => Notices.Add(title);
+        public void LogEvent(string vsName, string text) => Events.Add(vsName + ":" + text);
+        public void NotifyAgent(string title, string body)
+        {
+            Notices.Add(title);
+            NoticeBodies.Add(body);
+        }
         public void QueueActivityChanged(bool anyActive) => LastActivity = anyActive;
         public TimeSpan Settle = TimeSpan.Zero;
         public readonly List<string> Announced = new List<string>();

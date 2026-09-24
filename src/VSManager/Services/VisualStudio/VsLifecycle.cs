@@ -68,6 +68,7 @@ namespace VSManager
         {
             try
             {
+                solutionPath = SolutionDirectoryScanner.ResolveSolutionPath(solutionPath);
                 if (!File.Exists(solutionPath)) return "解决方案文件不存在 / Solution file not found：" + solutionPath;
                 var psi = !string.IsNullOrEmpty(devenv)
                     ? new ProcessStartInfo(devenv, "\"" + solutionPath + "\"") { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(solutionPath) }
@@ -91,16 +92,12 @@ namespace VSManager
             {
                 dynamic dte = vs.Dte;
                 foreach (dynamic d in dte.Documents)
-                {
-                    try { if (!(bool)d.Saved) list.Add("文档 / Document：" + (string)d.Name); } catch { }
-                }
-                try
-                {
-                    foreach (dynamic p in dte.Solution.Projects)
-                        try { if (!(bool)p.Saved) list.Add("项目 / Project：" + (string)p.Name); } catch { }
-                }
-                catch { }
-                try { if (!string.IsNullOrEmpty((string)dte.Solution.FullName) && !(bool)dte.Solution.Saved) list.Add("解决方案 / Solution：" + Path.GetFileName((string)dte.Solution.FullName)); } catch { }
+                    if (!(bool)d.Saved) list.Add("文档 / Document：" + (string)d.Name);
+                foreach (dynamic p in dte.Solution.Projects)
+                    if (!(bool)p.Saved) list.Add("项目 / Project：" + (string)p.Name);
+                string solutionPath = (string)dte.Solution.FullName;
+                if (!string.IsNullOrEmpty(solutionPath) && !(bool)dte.Solution.Saved)
+                    list.Add("解决方案 / Solution：" + Path.GetFileName(solutionPath));
                 return list;
             }
             catch (Exception ex)

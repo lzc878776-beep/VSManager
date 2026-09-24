@@ -22,12 +22,15 @@ tasks.json.bak
 solutions.json
 solutions.json.bak
 solutions.json.corrupt-*
+[sS][oO][lL][uU][tT][iI][oO][nN][sS].[jJ][sS][oO][nN]
+[sS][oO][lL][uU][tT][iI][oO][nN][sS].[jJ][sS][oO][nN][.~_-]*
 *.log
 logs/
 archive/
 Archive/
 *.jsonl
 agent-chat*
+attachments/
 
 # Keep the example config
 !settings.example.json

@@ -1,5 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Linq;
 using System.Windows.Forms;
 
 namespace VSManager
@@ -27,9 +30,11 @@ namespace VSManager
         private readonly Panel _inputArea = new Panel();
         private readonly Label _inputStatus = new Label();
         private readonly Panel _inputBox = new Panel();
-        private readonly TextBox _input = new TextBox();
+        private readonly AttachInputBox _input = new AttachInputBox();
+        private readonly FlowLayoutPanel _chips = new FlowLayoutPanel();
+        private readonly List<AttachmentRef> _pending = new List<AttachmentRef>();
         private readonly Label _placeholder = new Label();
-        private readonly FlatButton _btnSend, _btnStop, _btnClear, _btnSettings;
+        private readonly FlatButton _btnSend, _btnStop, _btnClear, _btnSettings, _btnAttach;
         private readonly Timer _renderTimer = new Timer { Interval = 60 };
         private readonly Timer _pulse = new Timer { Interval = 400 };
         private readonly ToolTip _tips = new ToolTip();
@@ -84,6 +89,11 @@ namespace VSManager
             _transcriptHost.Dock = DockStyle.Fill;
             _transcriptHost.BackColor = Theme.Background;
             _transcript.Dock = DockStyle.Fill;
+            _transcript.AttachmentClicked += id =>
+            {
+                string error = AttachmentStore.Reveal(id);
+                if (error != null) _inputStatus.Text = "📎 " + error;
+            };
             _transcriptHost.Controls.Add(_transcript);
 
             // ---- 输入区 ----
@@ -115,6 +125,7 @@ namespace VSManager
             _input.BackColor = InputBg;
             _input.ForeColor = Theme.Text;
             _input.AccessibleName = "AI 助手输入框";
+            _input.PasteAttachment = TryPasteAttachment;
             _input.KeyDown += Input_KeyDown;
             _input.TextChanged += (s, e) => UpdateUi();
             _input.GotFocus += (s, e) => { UpdateUi(); _inputBox.Invalidate(); };
@@ -135,12 +146,16 @@ namespace VSManager
             _btnStop = new FlatButton { Text = "■  停止", Tint = Theme.Danger, Dock = DockStyle.Right, Width = Dpi.S(80) };
             _btnStop.Click += (s, e) => _agent?.Stop();
             var gap = new Panel { Dock = DockStyle.Right, Width = Dpi.S(8), BackColor = InputBg };
+            _btnAttach = new FlatButton { Text = "＋ 附件 / Attach", Ghost = true, Dock = DockStyle.Left, Width = Dpi.S(118) };
+            _btnAttach.Click += (s, e) => ChooseFiles();
+            _tips.SetToolTip(_btnAttach, "添加图片或文件（也可粘贴截图或拖入文件）\n附件保存在 %APPDATA%\\VSManager\\attachments\\，只在本机\nAdd images or files (you can also paste a screenshot or drop files)\nStored in %APPDATA%\\VSManager\\attachments\\ on this computer only");
             var hint = new Label
             {
-                Dock = DockStyle.Fill, Text = "Enter 发送 · Shift+Enter 换行 · Esc 停止", ForeColor = Theme.TextMuted, BackColor = InputBg,
+                Dock = DockStyle.Fill, Text = "Enter 发送 · Shift+Enter 换行 · Esc 停止 · 可粘贴截图 / 拖入文件", ForeColor = Theme.TextMuted, BackColor = InputBg,
                 Font = Theme.Small, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false
             };
             actions.Controls.Add(hint);
+            actions.Controls.Add(_btnAttach);
             actions.Controls.Add(_btnStop);
             actions.Controls.Add(gap);
             actions.Controls.Add(_btnSend);
@@ -149,8 +164,22 @@ namespace VSManager
             _inputBox.Controls.Add(_input);
             _inputBox.Controls.Add(actions);
             _placeholder.BringToFront();
+            _chips.Dock = DockStyle.Top;
+            _chips.Height = Dpi.S(36);
+            _chips.WrapContents = false;
+            _chips.AutoScroll = true;
+            _chips.BackColor = Theme.Background;
+            _chips.Padding = new Padding(0, Dpi.S(2), 0, Dpi.S(2));
+            _chips.Visible = false;
             _inputArea.Controls.Add(_inputBox);
+            _inputArea.Controls.Add(_chips);
             _inputArea.Controls.Add(_inputStatus);
+            foreach (var target in new Control[] { _inputArea, _inputBox, _input, _chips })
+            {
+                target.AllowDrop = true;
+                target.DragEnter += (s, e) => e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) && _agent?.Running != true ? DragDropEffects.Copy : DragDropEffects.None;
+                target.DragDrop += (s, e) => { if (e.Data.GetData(DataFormats.FileDrop) is string[] files) AddFiles(files); };
+            }
 
             Controls.Add(_transcriptHost);
             Controls.Add(_inputArea);
@@ -227,11 +256,126 @@ namespace VSManager
         {
             if (_agent == null) return;
             text = (text ?? "").Trim();
-            if (_agent.Running || text.Length == 0) return;
+            bool fromInput = text == _input.Text.Trim();
+            var files = fromInput ? _pending.ToArray() : new AttachmentRef[0];
+            if (_agent.Running || (text.Length == 0 && files.Length == 0)) return;
             if (!_agent.Configured) { SettingsRequested?.Invoke(); return; }
-            if (text == _input.Text.Trim()) _input.Clear();
-            _ = _agent.RunAsync(text);
+            if (fromInput) { _input.Clear(); _pending.Clear(); RefreshChips(); }
+            _ = _agent.RunAsync(text, null, files);
             FocusInput();
+        }
+
+        private int MaxCount => AttachmentPolicy.ClampMaxCount(_agent?.CurrentSettings?.AttachmentMaxCount ?? 0);
+        private int MaxFileMB => AttachmentPolicy.ClampMaxFileMB(_agent?.CurrentSettings?.AttachmentMaxFileMB ?? 0);
+
+        private void ChooseFiles()
+        {
+            string images = string.Join(";", AttachmentPolicy.ImageExtensions.Select(x => "*" + x));
+            string texts = string.Join(";", AttachmentPolicy.TextExtensions.Select(x => "*" + x));
+            string docs = string.Join(";", AttachmentPolicy.DocumentExtensions.Select(x => "*" + x));
+            using (var dialog = new OpenFileDialog
+            {
+                Title = $"添加附件（最多 {MaxCount} 个，每个 {MaxFileMB} MB）/ Add attachments (up to {MaxCount}, {MaxFileMB} MB each)",
+                Filter = $"支持的文件 / Supported|{images};{texts};{docs}|图片 / Images|{images}|文本与代码 / Text and code|{texts}|文档 / Documents|{docs}",
+                Multiselect = true
+            })
+                if (dialog.ShowDialog(this) == DialogResult.OK) AddFiles(dialog.FileNames);
+        }
+
+        /// <summary>逐个导入文件；超限或不支持的文件跳过并集中提示。/ Imports files one by one; over-limit or unsupported ones are skipped and reported together.</summary>
+        private void AddFiles(IEnumerable<string> files)
+        {
+            if (_agent == null || _agent.Running) return;
+            var errors = new List<string>();
+            foreach (string file in files ?? new string[0])
+            {
+                if (Directory.Exists(file)) { errors.Add("不支持文件夹：" + Path.GetFileName(file) + " / Folders are not supported"); continue; }
+                try { _pending.Add(AttachmentStore.Import(file, _pending.Count, MaxCount, MaxFileMB)); }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is NotSupportedException)
+                {
+                    errors.Add(ex.Message);
+                }
+            }
+            RefreshChips();
+            if (errors.Count > 0) ShowAttachError(errors);
+        }
+
+        private void ShowAttachError(IEnumerable<string> errors) =>
+            MessageBox.Show(this, string.Join("\r\n", errors), "附件 / Attachments", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
+        /// <summary>粘贴：剪贴板图片保存为 PNG 附件，文件列表按文件导入；其他内容按普通文字粘贴。/ Paste: clipboard images become PNG attachments, file lists are imported; anything else pastes as text.</summary>
+        private bool TryPasteAttachment()
+        {
+            if (_agent == null || _agent.Running) return false;
+            try
+            {
+                if (Clipboard.ContainsImage())
+                {
+                    using (var image = Clipboard.GetImage())
+                    {
+                        if (image == null) return false;
+                        string name = "截图-" + DateTime.Now.ToString("HHmmss") + ".png";
+                        var png = ChatImage.FromImage(image, name).PngBytes();
+                        _pending.Add(AttachmentStore.SaveBytes(png, name, _pending.Count, MaxCount, MaxFileMB));
+                    }
+                    RefreshChips();
+                    return true;
+                }
+                if (Clipboard.ContainsFileDropList())
+                {
+                    AddFiles(Clipboard.GetFileDropList().Cast<string>().ToArray());
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex) when (ex is IOException || ex is ArgumentException || ex is System.Runtime.InteropServices.ExternalException || ex is OutOfMemoryException || ex is UnauthorizedAccessException)
+            {
+                ShowAttachError(new[] { "无法粘贴附件 / Cannot paste the attachment：" + ex.Message });
+                return true;
+            }
+        }
+
+        private void RefreshChips()
+        {
+            _chips.SuspendLayout();
+            try
+            {
+                while (_chips.Controls.Count > 0) _chips.Controls[0].Dispose();
+                foreach (var a in _pending.ToArray())
+                {
+                    string text = (a.IsImage ? "🖼 " : "📄 ") + a.Name + " · " + AttachmentPolicy.FormatSize(a.Size);
+                    var chip = new Panel { Height = Dpi.S(28), BackColor = Theme.Elevated, Margin = new Padding(0, 0, Dpi.S(6), 0) };
+                    var label = new Label
+                    {
+                        Dock = DockStyle.Fill, Text = text, Font = Theme.Small, ForeColor = Theme.TextSecondary, BackColor = Theme.Elevated,
+                        TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false, Cursor = Cursors.Hand,
+                        Padding = new Padding(Dpi.S(6), 0, 0, 0)
+                    };
+                    label.Click += (s, e) => AttachmentStore.Reveal(a.Id);
+                    _tips.SetToolTip(label, a.Describe() + "\n点击在资源管理器中定位 / Click to locate in Explorer");
+                    var remove = new FlatButton { Text = "×", Dock = DockStyle.Right, Width = Dpi.S(24), Ghost = true, AccessibleName = "移除附件 / Remove attachment " + a.Name };
+                    remove.Click += (s, e) => { _pending.Remove(a); RefreshChips(); };
+                    chip.Width = Math.Min(Dpi.S(260), TextRenderer.MeasureText(text, Theme.Small).Width + Dpi.S(44));
+                    chip.Controls.Add(label);
+                    chip.Controls.Add(remove);
+                    _chips.Controls.Add(chip);
+                }
+                _chips.Visible = _pending.Count > 0;
+                _inputArea.Height = Dpi.S(_pending.Count > 0 ? 222 : 184);
+            }
+            finally { _chips.ResumeLayout(); }
+            UpdateUi();
+        }
+
+        /// <summary>拦截粘贴的输入框：可以把剪贴板中的图片或文件转为附件。/ Input box that intercepts paste so clipboard images or files become attachments.</summary>
+        private sealed class AttachInputBox : TextBox
+        {
+            public Func<bool> PasteAttachment;
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == 0x0302 && PasteAttachment != null && PasteAttachment()) return;
+                base.WndProc(ref m);
+            }
         }
 
         private void Input_KeyDown(object sender, KeyEventArgs e)
@@ -254,8 +398,9 @@ namespace VSManager
             bool running = _agent?.Running == true;
             _placeholder.Visible = _input.TextLength == 0 && !_input.Focused;
             _placeholder.Text = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
-            _btnSend.Enabled = !running && _input.Text.Trim().Length > 0;
+            _btnSend.Enabled = !running && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
             _btnStop.Enabled = running;
+            if (_btnAttach != null) _btnAttach.Enabled = !running;
             _btnClear.Enabled = _agent != null && (running || _agent.Transcript.Messages.Count > 0);
             foreach (Control c in _toolbar.Controls) c.Enabled = !running;
             if (running && !_pulse.Enabled) { _dots = 0; _pulse.Start(); }
@@ -277,7 +422,8 @@ namespace VSManager
             else if (_agent != null && !_agent.Configured) { text = "⚠ 未配置模型 · 点击右上角「⚙ 模型设置」"; color = Theme.Warning; }
             else
             {
-                text = (_input.Focused ? "正在输入" : _input.TextLength > 0 ? "草稿待发送" : "等待输入") + " · " + _input.TextLength + " 字";
+                text = (_input.Focused ? "正在输入" : _input.TextLength > 0 ? "草稿待发送" : "等待输入") + " · " + _input.TextLength + " 字"
+                    + (_pending.Count > 0 ? $" · 📎 {AttachmentPolicy.CountText(_pending)} / {AttachmentPolicy.CountText(_pending, true)}" : "");
                 color = _input.Focused ? Theme.AccentText : Theme.TextSecondary;
             }
             if (_inputStatus.Text != text) _inputStatus.Text = text;

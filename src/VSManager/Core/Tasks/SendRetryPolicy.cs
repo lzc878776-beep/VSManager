@@ -23,6 +23,13 @@ namespace VSManager
         /// <summary>送达结果的前缀（由 Copilot 发送逻辑返回）。/ Prefix of a delivered result (returned by the Copilot send logic).</summary>
         public const string DeliveredPrefix = "已发送";
 
+        // Only returned before submission; never use this for uncertain delivery.
+        public const string BlockedPrefix = "等待处理 VS 弹窗：";
+        public static readonly TimeSpan BlockedRetryDelay = TimeSpan.FromSeconds(3);
+
+        public static bool IsBlocked(string result) =>
+            result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal);
+
         /// <summary>最多尝试次数。/ Maximum number of attempts.</summary>
         public const int MaxAttempts = 3;
 
@@ -35,6 +42,7 @@ namespace VSManager
         /// <param name="attempts">含本次在内已尝试的次数。/ Attempts made so far, including this one.</param>
         /// <param name="result">本次发送结果。/ Result of this attempt.</param>
         public static SendDecision Decide(int attempts, string result) =>
-            IsDelivered(result) ? SendDecision.Delivered : attempts >= MaxAttempts ? SendDecision.Fail : SendDecision.Retry;
+            IsDelivered(result) ? SendDecision.Delivered : IsBlocked(result) ? SendDecision.Retry :
+            attempts >= MaxAttempts ? SendDecision.Fail : SendDecision.Retry;
     }
 }

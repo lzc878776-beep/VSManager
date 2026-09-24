@@ -104,6 +104,41 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task ModalDialog_WaitsWithoutFailing_ThenResumesOriginalTask()
+        {
+            _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            for (int i = 0; i < 5; i++)
+            {
+                _host.SendResults.Enqueue(SendRetryPolicy.BlockedPrefix + "dialog");
+                await _dispatcher.PumpAsync();
+                Assert.AreEqual(QueueStatus.Waiting, first.Status);
+                Assert.AreEqual(0, first.Attempts);
+                Assert.AreEqual(QueueStatus.Waiting, next.Status);
+                Assert.AreEqual(i + 1, _host.Sent.Count);
+                Assert.AreEqual(0, _host.Notices.Count);
+                Assert.AreEqual(true, _host.LastActivity);
+                await _dispatcher.PumpAsync();
+                Assert.AreEqual(i + 1, _host.Sent.Count, "Must respect the dialog polling delay");
+                _clock.Advance(SendRetryPolicy.BlockedRetryDelay);
+            }
+            _host.AddVs("B");
+            var other = _queue.Add("B", "B", "independent", "用户");
+            _host.SendResults.Enqueue(SendRetryPolicy.BlockedPrefix + "dialog");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, other.Status);
+            Assert.AreEqual(QueueStatus.Waiting, first.Status);
+            _clock.Advance(SendRetryPolicy.BlockedRetryDelay);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, first.Status);
+            Assert.AreEqual(1, first.Attempts);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.IsNull(first.Error);
+            Assert.AreSame(first, _queue.Find(first.Id));
+        }
+
+        [TestMethod]
         public async Task UserTaskFailure_DoesNotNotifyAgent()
         {
             var t = _queue.Add("A", "A", "a", "用户");
@@ -189,8 +224,9 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task FailedTask_BlocksSuccessors_UntilReplacementSucceeds()
+        public async Task StrictFailure_BlocksTargetUntilSuperseded_ResendRemainsAtTail()
         {
+            _queue.SkipFailedPredecessors = false;
             var v = _host.AddVs("A");
             _host.AddVs("B");
             var first = _queue.Add("A", "A", "first", "AI");
@@ -203,24 +239,26 @@ namespace VSManager.Tests
             Assert.AreEqual(QueueStatus.Running, independent.Status);
             _dispatcher.DispatchNow(next);
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(0, _host.Announced.Count);
+            StringAssert.Contains(_host.NoticeBodies.Single(), "Strict mode");
 
             var retry = _queue.Add("A", "A", "resend #1: corrected first task", "AI");
-            Assert.IsNull(_queue.Find(first.Id));
-            _dispatcher.Retry(first);
-            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            Assert.AreSame(first, _queue.Find(first.Id));
             await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.AreEqual(QueueStatus.Waiting, retry.Status);
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            await _dispatcher.FinishAsync(next, v, null);
             Assert.AreEqual(QueueStatus.Running, retry.Status);
-            Assert.AreEqual(QueueStatus.Waiting, next.Status);
             _dispatcher.Retry(retry);
             Assert.AreEqual(1, retry.Attempts);
-            await _dispatcher.FinishAsync(retry, v, null);
-            Assert.AreEqual(QueueStatus.Running, next.Status);
             Assert.AreEqual(4, _host.Sent.Count);
         }
 
         [TestMethod]
         public async Task ReadException_FailsTask_WithoutReleasingSuccessor()
         {
+            _queue.SkipFailedPredecessors = false;
             var v = _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
             var next = _queue.Add("A", "A", "next", "AI");
@@ -237,6 +275,7 @@ namespace VSManager.Tests
         [TestMethod]
         public async Task SendException_FailsTask_WithoutAutomaticResendOrSuccessor()
         {
+            _queue.SkipFailedPredecessors = false;
             _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
             var next = _queue.Add("A", "A", "next", "AI");
@@ -252,6 +291,7 @@ namespace VSManager.Tests
         [TestMethod]
         public async Task IdleTimeout_WithoutSuccessReceipt_DoesNotReleaseSuccessor()
         {
+            _queue.SkipFailedPredecessors = false;
             _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
             var next = _queue.Add("A", "A", "next", "AI");
@@ -262,6 +302,143 @@ namespace VSManager.Tests
             await _dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Failed, first.Status);
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task DefaultFailure_AnnouncesSkipOnlyOnDelivery_Once_WithoutChangingHistory()
+        {
+            var v = _host.AddVs("A");
+            var failed = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            failed.Result = "original result";
+            failed.Started = _clock.Now.AddMinutes(-1);
+            _dispatcher.Fail(failed, "original error");
+            var snapshot = failed.Clone();
+            StringAssert.Contains(_host.NoticeBodies.Single(), "Failed predecessors are skipped");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "do not duplicate queued tasks or automatically retry failed tasks");
+            Assert.IsFalse(_host.NoticeBodies.Single().Contains("后续任务已暂停"));
+
+            _host.SendResults.Enqueue(SendRetryPolicy.BlockedPrefix + "dialog");
+            await _dispatcher.PumpAsync();
+            Assert.IsNull(next.PredecessorNotice);
+            Assert.AreEqual(0, _host.Announced.Count);
+            Assert.IsFalse(_host.Events.Any(e => e.Contains("skipped and continued")));
+            _clock.Advance(SendRetryPolicy.BlockedRetryDelay);
+            _host.SendResults.Enqueue("failed send");
+            await _dispatcher.PumpAsync();
+            Assert.IsNull(next.PredecessorNotice);
+            Assert.AreEqual(0, _host.Announced.Count);
+            Assert.IsFalse(_host.Events.Any(e => e.Contains("skipped and continued")));
+
+            string uiNotice = null;
+            _queue.Changed += () => { if (next.Status == QueueStatus.Running) uiNotice = next.PredecessorNotice; };
+            _clock.Advance(SendRetryPolicy.RetryDelay);
+            await _dispatcher.PumpAsync();
+            const string notice = "前序 @1 失败，已跳过继续 / Predecessor @1 failed; skipped and continued";
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.AreEqual(notice, next.PredecessorNotice);
+            Assert.AreEqual(notice, uiNotice);
+            Assert.AreEqual(notice, _host.Announced.Single());
+            StringAssert.Contains(_host.Status.Last(), notice);
+            Assert.AreEqual(1, _host.Events.Count(e => e.Contains(notice)));
+            StringAssert.Contains(System.IO.File.ReadAllText(TaskQueue.LogPath), notice);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(1, _host.Announced.Count);
+            Assert.AreEqual(1, _host.Events.Count(e => e.Contains(notice)));
+            Assert.AreEqual(1, System.IO.File.ReadAllLines(TaskQueue.LogPath).Count(line => line.Contains(notice)));
+            Assert.IsNull(_store.Saved.Single(t => t.Id == next.Id).PredecessorNotice);
+            Assert.AreSame(failed, _queue.Find(failed.Id));
+            var stored = _store.Saved.Single(t => t.Id == failed.Id);
+            Assert.AreEqual(snapshot.Status, stored.Status);
+            Assert.AreEqual(snapshot.Error, stored.Error);
+            Assert.AreEqual(snapshot.Result, stored.Result);
+            Assert.AreEqual(snapshot.Started, stored.Started);
+            Assert.AreEqual(snapshot.Finished, stored.Finished);
+            Assert.AreEqual(snapshot.Attempts, stored.Attempts);
+            Assert.IsFalse(_archive.Events.Contains("#1:removed"));
+            await _dispatcher.FinishAsync(next, v, null);
+            StringAssert.Contains(_host.NoticeBodies.Last(), notice);
+        }
+
+        [TestMethod]
+        public async Task MissingReceipt_RemainsFailed_ButSuccessorContinuesByDefault()
+        {
+            _host.AddVs("A");
+            var failed = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _host.IncludeSuccessReceipt = false;
+            _host.Answer = "unconfirmed result";
+            await _dispatcher.PumpAsync();
+            _clock.Advance(TimeSpan.FromSeconds(31));
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, failed.Status);
+            Assert.AreEqual("unconfirmed result", failed.Result);
+            StringAssert.Contains(failed.Error, "No success receipt");
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.IsFalse(_archive.Events.Contains("#1:done"));
+            Assert.IsTrue(_archive.Events.Contains("#1:failed"));
+            Assert.AreEqual(2, _host.Sent.Count);
+            Assert.AreEqual(1, _host.Announced.Count);
+        }
+
+        [TestMethod]
+        public async Task TerminalSendFailures_AllowNextPumpWithoutAnnouncingFailedDelivery()
+        {
+            _host.AddVs("A");
+            var failed = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            failed.Attempts = SendRetryPolicy.MaxAttempts - 1;
+            _host.SendResults.Enqueue("send failed");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, failed.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(0, _host.Announced.Count);
+            _host.SendException = new InvalidOperationException("unknown delivery");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Failed, next.Status);
+            Assert.IsNull(next.PredecessorNotice);
+            Assert.AreEqual(0, _host.Announced.Count);
+            Assert.IsFalse(_host.Events.Any(e => e.Contains("skipped and continued")));
+            _host.SendException = null;
+            var third = _queue.Add("A", "A", "third", "用户");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, third.Status);
+            StringAssert.Contains(third.PredecessorNotice, "@1, @2");
+            Assert.AreEqual(1, _host.Announced.Count);
+            Assert.AreEqual(3, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task RuntimePolicyChange_ResumesWithoutRestart()
+        {
+            _host.AddVs("A");
+            var failed = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _dispatcher.Fail(failed, "failed");
+            _queue.SkipFailedPredecessors = false;
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(0, _host.Sent.Count);
+            Assert.AreEqual(0, _host.Announced.Count);
+            _queue.SkipFailedPredecessors = true;
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.AreEqual(1, _host.Announced.Count);
+        }
+
+        [TestMethod]
+        public async Task RetryingOldFailure_DoesNotOverlapNewerRunningTask()
+        {
+            _host.AddVs("A");
+            var failed = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _dispatcher.Fail(failed, "failed");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            _dispatcher.Retry(failed);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Waiting, failed.Status);
+            Assert.AreEqual(QueueStatus.Running, next.Status);
             Assert.AreEqual(1, _host.Sent.Count);
         }
 
@@ -320,6 +497,7 @@ namespace VSManager.Tests
         [TestMethod]
         public async Task Finish_UnreadableAnswer_FailsAndBlocksSuccessor()
         {
+            _queue.SkipFailedPredecessors = false;
             var v = _host.AddVs("A");
             var t = _queue.Add("A", "A", "a", "用户");
             var next = _queue.Add("A", "A", "b", "用户");
