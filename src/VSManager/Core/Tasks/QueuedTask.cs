@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Runtime.Serialization;
 
 namespace VSManager
@@ -25,8 +26,8 @@ namespace VSManager
     }
 
     /// <summary>
-    /// 任务清单中的一项：发给某个 VS Copilot 的任务，目标忙碌时排队，空闲后自动发布。字段名即 tasks.json 的字段名。
-    /// One task-list entry: a task for a VS Copilot that waits while the target is busy and is published once it is idle.
+    /// 任务清单中的一项：一律按编号排队，前序结束且目标可用时按策略自动发布。字段名即 tasks.json 的字段名。
+    /// One task-list entry: always queued by ID and dispatched under policy after predecessors finish and the target is ready.
     /// Field names are the tasks.json field names.
     /// </summary>
     [DataContract]
@@ -44,22 +45,34 @@ namespace VSManager
         [DataMember] public string Result;
         [DataMember] public string Error;
         [DataMember] public int Attempts;
-        // A replacement keeps the failed task's position even though it receives a new id.
+        // 保留旧文件字段；新任务和重发均按编号排在队尾。/ Keep the legacy field; new tasks and resends are ordered by id at the tail.
         [DataMember(EmitDefaultValue = false)] public int QueueOrder;
         [DataMember(EmitDefaultValue = false)] public int[] Replaces;
         [DataMember(EmitDefaultValue = false)] public string CompletionToken;
-        public int Order => QueueOrder > 0 ? QueueOrder : Id;
+        public int Order => Id;
         /// <summary>
         /// 目标解决方案别名（按登记表别名分派时记录，用于显示等待原因）；普通任务为 null，不写入 tasks.json。
         /// Target solution alias (recorded when dispatched by a registry alias, used to show the waiting reason); null for
         /// ordinary tasks and then not written to tasks.json.
         /// </summary>
         [DataMember(EmitDefaultValue = false)] public string Target;
+        /// <summary>
+        /// 任务附件引用（只含元数据与相对路径，不含二进制内容）；无附件时为 null，不写入 tasks.json。
+        /// Task attachment references (metadata and relative paths only, no binary content); null without attachments and then
+        /// not written to tasks.json.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public AttachmentRef[] Attachments;
+        /// <summary>最近一次发送的附件送达说明（例如图片未送达的原因）。/ Attachment delivery note of the last send (e.g. why images were not delivered).</summary>
+        [DataMember(EmitDefaultValue = false)] public string AttachmentNote;
+
+        public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
         /// <summary>运行期：执行中是否观察到 Copilot 忙碌。/ Runtime only: whether Copilot was seen busy while running.</summary>
         [IgnoreDataMember] public bool SawBusy;
         /// <summary>运行期：下次重试时间。/ Runtime only: next retry time.</summary>
         [IgnoreDataMember] public DateTime NextTry;
+        /// <summary>运行期：已送达任务跳过失败前序的提示。/ Runtime only: notice that a delivered task skipped failed predecessors.</summary>
+        [IgnoreDataMember] public string PredecessorNotice;
 
         public bool FromAgent => Source == "AI";
 
@@ -69,7 +82,8 @@ namespace VSManager
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
-            CompletionToken = CompletionToken
+            CompletionToken = CompletionToken,
+            Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote
         };
     }
 }

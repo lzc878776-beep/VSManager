@@ -31,6 +31,13 @@ namespace VSManager
         private readonly Timer _timer = new Timer { Interval = 5000 };
         private readonly ToolTip _tips = new ToolTip();
         private readonly HashSet<string> _cleaning = new HashSet<string>();
+        private readonly VsAutoMemoryTrimmer _trimmer;
+        private readonly ToggleSwitch _autoTrim = new ToggleSwitch();
+        private readonly TextBox _trimInterval = new TextBox();
+        private readonly TextBox _trimThreshold = new TextBox();
+        private readonly Label _trimStatus = new Label();
+        private FlatButton _btnTrimNow;
+        private readonly Action<AutoTrimReport> _onTrim;
         private MemSnapshot _snap;
         private bool _refreshing, _loading;
 
@@ -41,11 +48,12 @@ namespace VSManager
             public MemProc P;
         }
 
-        public MemoryForm(AppSettings settings, Func<IList<VsRef>> refs, Action<string> status)
+        public MemoryForm(AppSettings settings, Func<IList<VsRef>> refs, Action<string> status, VsAutoMemoryTrimmer trimmer = null)
         {
             _settings = settings;
             _refs = refs;
             _status = status;
+            _trimmer = trimmer;
             Text = "内存 / Memory";
             Font = Theme.Regular;
             BackColor = Theme.Background;
@@ -174,9 +182,15 @@ namespace VSManager
             Controls.Add(_summary);
             Controls.Add(logHost);
             Controls.Add(policy);
+            if (_trimmer != null)
+            {
+                Controls.Add(BuildAutoTrimPanel());
+                _onTrim = report => { try { if (!IsDisposed && IsHandleCreated) BeginInvoke(new Action(() => OnAutoTrim(report))); } catch (InvalidOperationException) { } };
+                _trimmer.Completed += _onTrim;
+            }
             Controls.Add(bar);
 
-            _timer.Tick += async (s, e) => { if (WindowState != FormWindowState.Minimized) await RefreshAsync(); };
+            _timer.Tick += async (s, e) => { UpdateTrimStatus(); if (WindowState != FormWindowState.Minimized) await RefreshAsync(); };
             _timer.Start();
         }
 
@@ -205,6 +219,7 @@ namespace VSManager
         {
             _timer.Stop();
             _timer.Dispose();
+            if (_trimmer != null && _onTrim != null) _trimmer.Completed -= _onTrim;
             _tips.Dispose();
             base.OnFormClosed(e);
         }
@@ -224,6 +239,119 @@ namespace VSManager
             string msg = !_settings.VsMemoryAutoEnabled ? "内存自动策略已关闭 / Memory policy off"
                 : "内存自动策略：超过 " + mb + " MB " + (_settings.VsMemoryAutoClean ? "自动温和清理 / auto clean" : "仅提示 / notify only");
             AppendLog(ok ? msg : msg + "（保存失败 / save failed）");
+        }
+
+        // ---- 定期自动清理 / Periodic auto cleanup ----
+
+        private Panel BuildAutoTrimPanel()
+        {
+            var panel = new Panel { Dock = DockStyle.Bottom, Height = Dpi.S(52), BackColor = Theme.Sidebar, Padding = new Padding(Dpi.S(16), Dpi.S(10), Dpi.S(16), Dpi.S(10)) };
+            panel.Paint += (s, e) => { using (var pen = new Pen(Theme.Border)) e.Graphics.DrawLine(pen, 0, 0, panel.Width, 0); };
+            _autoTrim.Text = "定期自动清理 / Periodic auto clean";
+            _autoTrim.Dock = DockStyle.Left;
+            _autoTrim.Width = Dpi.S(290);
+            _btnTrimNow = new FlatButton { Text = "▶ 立即执行一次 / Run once now", Ghost = true, Dock = DockStyle.Right, Width = Dpi.S(210) };
+            _btnTrimNow.Click += async (s, e) => await RunTrimNowAsync();
+            _trimStatus.Dock = DockStyle.Fill;
+            _trimStatus.ForeColor = Theme.TextMuted;
+            _trimStatus.Font = Theme.Small;
+            _trimStatus.AutoEllipsis = true;
+            _trimStatus.UseMnemonic = false;
+            _trimStatus.TextAlign = ContentAlignment.MiddleLeft;
+            _trimStatus.Padding = new Padding(Dpi.S(12), 0, 0, 0);
+            _tips.SetToolTip(_autoTrim, "默认关闭；按间隔自动温和清理全部可清理的 VS（保存到 settings.json）；调试 / 生成 / Copilot 运行 / 任务执行中的实例跳过\nOff by default; gently cleans every eligible VS at the interval (saved to settings.json); busy instances are skipped");
+            _tips.SetToolTip(_trimInterval, "间隔（分钟），范围 " + VsAutoMemoryTrimmer.MinIntervalMinutes + "–" + VsAutoMemoryTrimmer.MaxIntervalMinutes + "，默认 " + VsAutoMemoryTrimmer.DefaultIntervalMinutes + "\nInterval in minutes");
+            _tips.SetToolTip(_trimThreshold, "0 表示不限制；大于 0 时只清理工作集（含子进程）超过该值的 VS\n0 = no limit; otherwise only VS instances (with children) above this working set are cleaned");
+            _tips.SetToolTip(_btnTrimNow, "按相同的安全规则与阈值立即执行一次，便于验证\nRun once now with the same safety rules and threshold, for verification");
+            panel.Controls.Add(_trimStatus);
+            panel.Controls.Add(_btnTrimNow);
+            panel.Controls.Add(new Label { Text = "MB", Dock = DockStyle.Left, AutoSize = true, ForeColor = Theme.TextMuted, Padding = new Padding(Dpi.S(6), Dpi.S(7), Dpi.S(6), 0) });
+            panel.Controls.Add(NumberHost(_trimThreshold, Dpi.S(80)));
+            panel.Controls.Add(new Label { Text = "阈值 / Threshold", Dock = DockStyle.Left, AutoSize = true, ForeColor = Theme.TextSecondary, Padding = new Padding(Dpi.S(12), Dpi.S(7), Dpi.S(6), 0), UseMnemonic = false });
+            panel.Controls.Add(new Label { Text = "分钟 / min", Dock = DockStyle.Left, AutoSize = true, ForeColor = Theme.TextMuted, Padding = new Padding(Dpi.S(6), Dpi.S(7), Dpi.S(6), 0) });
+            panel.Controls.Add(NumberHost(_trimInterval, Dpi.S(64)));
+            panel.Controls.Add(new Label { Text = "间隔 / Every", Dock = DockStyle.Left, AutoSize = true, ForeColor = Theme.TextSecondary, Padding = new Padding(Dpi.S(12), Dpi.S(7), Dpi.S(6), 0), UseMnemonic = false });
+            panel.Controls.Add(_autoTrim);
+
+            _loading = true;
+            _autoTrim.Checked = _settings.AutoTrimVsMemory;
+            _trimInterval.Text = VsAutoMemoryTrimmer.ClampInterval(_settings.AutoTrimIntervalMinutes).ToString();
+            _trimThreshold.Text = VsAutoMemoryTrimmer.ClampThreshold(_settings.AutoTrimThresholdMB).ToString();
+            _loading = false;
+            _autoTrim.CheckedChanged += (s, e) => SaveAutoTrim();
+            foreach (var box in new[] { _trimInterval, _trimThreshold })
+            {
+                box.Leave += (s, e) => SaveAutoTrim();
+                box.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { SaveAutoTrim(); e.SuppressKeyPress = true; } };
+            }
+            UpdateTrimStatus();
+            return panel;
+        }
+
+        private static Panel NumberHost(TextBox box, int width)
+        {
+            var host = new Panel { Dock = DockStyle.Left, Width = width, BackColor = Theme.Elevated, Padding = new Padding(Dpi.S(8), Dpi.S(7), Dpi.S(8), 0) };
+            box.BorderStyle = BorderStyle.None;
+            box.BackColor = Theme.Elevated;
+            box.ForeColor = Theme.Text;
+            box.Dock = DockStyle.Fill;
+            host.Controls.Add(box);
+            return host;
+        }
+
+        /// <summary>保存定期清理配置到 settings.json 并从现在重新计时。/ Saves the periodic cleanup settings and restarts the schedule from now.</summary>
+        private void SaveAutoTrim()
+        {
+            if (_loading || _trimmer == null) return;
+            int minutes = VsAutoMemoryTrimmer.ClampInterval(int.TryParse(_trimInterval.Text.Trim(), out var m) ? m : _settings.AutoTrimIntervalMinutes);
+            int mb = VsAutoMemoryTrimmer.ClampThreshold(int.TryParse(_trimThreshold.Text.Trim(), out var t) ? t : _settings.AutoTrimThresholdMB);
+            _trimInterval.Text = minutes.ToString();
+            _trimThreshold.Text = mb.ToString();
+            if (_settings.AutoTrimVsMemory == _autoTrim.Checked && _settings.AutoTrimIntervalMinutes == minutes && _settings.AutoTrimThresholdMB == mb) return;
+            _settings.AutoTrimVsMemory = _autoTrim.Checked;
+            _settings.AutoTrimIntervalMinutes = minutes;
+            _settings.AutoTrimThresholdMB = mb;
+            bool ok = _settings.Save();
+            _trimmer.Reschedule();
+            string msg = !_settings.AutoTrimVsMemory ? "定期自动清理已关闭 / Periodic auto clean off"
+                : "定期自动清理：每 " + minutes + " 分钟，" + (mb > 0 ? "超过 " + mb + " MB 的 VS" : "不限阈值") +
+                  " / every " + minutes + " min, " + (mb > 0 ? "VS above " + mb + " MB" : "no threshold");
+            AppendLog(ok ? msg : msg + "（保存失败 / save failed）");
+            UpdateTrimStatus();
+        }
+
+        private void UpdateTrimStatus()
+        {
+            if (_trimmer == null || IsDisposed) return;
+            var last = _trimmer.LastReport;
+            var next = _trimmer.NextRun;
+            string text = last == null ? "上次 / Last：—" : "上次 / Last " + last.At.ToString("MM-dd HH:mm") + (last.Manual ? "（手动 / manual）" : "") + "：" + last.Summary;
+            text += " · 下次 / Next：" + (_trimmer.Running ? "运行中 / running" : next.HasValue ? next.Value.ToString("MM-dd HH:mm") : "未开启 / off");
+            _trimStatus.Text = text;
+            _tips.SetToolTip(_trimStatus, text);
+            if (_btnTrimNow != null) _btnTrimNow.Enabled = !_trimmer.Running;
+        }
+
+        private void OnAutoTrim(AutoTrimReport report)
+        {
+            if (IsDisposed || report == null) return;
+            foreach (var line in report.Lines) AppendLog(line);
+            AppendLog((report.Manual ? "定期清理（手动触发）/ Periodic cleanup (manual)：" : "定期自动清理 / Periodic auto cleanup：") + report.Summary);
+            UpdateTrimStatus();
+            var _ = RefreshAsync();
+        }
+
+        private async Task RunTrimNowAsync()
+        {
+            if (_trimmer == null) return;
+            _btnTrimNow.Enabled = false;
+            AppendLog("开始定期清理（手动触发）… / Running periodic cleanup now…");
+            try
+            {
+                if (await _trimmer.RunNowAsync() == null) AppendLog("已有定期清理正在运行 / A periodic cleanup is already running");
+            }
+            catch (Exception ex) { AppendLog("定期清理失败 / Periodic cleanup failed: " + ex.Message); }
+            finally { UpdateTrimStatus(); }
         }
 
         /// <summary>重新测量并刷新列表（保持滚动位置与选中项）。/ Re-measures and refreshes (keeps scroll and selection).</summary>

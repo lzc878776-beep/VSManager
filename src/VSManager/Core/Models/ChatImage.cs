@@ -48,6 +48,9 @@ namespace VSManager
             }
         }
 
+        /// <summary>PNG 数据的副本（用于保存为附件）。/ Copy of the PNG data (used to save it as an attachment).</summary>
+        public byte[] PngBytes() => (byte[])_png.Clone();
+
         public Bitmap OpenBitmap()
         {
             using (var stream = new MemoryStream(_png, false))

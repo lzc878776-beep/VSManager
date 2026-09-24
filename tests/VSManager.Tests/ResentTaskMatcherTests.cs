@@ -107,6 +107,32 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void ExplicitResend_MatchesCorrectedText_WithoutMutatingFailedHistory()
+        {
+            var failed = T(25, QueueStatus.Failed, Body);
+            failed.Error = "original error";
+            failed.Result = "original result";
+            failed.Started = failed.Created;
+            failed.Finished = failed.Created.AddMinutes(1);
+            failed.Attempts = 3;
+            var other = T(26, QueueStatus.Failed, Body);
+            var resend = T(27, QueueStatus.Waiting, "resend @25: corrected instructions");
+            var items = new List<QueuedTask> { failed, other, resend };
+            var match = ResentTaskMatcher.Find(items, resend);
+            CollectionAssert.AreEqual(new[] { failed }, match.Hide);
+            Assert.AreEqual(3, items.Count);
+            Assert.AreEqual(QueueStatus.Failed, failed.Status);
+            Assert.AreEqual("original error", failed.Error);
+            Assert.AreEqual("original result", failed.Result);
+            Assert.AreEqual(failed.Created, failed.Started);
+            Assert.AreEqual(failed.Created.AddMinutes(1), failed.Finished);
+            Assert.AreEqual(3, failed.Attempts);
+            Assert.AreEqual(Body, failed.Text);
+            Assert.IsNull(failed.Replaces);
+            Assert.IsNull(resend.Replaces);
+        }
+
+        [TestMethod]
         public void HideList_AddRemoveAndStatusScope()
         {
             var marks = new List<HiddenTaskMark>();

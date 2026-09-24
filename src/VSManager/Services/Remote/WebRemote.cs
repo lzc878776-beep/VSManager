@@ -324,7 +324,7 @@ namespace VSManager
                     _host.Log($"{(req.Headers.ContainsKey("X-Client") ? req.Headers["X-Client"] : "手机网页")}：发送到「{_host.NameOf(v)}」");
                     string r = await _host.SendChat(v, text).ConfigureAwait(false);
                     _host.FocusChat(v.Pid);
-                    return JsonRes(new { ok = r.StartsWith("已发送"), msg = r });
+                    return JsonRes(new { ok = r.StartsWith("已加入任务清单", StringComparison.Ordinal), msg = r });
                 }
 
                 case "/api/debug":

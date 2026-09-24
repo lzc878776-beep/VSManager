@@ -92,7 +92,7 @@ namespace VSManager
             grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             grid.Height = Dpi.S(40) * row;
 
-            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, Height = Dpi.S(92), FlowDirection = FlowDirection.LeftToRight, WrapContents = true, Padding = new Padding(0, Dpi.S(8), 0, 0), BackColor = Theme.Background };
+            var buttons = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.LeftToRight, WrapContents = true, Padding = new Padding(0, Dpi.S(8), 0, 0), BackColor = Theme.Background };
             buttons.Controls.Add(Button("新增 / New", NewEntry, Dpi.S(120)));
             buttons.Controls.Add(Button("保存此条 / Save entry", SaveEntry, Dpi.S(160), true));
             buttons.Controls.Add(Button("删除 / Delete", DeleteEntry, Dpi.S(120)));
@@ -100,6 +100,8 @@ namespace VSManager
             fromVs.Click += (s, e) => ShowOpenVsMenu(fromVs);
             buttons.Controls.Add(fromVs);
             buttons.Controls.Add(Button("打开此解决方案 / Open", OpenSelected, Dpi.S(180)));
+            buttons.Controls.Add(Button("从目录扫描并登记 / Scan folder…", ScanFolder, Dpi.S(270)));
+            buttons.Controls.Add(Button("重新读取配置 / Reload file", ReloadFile, Dpi.S(230)));
 
             var hint = new Label
             {
@@ -115,7 +117,7 @@ namespace VSManager
             _status.AutoEllipsis = true;
             _status.Text = "保存位置 / Stored in：%APPDATA%\\VSManager\\solutions.json";
 
-            var right = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
+            var right = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background, AutoScroll = true };
             right.Controls.Add(_status);
             right.Controls.Add(hint);
             right.Controls.Add(buttons);
@@ -133,6 +135,26 @@ namespace VSManager
             Controls.Add(body);
             Controls.Add(bottom);
             Reload(null);
+            if (_reg.LastError != null) SetStatus(_reg.LastError, true);
+        }
+
+        private void ScanFolder()
+        {
+            using (var dialog = new SolutionScanForm(_reg))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                Reload(dialog.ImportedEntries.FirstOrDefault()?.Alias);
+                SetStatus($"已登记 {dialog.ImportedEntries.Count} 条，其余选中路径已存在 / Registered {dialog.ImportedEntries.Count} entries; other selected paths already existed", false);
+            }
+        }
+
+        private void ReloadFile()
+        {
+            if (MessageBox.Show(this, "重新读取会放弃编辑区未保存的修改，是否继续？\nReloading discards unsaved editor changes. Continue?",
+                "重新读取配置 / Reload file", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+            _reg.Load();
+            Reload(null);
+            SetStatus(_reg.LastError ?? "已重新读取本机登记表 / Local registry reloaded", _reg.LastError != null);
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -197,9 +219,19 @@ namespace VSManager
             string alias = _alias.Text.Trim(), path = _path.Text.Trim().Trim('"');
             if (alias.Length == 0) { SetStatus("请填写别名 / Alias is required", true); return; }
             if (path.Length == 0) { SetStatus("请填写解决方案路径 / Solution path is required", true); return; }
-            if (!System.IO.File.Exists(Environment.ExpandEnvironmentVariables(path)))
-                SetStatus("提示：该路径的文件目前不存在 / Note: the file does not exist right now", true);
-            int.TryParse(_defaultVs.Text.Trim(), out int dv);
+            string full;
+            try { full = SolutionDirectoryScanner.ResolveSolutionPath(path); }
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is System.IO.IOException || ex is System.Security.SecurityException)
+            {
+                SetStatus("解决方案路径无效 / Invalid solution path: " + ex.Message, true);
+                return;
+            }
+            bool missing = !System.IO.File.Exists(full);
+            if (!int.TryParse(_defaultVs.Text.Trim(), out int dv) || dv < 0)
+            {
+                if (_defaultVs.Text.Trim().Length == 0) dv = 0;
+                else { SetStatus("默认 VS 编号必须为非负整数，0 表示未设置 / Default VS number must be a non-negative integer; 0 means unset", true); return; }
+            }
             var entry = new SolutionEntry
             {
                 Alias = alias, Path = path, Description = _desc.Text.Trim(),
@@ -217,7 +249,7 @@ namespace VSManager
             string err = _reg.Replace(items);
             if (err != null) { SetStatus(err, true); return; }
             Reload(alias);
-            SetStatus("已保存「" + alias + "」/ Saved", false);
+            SetStatus("已保存「" + alias + "」/ Saved" + (missing ? "；文件当前不存在，打开前请确认路径 / File currently missing; verify the path before opening" : ""), missing);
         }
 
         private void DeleteEntry()
@@ -235,8 +267,8 @@ namespace VSManager
 
         private void ShowOpenVsMenu(Control anchor)
         {
-            var menu = new ContextMenuStrip();
-            Theme.Apply(menu);
+            var menu = new GroupedContextMenuStrip();
+            menu.AddGroup("VS 解决方案 / VS solutions");
             var open = (_openVs?.Invoke() ?? new List<OpenVs>()).Where(v => !string.IsNullOrEmpty(v.SolutionPath)).ToList();
             if (open.Count == 0) menu.Items.Add(new ToolStripMenuItem("（没有可登记的已打开解决方案 / No open solution to register）") { Enabled = false });
             foreach (var v in open)

@@ -16,23 +16,11 @@ namespace VSManager
         private readonly SolutionRegistry _solutions = new SolutionRegistry().Load();
 
         /// <summary>
-        /// 查找已打开该解决方案的 VS：先按路径；读不到路径的 VS 再按窗口标题中的解决方案名；最后按登记的默认 VS 编号（同样只用于读不到路径的实例）。
-        /// Finds the VS that has the solution open: by path first; for a VS whose path cannot be read, by the solution name in
-        /// the window title; finally by the registered default VS number (also only for instances without a path).
+        /// 先匹配当前 / 启动路径；路径均未知时才使用无歧义的标题或显式默认编号。
+        /// Matches current / launch paths first; uses an unambiguous title or explicit default only when both paths are unknown.
         /// </summary>
-        internal VsInstance FindOpenSolution(SolutionEntry e, IList<VsInstance> list = null)
-        {
-            if (e == null) return null;
-            list = list ?? _instances;
-            var v = list.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, e.Path) || SolutionMatcher.SamePath(i.LaunchPath, e.Path));
-            if (v != null) return v;
-            string file = e.FileName;
-            var unknown = list.Where(i => string.IsNullOrEmpty(i.SolutionPath)).ToList();
-            v = unknown.FirstOrDefault(i => file.Length > 0 && string.Equals(VsService.TitleName(i.Title), file, StringComparison.OrdinalIgnoreCase));
-            if (v != null) return v;
-            if (e.DefaultVs > 0 && e.DefaultVs <= list.Count && string.IsNullOrEmpty(list[e.DefaultVs - 1].SolutionPath)) return list[e.DefaultVs - 1];
-            return null;
-        }
+        internal VsInstance FindOpenSolution(SolutionEntry e, IList<VsInstance> list = null) =>
+            SolutionMatcher.FindOpenSolution(e, list ?? _instances, _solutions.Items);
 
         /// <summary>登记条目当前是否已打开的简短文字。/ Short text telling whether the entry is open.</summary>
         private string SolutionStateText(SolutionEntry e)
@@ -115,9 +103,11 @@ namespace VSManager
         }
 
         /// <summary>任务通知（不检查开关）：弹窗或托盘气泡（中英双语），开启语音时按语音语言播报。/ Task notice (no switch check): popup or tray balloon (bilingual), spoken in the voice language when voice is on.</summary>
-        private void NotifyTask(QueuedTask t, string zh, string en)
+        private void NotifyTask(QueuedTask t, string zh, string en) =>
+            NotifyWithVoice($"📋 任务 #{t.Id} / Task #{t.Id}", zh, en);
+
+        private void NotifyWithVoice(string title, string zh, string en)
         {
-            string title = $"📋 任务 #{t.Id} / Task #{t.Id}";
             string body = zh + "\n" + en;
             try
             {
@@ -141,20 +131,23 @@ namespace VSManager
 
         VsInstance IAgentHost.FindOpenSolution(SolutionEntry e) => FindOpenSolution(e, _instances);
 
-        Task<string> IAgentHost.ParkTask(SolutionEntry e, string text) => OnUiAsync(async () =>
+        Task<string> IAgentHost.ParkTask(SolutionEntry e, string text) => OnUi(() => ParkTaskCore(e, text, null));
+
+        private string ParkTaskCore(SolutionEntry e, string text, AttachmentRef[] attachments)
         {
-            var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items, e.Path, text);
+            var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), e.Path, text);
             if (dup != null) return $"「{e.Alias}」的任务清单中已有相同任务 #{dup.Id}（{StatusText(dup)}），未重复添加。";
-            var q = _tasks.AddParked(e.Path, e.Alias, text, "AI");
+            var q = attachments != null && attachments.Length > 0
+                ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
+                : _tasks.AddParked(e.Path, e.Alias, text, "AI");
             string hidden = HideResentFailed(q);
-            string note = hidden == null ? "" : "\n" + hidden;
+            string note = (hidden == null ? "" : "\n" + hidden) + (q.HasAttachments ? "\n" + AttachmentQueuedNote(q) : "");
             SendLog.Event(e.Alias, $"任务清单：任务 #{q.Id} 已暂存，等待打开「{e.Alias}」/ task #{q.Id} parked, waiting for \"{e.Alias}\" to open");
             SetStatus($"任务清单：#{q.Id} 已暂存，等待打开「{e.Alias}」/ Task #{q.Id} parked, waiting for \"{e.Alias}\"");
             AnnounceTask(q, $"任务已暂存，等待打开{e.Alias}", $"Task parked, waiting for {e.Alias} to open");
-            await PumpTasksAsync();
-            if (q.Status != QueueStatus.WaitingVs) return $"「{e.Alias}」已打开，任务 #{q.Id} 已转入任务清单：{StatusText(q)}。" + note;
-            return $"目标「{e.Alias}」尚未打开，任务 #{q.Id} 已暂存（状态：等待目标 VS）。该解决方案被打开后（open_solution 或用户手动打开）会自动推送，完成后通知你；需要立即执行请调用 open_solution。" + note;
-        });
+            _taskTimer.Start();
+            return $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度；不会立即发送 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch; not sent immediately" + note;
+        }
 
         Task<string> IAgentHost.LaunchSolution(string path) => LaunchSolutionAsync(path);
 

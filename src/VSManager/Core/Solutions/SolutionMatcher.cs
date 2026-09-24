@@ -116,10 +116,11 @@ namespace VSManager
                 var byPath = list.Where(e => SamePath(e.Path, r.Query)).ToList();
                 if (byPath.Count > 0)
                 {
-                    r.Hit = byPath[0];
-                    r.Candidates.Add(new SolutionCandidate { Entry = byPath[0], Score = 100, Reason = "路径一致 / same path" });
+                    r.Candidates = byPath.Select(e => new SolutionCandidate { Entry = e, Score = 100, Reason = "路径一致 / same path" }).ToList();
+                    if (byPath.Count == 1) r.Hit = byPath[0];
                     return r;
                 }
+                if (r.Query.IndexOf('\\') >= 0 || r.Query.IndexOf('/') >= 0) return r;
             }
 
             var scored = list.Select(e => Score(e, r.Query)).Where(c => c.Score > 0).OrderByDescending(c => c.Score).ToList();
@@ -131,6 +132,29 @@ namespace VSManager
             r.Candidates = scored.Where(c => c.Score >= floor).ToList();
             if (r.Candidates.Count == 1) r.Hit = r.Candidates[0].Entry;
             return r;
+        }
+
+        /// <summary>优先按已知路径查找；标题必须唯一且登记文件名无歧义，默认编号仅用于路径未知的实例。/ Prefers known paths; titles require a unique instance and unambiguous registered filename, defaults require unknown paths.</summary>
+        public static VsInstance FindOpenSolution(SolutionEntry entry, IList<VsInstance> instances, IEnumerable<SolutionEntry> registry)
+        {
+            if (entry == null || instances == null) return null;
+            var match = instances.FirstOrDefault(v => SamePath(v.SolutionPath, entry.Path));
+            if (match != null) return match;
+            match = instances.FirstOrDefault(v => string.IsNullOrWhiteSpace(v.SolutionPath) && SamePath(v.LaunchPath, entry.Path));
+            if (match != null) return match;
+
+            var unknown = instances.Where(v => string.IsNullOrWhiteSpace(v.SolutionPath) && string.IsNullOrWhiteSpace(v.LaunchPath)).ToList();
+            string file = entry.FileName;
+            bool uniqueFile = !(registry ?? Enumerable.Empty<SolutionEntry>()).Any(e => e != null &&
+                string.Equals(e.FileName, file, StringComparison.OrdinalIgnoreCase) && !SamePath(e.Path, entry.Path));
+            if (file.Length > 0 && uniqueFile)
+            {
+                var titled = instances.Where(v => string.Equals(VsService.TitleName(v.Title), file, StringComparison.OrdinalIgnoreCase)).ToList();
+                if (titled.Count == 1 && unknown.Contains(titled[0])) return titled[0];
+            }
+            if (entry.DefaultVs > 0 && entry.DefaultVs <= instances.Count && unknown.Contains(instances[entry.DefaultVs - 1]))
+                return instances[entry.DefaultVs - 1];
+            return null;
         }
 
         /// <summary>计算一条登记与查询的得分。/ Scores one entry against the query.</summary>

@@ -20,9 +20,7 @@ namespace VSManager
         string NoteOf(VsInstance v);
         Task<string> SetNote(VsInstance v, string note);
         Task<ChatTranscript> ReadChat(VsInstance v, int maxMessages);
-        /// <summary>发布任务到该 VS 的 Copilot，成功时返回以“已发送”开头的文本。</summary>
-        Task<string> SendTask(VsInstance v, string text);
-        /// <summary>把任务加入任务清单：目标空闲时立即发布，忙碌时排队，完成后通知助手。返回给模型的说明文字。</summary>
+        /// <summary>只把任务加入界面清单，统一调度后通知助手，禁止直发。/ Enqueue in the UI task list only; dispatch and notification are centralized, never send directly.</summary>
         Task<string> QueueTask(VsInstance v, string text);
         Task<string> ListTasks();
         Task<string> CancelTask(int id);
@@ -92,7 +90,7 @@ namespace VSManager
     /// 通过函数调用管理所有 VS 实例（查看状态、发布 Copilot 任务、等待结果、调试 / 生成）。
     /// RunAsync 必须在界面线程调用，Changed 事件也在界面线程触发。
     /// </summary>
-    public sealed class AgentService : IDisposable, IRestartableAgent
+    public sealed partial class AgentService : IDisposable, IRestartableAgent
     {
         /// <summary>
         /// 长期约束（写在代码中，重启后始终生效）：VSManager 是开源项目，对外内容不得透露个人信息，文档与注释中英双语。
@@ -264,7 +262,7 @@ namespace VSManager
             {
                 AIFunctionFactory.Create((Func<string>)ListVs, "list_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)ReadVsChat, "read_vs_chat"),
-                AIFunctionFactory.Create((Func<string, string, Task<string>>)SendTask, "send_task"),
+                AIFunctionFactory.Create((Func<string, string, string, Task<string>>)SendTask, "send_task"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)WaitForVs, "wait_for_vs"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)DebugVs, "debug_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)GetErrors, "get_errors"),
@@ -272,17 +270,23 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, Task<string>>)NewCopilotThread, "new_copilot_thread"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)ActivateVs, "activate_vs"),
                 AIFunctionFactory.Create((Func<Task<string>>)DockPanes, "dock_copilot_panes"),
-                AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
-                AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
+AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
+AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
+AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetVsNote, "set_vs_note"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
-                AIFunctionFactory.Create((Func<string, string, Task<string>>)ScanVsCode, "scan_vs_code"),
+                AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
-                AIFunctionFactory.Create((Func<string, string, int, string, Task<string>>)ReadVsFile, "read_vs_file"),
+                AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
                 AIFunctionFactory.Create((Func<string>)ListSolutions, "list_solutions"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)OpenSolution, "open_solution"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)CloseVs, "close_vs"),
+                AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)CaptureVsScreenshot, "capture_vs_screenshot"),
+                AIFunctionFactory.Create((Func<string, string, bool, int, int, CancellationToken, Task<string>>)FindFiles, "find_files"),
+                AIFunctionFactory.Create((Func<string, string, string, bool, int, int, int, CancellationToken, Task<string>>)SearchFileContents, "search_file_contents"),
+                AIFunctionFactory.Create((Func<string, int, int, CancellationToken, Task<string>>)ReadFile, "read_file"),
+                AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)ListDirectory, "list_directory"),
             };
         }
 
@@ -374,6 +378,7 @@ namespace VSManager
         {
             _cts?.Cancel();
             _history.Clear();
+            lock (_attachments) _attachments.Clear();
             Transcript.Messages.Clear();
             Changed?.Invoke();
         }
@@ -401,6 +406,17 @@ namespace VSManager
         {
             _notices.Enqueue(new KeyValuePair<string, string>(display, content));
             if (!Running) ProcessNotices();
+        }
+
+        /// <summary>仅本机展示并记录，不加入模型上下文、不触发自动跟进；由 UI 线程调用。/ Display and record locally only, without model context or automatic follow-up; call on the UI thread.</summary>
+        internal void ShowLocalNotice(string display, string content)
+        {
+            var message = new ChatMessage { Role = ChatRole.Assistant };
+            message.Parts.Add(new ChatPart { Text = display + "\n" + content });
+            Transcript.Messages.Add(message);
+            TrimTranscript();
+            Record("notice", display, content);
+            Changed?.Invoke();
         }
 
         private async void ProcessNotices()
@@ -434,10 +450,10 @@ namespace VSManager
         /// 执行一轮对话。内部未处理异常不会抛出：记录日志、复位状态并触发 <see cref="Faulted"/>。
         /// Runs one round. Internal unhandled exceptions are not thrown: they are logged, the state is reset and <see cref="Faulted"/> is raised.
         /// </summary>
-        public async Task RunAsync(string text, string display = null)
+        public async Task RunAsync(string text, string display = null, IReadOnlyList<AttachmentRef> attachments = null)
         {
             int gen = _generation;
-            try { await RunCoreAsync(text, display, gen); }
+            try { await RunCoreAsync(text, display, gen, attachments); }
             catch (Exception ex)
             {
                 AppLog.Error(LogFile, "对话内部异常 / Internal error in a round", ex);
@@ -449,17 +465,20 @@ namespace VSManager
             }
         }
 
-        private async Task RunCoreAsync(string text, string display, int gen)
+        private async Task RunCoreAsync(string text, string display, int gen, IReadOnlyList<AttachmentRef> attachments = null)
         {
             text = (text ?? "").Trim();
-            if (Running || text.Length == 0) return;
+            var files = (attachments ?? new AttachmentRef[0]).Where(a => a != null).ToArray();
+            if (Running || (text.Length == 0 && files.Length == 0)) return;
+            if (files.Length > 0) RememberAttachments(files);
+            string links = AttachmentLinks(files);
             var user = new ChatMessage { Role = ChatRole.User };
-            user.Parts.Add(new ChatPart { Text = string.IsNullOrWhiteSpace(display) ? text : display });
+            user.Parts.Add(new ChatPart { Text = (string.IsNullOrWhiteSpace(display) ? text : display) + links });
             var reply = new ChatMessage { Role = ChatRole.Assistant };
             Transcript.Messages.Add(user);
             Transcript.Messages.Add(reply);
             TrimTranscript();
-            if (string.IsNullOrWhiteSpace(display)) Record("user", text);
+            if (string.IsNullOrWhiteSpace(display)) Record("user", text + links);
             else Record("notice", display, text);
 
             IChatClient client;
@@ -478,7 +497,7 @@ namespace VSManager
             var cts = _cts = new CancellationTokenSource();
             Changed?.Invoke();
 
-            _history.Add(new AIMessage(AIRole.User, text));
+            _history.Add(new AIMessage(AIRole.User, files.Length > 0 ? ModelMessage(text, files) : text));
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
             string error = null;
@@ -637,7 +656,8 @@ namespace VSManager
             {
                 case "list_vs": return "查看所有 VS 状态";
                 case "read_vs_chat": return "读取" + target + "的 Copilot 对话";
-                case "send_task": return "向" + target + "发布任务：" + OneLine(Arg("task"), 60);
+                case "send_task": return "向" + target + "发布任务：" + OneLine(Arg("task"), 60)
+                    + (string.IsNullOrWhiteSpace(Arg("attachments")) ? "" : "（附件 / attachments：" + OneLine(Arg("attachments"), 40) + "）");
                 case "wait_for_vs": return "等待" + target + "的 Copilot 完成";
                 case "debug_vs": return target + "执行 " + ActionName(Arg("action"));
                 case "get_errors": return "读取" + target + "的错误列表";
@@ -655,15 +675,21 @@ namespace VSManager
                            (Arg("minimizeVs").Equals("false", StringComparison.OrdinalIgnoreCase) ? "" : "，最小化 VS") + " / Arrange Copilot panes";
                 }
                 case "restore_copilot_layout": return "还原 Copilot 对话布局 / Restore layout";
+                case "open_copilot": return "打开" + target + "的对话助手 / Open Copilot chat";
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
                 case "cancel_task": return "取消任务 #" + Arg("id");
-                case "scan_vs_code": return "扫描" + target + "的代码结构";
-                case "read_vs_file": return "查看" + target + "的 " + OneLine(Arg("path"), 60);
+                case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
+                case "read_vs_file":
+                case "read_file": return "读取并脱敏授权文件 / Read and redact granted file";
+                case "find_files": return "查找授权文件名 / Find granted filenames";
+                case "search_file_contents": return "搜索已脱敏文件内容 / Search redacted file contents";
+                case "list_directory": return "列出授权目录 / List granted directory";
                 case "set_vs_note": return "记录" + target + "的职责：" + OneLine(Arg("note"), 40);
                 case "list_solutions": return "查看解决方案登记表 / List registered solutions";
                 case "open_solution": return "打开解决方案「" + OneLine(Arg("solution"), 60) + "」/ Open solution";
                 case "close_vs": return "关闭 VS「" + OneLine(Arg("target"), 60) + "」/ Close VS";
+                case "capture_vs_screenshot": return "截图分析" + target + "（需预览批准）/ Screenshot analysis (approval required)";
                 default: return fc.Name;
             }
         }
@@ -695,7 +721,7 @@ namespace VSManager
         private string SystemPrompt()
         {
             var s = _settings();
-            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null);
+            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, s.SkipFailedPredecessors);
         }
 
         #endregion
@@ -760,11 +786,14 @@ namespace VSManager
             return Format(t, MaxToolText, MaxMessageText);
         }
 
-        [Description("向指定 VS 的 GitHub Copilot 发布一项任务。任务记入任务清单：VS 空闲时立即发送；正忙时自动排队，空闲后自动发布；完成后会通知你。vs 也可以是解决方案登记表中的别名：目标未打开时任务暂存为「等待目标 VS」，打开后自动推送。")]
+        [Description("只把任务加入界面任务清单，始终按编号排队，绝不直发或插队；目标未打开时暂存，任务结束后通知助手。Only enqueue in the visible task list, always in ID order; never send directly or jump the queue. Park tasks for closed targets and report their outcome.")]
         private async Task<string> SendTask(
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
-            [Description("发给 Copilot 的完整任务描述")] string task)
+            [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,
+            [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null)
         {
+            var files = ResolveTaskAttachments(attachments, out string attachmentError);
+            if (attachmentError != null) return attachmentError;
             SolutionEntry parkFor = null;
             if (!Resolve(vs, out var v, out var err))
             {
@@ -779,7 +808,7 @@ namespace VSManager
             if (task.Length == 0) return "任务内容为空";
             int maxTask = MaxTaskText;
             if (task.Length > maxTask)
-                return $"任务文本过长（{task.Length} 字），超过单次任务上限 {maxTask} 字（「属性 → AI 额度」可调整）。请精简后重试或拆分为多个任务。";
+                return $"任务文本过长（{task.Length} 字），超过单次任务上限 {maxTask} 字（「属性 → AI 额度」可调整）；请向用户确认处理方式，不得自行删减要求或拆分任务。/ Task text is too long ({task.Length} characters; limit {maxTask}, adjustable in Properties > AI quotas); ask the user how to proceed, without removing requirements or splitting tasks on your own.";
             // 多行消息只能前台粘贴（会短暂切到 VS）；后台模式下合并为一行，保持用户当前界面
             if (_settings().BackgroundSend && task.IndexOf('\n') >= 0)
                 task = string.Join(" ", task.Replace("\r", "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0));
@@ -787,8 +816,15 @@ namespace VSManager
             if (isVsManager && task.IndexOf("【开源约束】", StringComparison.Ordinal) < 0 && task.IndexOf("[Open-source constraint]", StringComparison.Ordinal) < 0)
                 task += _settings().IsEnglishVoice ? OpenSourceTaskSuffixEn : OpenSourceTaskSuffix;
             string targetName = parkFor != null ? parkFor.Alias : _host.NameOf(v);
-            if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task))
+            string attachmentNote = files.Length == 0 ? "" : "\n\n" + TaskAttachmentNotice(files);
+            if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task + attachmentNote))
                 return "用户拒绝了该操作。";
+            if (files.Length > 0)
+            {
+                if (!(_host is IAgentAttachmentHost attachmentHost))
+                    return "当前环境不支持随任务发送附件 / Attachments cannot be sent with tasks in this environment";
+                return parkFor != null ? await attachmentHost.ParkTask(parkFor, task, files) : await attachmentHost.QueueTask(v, task, files);
+            }
             if (parkFor != null) return await _host.ParkTask(parkFor, task);
             return await _host.QueueTask(v, task);
         }
@@ -914,7 +950,7 @@ namespace VSManager
             return await _host.SetNote(v, OneLine(note, MaxNoteText));
         }
 
-        [Description("当用户的需求超出 AI 总控助手现有工具的能力时，把“需要新增 / 完善的能力”作为开发任务发给打开 VSManager 项目的 VS，让其 Copilot 完善本助手。")]
+        [Description("把完善助手能力的开发任务加入界面任务清单，按编号排队，不绕过清单直发。Enqueue assistant-improvement work in the visible task list by ID; never bypass the queue.")]
         private async Task<string> RequestImprovement(
             [Description("需要新增或完善的能力，一句话，例如“读取 VS 输出窗口的内容”")] string capability,
             [Description("用户的原始请求，以及现有工具为什么做不到")] string reason,
@@ -926,7 +962,6 @@ namespace VSManager
             var target = list.FirstOrDefault(IsVsManager);
             if (target == null)
                 return "没有找到打开 VSManager 项目的 VS（需要在某个 VS 中打开 VSManager.csproj / VSManager.slnx）。请告诉用户手动打开后再试。";
-            if (target.Copilot == CopilotState.Busy) return $"「{_host.NameOf(target)}」的 Copilot 正在运行，稍后再提交改进需求。";
             string task = "【AI 总控助手改进需求】请在 VSManager 项目中完善侧边栏 AI 总控助手（AgentService.cs：工具列表、工具实现与 SystemPrompt；宿主能力接口 IAgentHost 由 MainForm.cs 实现，界面相关在 AgentPanel.cs）。" +
                 "需要新增 / 完善的能力：" + capability.TrimEnd('。', '.') + "。" +
                 "用户原始请求与现有不足：" + OneLine(reason, MaxTaskText).TrimEnd('。', '.') + "。" +
@@ -935,10 +970,7 @@ namespace VSManager
                 "有副作用的操作遵守「AgentConfirm 审批」设置；不要破坏现有功能；构建时输出到临时目录（不要覆盖正在运行的 VSManager.exe），完成后汇报改动与使用方式。" + OpenSourceTaskSuffix;
             if (_settings().AgentConfirm && !await ConfirmAsync("提交改进需求到「" + _host.NameOf(target) + "」", task))
                 return "用户拒绝了该操作。";
-            string r = await _host.SendTask(target, task);
-            return r.StartsWith("已发送")
-                ? $"已把改进需求发给「#{list.IndexOf(target) + 1} {_host.NameOf(target)}」的 Copilot。完成后需要重启 VSManager 才能使用新能力。"
-                : "提交失败：" + r;
+            return await _host.QueueTask(target, task);
         }
 
         private static bool IsVsManager(VsInstance v)
@@ -962,11 +994,14 @@ namespace VSManager
         /// Resolves the registry by alias / synonym / path: returns the entry on a unique hit; otherwise null with the
         /// candidates or the registered aliases in <paramref name="error"/>.
         /// </summary>
-        private SolutionEntry LookupSolution(string query, out string error)
+        private SolutionEntry LookupSolution(string query, out string error) => LookupSolution(query, out error, out _);
+
+        private SolutionEntry LookupSolution(string query, out string error, out bool ambiguous)
         {
             error = null;
             var reg = _host.Solutions;
             var r = reg.Resolve(query);
+            ambiguous = r.Ambiguous;
             if (r.Found) return r.Hit;
             if (r.Ambiguous)
             {
@@ -1006,16 +1041,32 @@ namespace VSManager
         {
             string q = (solution ?? "").Trim().Trim('"');
             if (q.Length == 0) return "请提供要打开的解决方案别名或路径。已登记的别名：" + _host.Solutions.AliasListText();
-            SolutionEntry entry = LookupSolution(q, out string lookupError);
-            string path, label;
-            if (entry != null) { path = entry.Path; label = entry.Alias; }
-            else if (SolutionMatcher.LooksLikePath(q))
+            SolutionEntry entry = LookupSolution(q, out string lookupError, out bool ambiguous);
+            if (ambiguous) return lookupError;
+            if (entry == null && !SolutionMatcher.LooksLikePath(q)) return lookupError;
+            string path = Environment.ExpandEnvironmentVariables((entry?.Path ?? q).Trim().Trim('"')).Trim().Trim('"');
+            string label;
+            try
             {
-                path = Environment.ExpandEnvironmentVariables(q);
-                label = System.IO.Path.GetFileNameWithoutExtension(path);
-                entry = new SolutionEntry { Alias = label, Path = path };
+                string requestedPath = Environment.ExpandEnvironmentVariables(q).Trim().Trim('"');
+                bool explicitPath = requestedPath.IndexOf('\\') >= 0 || requestedPath.IndexOf('/') >= 0 || requestedPath.IndexOf(':') >= 0;
+                foreach (string candidate in explicitPath ? new[] { requestedPath, path } : new[] { path })
+                {
+                    string root = System.IO.Path.GetPathRoot(candidate);
+                    if (string.IsNullOrEmpty(root) || root.Length < 3 || root.EndsWith(":"))
+                        return "请提供解决方案的完整路径 / Provide a fully qualified solution path：" + candidate;
+                }
+                string extension = System.IO.Path.GetExtension(path);
+                if (!string.Equals(extension, ".sln", StringComparison.OrdinalIgnoreCase) && !string.Equals(extension, ".slnx", StringComparison.OrdinalIgnoreCase))
+                    return "仅支持 .sln 或 .slnx 解决方案文件 / Only .sln or .slnx solution files are supported：" + path;
+                path = System.IO.Path.GetFullPath(path);
+                label = entry?.Alias ?? System.IO.Path.GetFileNameWithoutExtension(path);
             }
-            else return lookupError;
+            catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is System.IO.IOException || ex is System.Security.SecurityException)
+            {
+                return "解决方案路径无效 / Invalid solution path：" + ex.Message;
+            }
+            if (entry == null) entry = new SolutionEntry { Alias = label, Path = path };
 
             var open = _host.FindOpenSolution(entry);
             if (open != null)
@@ -1049,13 +1100,25 @@ namespace VSManager
             string q = (target ?? "").Trim();
             if (q.Length == 0) return "请指定要关闭的 VS（编号或登记别名）。\n" + ListVs();
             VsInstance v;
-            if (!Resolve(q, out v, out var err))
+            string lookupError = null;
+            bool ambiguous = false;
+            bool numbered = int.TryParse(q.TrimStart('#').Trim().TrimEnd('号'), out _);
+            var entry = numbered ? null : LookupSolution(q, out lookupError, out ambiguous);
+            if (ambiguous) return lookupError;
+            if (entry != null)
             {
-                var entry = LookupSolution(q, out string lookupError);
-                if (entry == null) return err + (_host.Solutions.Count > 0 ? "\n" + lookupError : "");
                 v = _host.FindOpenSolution(entry);
                 if (v == null) return $"「{entry.Alias}」当前没有打开，无需关闭。";
             }
+            else if (SolutionMatcher.LooksLikePath(q))
+            {
+                var matches = _host.Instances.Where(i => SolutionMatcher.SamePath(i.SolutionPath, q) ||
+                    (string.IsNullOrWhiteSpace(i.SolutionPath) && SolutionMatcher.SamePath(i.LaunchPath, q))).ToList();
+                if (matches.Count != 1) return lookupError + "\n" + ListVs();
+                v = matches[0];
+            }
+            else if (!Resolve(q, out v, out var err))
+                return err + (_host.Solutions.Count > 0 ? "\n" + lookupError : "");
             string name = _host.NameOf(v);
             string refuse = await _host.CheckCanClose(v);
             if (refuse != null) return refuse;
@@ -1069,33 +1132,6 @@ namespace VSManager
         }
 
         #endregion
-
-        [Description("扫描指定 VS 的解决方案目录，返回代码结构概要：项目及目标框架 / 引用、目录分布、README 摘要、主要代码文件与类型。用于了解该 VS 负责什么。")]
-        private async Task<string> ScanVsCode(
-            [Description("VS 编号（如 \"1\"）或名称")] string vs,
-            [Description("可选：未能获取解决方案路径时，指定要扫描的源码目录")] string folder = "")
-        {
-            if (!Resolve(vs, out var v, out var err)) return err;
-            string root = CodeScanner.Root(string.IsNullOrWhiteSpace(folder) ? v.SolutionPath : folder);
-            if (root == null) return $"未获取到「{_host.NameOf(v)}」的解决方案路径（可能尚未打开解决方案或 DTE 暂不可用）。可询问用户源码目录后通过 folder 参数指定。";
-            string sln = string.IsNullOrWhiteSpace(folder) ? v.SolutionPath : null;
-            int maxScan = (int)Math.Min(int.MaxValue, MaxToolText * 3L / 2);
-            return await Task.Run(() => CodeScanner.Scan(root, maxScan, sln)).ConfigureAwait(false);
-        }
-
-        [Description("读取指定 VS 解决方案目录内的文件内容（带行号，每次行数与字数有上限，超出时提示用 startLine 继续），或列出某个子目录。")]
-        private async Task<string> ReadVsFile(
-            [Description("VS 编号（如 \"1\"）或名称")] string vs,
-            [Description("相对于解决方案目录的文件或目录路径，例如 \"src/Program.cs\"")] string path,
-            [Description("起始行号，默认 1")] int startLine = 1,
-            [Description("可选：未能获取解决方案路径时，与 scan_vs_code 相同的源码目录")] string folder = "")
-        {
-            if (!Resolve(vs, out var v, out var err)) return err;
-            string root = CodeScanner.Root(string.IsNullOrWhiteSpace(folder) ? v.SolutionPath : folder);
-            if (root == null) return $"未获取到「{_host.NameOf(v)}」的解决方案路径，请通过 folder 参数指定源码目录。";
-            int maxLines = MaxFileLines, maxText = MaxToolText;
-            return await Task.Run(() => CodeScanner.ReadFile(root, path, startLine, maxLines, maxText)).ConfigureAwait(false);
-        }
 
         [Description("把指定 VS 窗口切换到前台（会打断用户当前界面，仅在用户要求查看该 VS 时使用）。")]
         private async Task<string> ActivateVs([Description("VS 编号（如 \"1\"）或名称")] string vs)

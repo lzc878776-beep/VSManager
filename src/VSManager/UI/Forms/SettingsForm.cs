@@ -21,6 +21,8 @@ namespace VSManager
             public Func<string, string, string, System.Threading.Tasks.Task<string>> AgentTest;
             /// <summary>打开解决方案登记窗口。/ Opens the solution registry window.</summary>
             public Action OpenSolutions;
+            /// <summary>立即清理过期附件，返回结果摘要。/ Removes expired attachments now; returns the summary.</summary>
+            public Func<System.Threading.Tasks.Task<string>> CleanAttachments;
         }
 
         private readonly AppSettings _s;
@@ -107,10 +109,19 @@ namespace VSManager
                 Toggle("监听 Copilot 对话状态", "检测运行中 / 空闲，并在完成时提醒", _s.MonitorCopilot, v => _s.MonitorCopilot = v),
                 Toggle("对话窗格被切走时自动切回", "Copilot 停靠在文档区时，切到其他标签页会导致无法监听；离开该 VS 后自动把对话助手切回当前",
                     _s.RestoreCopilotPane, v => _s.RestoreCopilotPane = v),
+                Toggle("自动打开到当前会话 / Auto-open the current chat",
+                    "发送前若对话窗格缺失、被隐藏或停留在历史记录，先自动打开到当前会话再发送 / Before sending, open the current conversation when the pane is missing, hidden or on the history list",
+                    _s.AutoOpenCopilotPane, v => _s.AutoOpenCopilotPane = v),
                 Toggle("在任务清单中显示 VS 手动对话", "可停止、打开、复制；启用「归档」时会保存并在重启后恢复，关闭归档则仅保存在内存中",
                     _s.WatchConversations, v => _s.WatchConversations = v),
-                Toggle("重发并移除原失败条目时通知 / Notify when a failed entry is replaced",
-                    "重发始终移除原失败条目并保留队列顺序；此开关仅控制弹窗与语音 / Resending always replaces failed entries and preserves queue order; this controls notifications only",
+                Toggle("跳过失败前序任务 / Skip failed predecessors",
+                    "默认开启：失败记录保留，后续按编号继续；关闭则失败暂停后续 / On by default: keep failed records and continue by ID; off pauses successors",
+                    _s.SkipFailedPredecessors, v => _s.SkipFailedPredecessors = v),
+                Toggle("重发后隐藏原失败条目 / Hide superseded failed entries",
+                    "仅隐藏界面，记录与归档保留；重发任务按新编号排队 / UI-only hiding; records and archive remain; resends queue by their new ID",
+                    _s.AutoHideResentFailedTasks, v => _s.AutoHideResentFailedTasks = v),
+                Toggle("隐藏原失败条目时通知 / Notify when failed entries are hidden",
+                    "仅控制重发隐藏提示与语音，不影响排队顺序 / Controls resend-hide notifications and speech, not queue order",
                     _s.AutoHideResentFailedNotify, v => _s.AutoHideResentFailedNotify = v),
                 Toggle("完成时播放提示音", null, _s.Sound, v => _s.Sound = v),
                 Toggle("完成时弹出通知", null, _s.Popup, v => _s.Popup = v),
@@ -129,11 +140,12 @@ namespace VSManager
             var webCard = BuildWebCard(actions);
             var voiceCard = BuildVoiceCard(actions);
             var agentCard = BuildAgentCard(actions);
+            var fileAccessCard = BuildFileAccessCard();
             var archiveCard = BuildArchiveCard();
             var sendCard = BuildSendCard();
             var solutionCard = BuildSolutionCard(actions);
 
-            var cards = new[] { screenCard, actCard, agentCard, solutionCard, chatCard, sendCard, voiceCard, webCard, archiveCard, winCard };
+            var cards = new[] { screenCard, actCard, agentCard, fileAccessCard, solutionCard, chatCard, sendCard, voiceCard, webCard, archiveCard, winCard };
             for (int i = cards.Length - 1; i >= 0; i--)
             {
                 cards[i].Dock = DockStyle.Top;
@@ -391,6 +403,71 @@ namespace VSManager
         #region AI 总控助手
 
         private TextBox _agentEndpoint, _agentModel, _agentKey, _agentExtra;
+        private TextBox _agentFileRoots;
+        private Label _fileRootsStatus;
+
+        private Card BuildFileAccessCard()
+        {
+            var grid = NewGrid(1, 5, Dpi.S(40));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            grid.RowStyles.Clear();
+            foreach (int h in new[] { 64, 84, 100, 40, 44 }) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, Dpi.S(h)));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            grid.Height = Dpi.S(332);
+            grid.Controls.Add(Toggle("包含已登记的解决方案目录 / Include registered solution roots",
+                "默认开启；关闭且无额外目录时拒绝全部文件访问 / Default on; disabling with no extra roots denies all file access",
+                _s.AgentIncludeSolutionRoots, v => _s.AgentIncludeSolutionRoots = v), 0, 0);
+            grid.Controls.Add(new Label
+            {
+                Dock = DockStyle.Fill, ForeColor = Theme.TextSecondary,
+                Text = "额外授权根目录：每行一个完整目录，可使用环境变量；应用前不会授权。文件内容可能发送给所配置的 AI 服务；敏感路径始终禁止，打码不能保证识别所有秘密。\r\nExtra roots: one full folder per line; environment variables supported. Apply to authorize. Content may reach the configured AI service; sensitive paths stay blocked and redaction cannot detect every secret."
+            }, 0, 1);
+            _agentFileRoots = new TextBox
+            {
+                Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false,
+                BackColor = Theme.Elevated, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle,
+                Text = string.Join("\r\n", _s.AgentFileRoots ?? new List<string>())
+            };
+            _agentFileRoots.TextChanged += (s, e) => { if (!_loading) _fileRootsStatus.Text = "目录修改尚未应用 / Root changes have not been applied"; };
+            grid.Controls.Add(_agentFileRoots, 0, 2);
+            grid.Controls.Add(NewButton("应用授权目录 / Apply authorized roots", ApplyAgentFileRoots), 0, 3);
+            _fileRootsStatus = new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Text = "只读工具；不能由 AI 修改白名单。留空表示不增加额外目录。\r\nRead-only tools; AI cannot change the allowlist. Empty means no extra roots." };
+            grid.Controls.Add(_fileRootsStatus, 0, 4);
+            return NewCard("AI 文件授权 / AI file authorization", "目录白名单仅保存在本机设置中 / Directory allowlist is stored only in local settings", grid);
+        }
+
+        private void ApplyAgentFileRoots()
+        {
+            var roots = _agentFileRoots.Lines.Select(p => p.Trim().Trim('"')).Where(p => p.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            foreach (string value in roots)
+            {
+                try
+                {
+                    string expanded = Environment.ExpandEnvironmentVariables(value);
+                    string root = System.IO.Path.GetPathRoot(expanded);
+                    if (string.IsNullOrEmpty(root) || root.Length < 3 || root.EndsWith(":", StringComparison.Ordinal) || !System.IO.Directory.Exists(System.IO.Path.GetFullPath(expanded)))
+                    {
+                        _fileRootsStatus.Text = "请填写存在的完整目录；授权未修改 / Existing full folders required; authorization unchanged: " + value;
+                        return;
+                    }
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is System.IO.IOException || ex is System.Security.SecurityException)
+                {
+                    _fileRootsStatus.Text = "目录无效，授权未修改 / Invalid folder; authorization unchanged: " + ex.Message;
+                    return;
+                }
+            }
+            if (roots.SequenceEqual(_s.AgentFileRoots ?? new List<string>(), StringComparer.OrdinalIgnoreCase))
+            {
+                _fileRootsStatus.Text = "授权目录未变化 / Authorized roots are unchanged";
+                return;
+            }
+            if (MessageBox.Show(this, "确认替换额外授权目录？目录内可读取的内容可能发送给所配置的 AI 服务；系统、凭据等禁区不会因此开放。\r\nReplace extra authorized roots? Readable content may be sent to the configured AI service; system and credential exclusions remain enforced.\r\n\r\n" + string.Join("\r\n", roots),
+                "确认文件授权 / Confirm file authorization", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+            _s.AgentFileRoots = roots;
+            _fileRootsStatus.Text = "授权目录已应用 / Authorized roots applied";
+            Changed?.Invoke();
+        }
 
         private Card BuildAgentCard(Actions actions)
         {
@@ -413,6 +490,9 @@ namespace VSManager
                 _s.AgentConfirm, v => _s.AgentConfirm = v), Dpi.S(56), true);
             Row(null, Toggle("任务完成自动跟进", "任务清单中的任务完成后，AI 助手自动汇报结果并继续后续步骤",
                 _s.AgentAutoFollowUp, v => _s.AgentAutoFollowUp = v), Dpi.S(56), true);
+            Row(null, Toggle("允许 VS 截图分析 / Allow VS screenshot analysis", "每次预览批准后才发送图片给当前模型；需要视觉模型，不保存截图 / Preview approval required; vision model needed; no image files",
+                _s.AgentScreenshotEnabled, v => _s.AgentScreenshotEnabled = v), Dpi.S(56), true);
+            Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Text = "AI PowerShell 入口已停用，防止绕过文件白名单。请使用授权文件工具。\r\nAI PowerShell is disabled to prevent file-allowlist bypass. Use authorized file tools." }, Dpi.S(64), true);
 
             var preset = new DarkCombo { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty };
             preset.Items.AddRange(AgentPresets.All);
@@ -477,13 +557,13 @@ namespace VSManager
                 Text = "AI 额度 · 单次上限（修改后立即生效；默认为原额度 ×20）"
             };
             Row(null, quotaHead, Dpi.S(30), true);
-            QuotaRow("工具返回", nameof(AppSettings.AgentMaxToolText), _s.AgentMaxToolText, "字", "单次工具返回文本上限：读取对话 / 等待结果 / 错误列表 / 读取文件 / 任务清单；代码扫描为其 1.5 倍",
+            QuotaRow("工具返回", nameof(AppSettings.AgentMaxToolText), _s.AgentMaxToolText, "字", "单次工具返回上限；文件工具另有 16000 字符硬上限，取较小值 / Per-call output limit; file tools use the lower of this quota and 16000 characters",
                 "单条消息", nameof(AppSettings.AgentMaxMessageText), _s.AgentMaxMessageText, "字", "读取 VS 对话时每条消息的文本上限");
             QuotaRow("任务文本", nameof(AppSettings.AgentMaxTaskText), _s.AgentMaxTaskText, "字", "单次发布任务 / 改进需求说明的文本上限；能力名为其 1/2，职责描述为其 1/3",
                 "回复长度", nameof(AppSettings.AgentMaxOutputTokens), _s.AgentMaxOutputTokens, "token", "单次回复的最大 token 数（0 = 使用模型默认值；过大可能被服务商拒绝，如 DeepSeek 最多 8192）");
             QuotaRow("历史消息", nameof(AppSettings.AgentMaxHistory), _s.AgentMaxHistory, "条", "上下文保留的历史消息条数（越多越耗 token，过多可能超出模型上下文）",
                 "工具轮数", nameof(AppSettings.AgentMaxIterations), _s.AgentMaxIterations, "轮", "单次对话内最多连续调用工具的轮数");
-            QuotaRow("读取行数", nameof(AppSettings.AgentMaxFileLines), _s.AgentMaxFileLines, "行", "读取文件时单次最多行数",
+            QuotaRow("读取行数", nameof(AppSettings.AgentMaxFileLines), _s.AgentMaxFileLines, "行", "单次最多读取行数；文件工具另有 500 行硬上限，取较小值 / Per-call file lines; file tools use the lower of this quota and 500 lines",
                 "读取条数", nameof(AppSettings.AgentMaxReadCount), _s.AgentMaxReadCount, "条", "单次最多读取的对话消息条数；错误列表为其 5 倍，任务清单历史为其 2/5");
 
             // ---- 对话记录容量（agent-chat.jsonl）/ Chat history capacity ----
@@ -531,6 +611,66 @@ namespace VSManager
                     "对话记录最多保留条数，超出时删除最旧的记录（默认 " + AgentChatLog.DefaultMaxRecords + "；0 = 不按条数限制）\nMax records; the oldest are removed (0 = no limit)",
                     v => _s.AgentChatMaxRecords = v), 2, 0);
                 Row(NewLabel("保留天数"), pair, Dpi.S(42));
+            }
+
+            var attachHead = new Label
+            {
+                Dock = DockStyle.Fill, ForeColor = Theme.TextSecondary, TextAlign = ContentAlignment.BottomLeft,
+                Text = "附件 / Attachments（仅存本机 %APPDATA%\\VSManager\\attachments\\，不上传、不提交 / local only, never uploaded or committed）"
+            };
+            Row(null, attachHead, Dpi.S(30), true);
+            TableLayoutPanel Pair(Control left, string middle, Control right)
+            {
+                var pair = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+                pair.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                pair.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, Dpi.S(96)));
+                pair.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+                pair.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+                pair.Controls.Add(left, 0, 0);
+                var label = NewLabel(middle);
+                label.Margin = new Padding(Dpi.S(12), 0, 0, 0);
+                pair.Controls.Add(label, 1, 0);
+                pair.Controls.Add(right, 2, 0);
+                return pair;
+            }
+            Row(NewLabel("单个上限"), Pair(
+                HistoryBox(_s.AttachmentMaxFileMB, 100, "MB",
+                    "单个附件大小上限（默认 " + AttachmentPolicy.DefaultMaxFileMB + "，1–100）\nMaximum size of one attachment (default " + AttachmentPolicy.DefaultMaxFileMB + ", 1–100)",
+                    v => _s.AttachmentMaxFileMB = AttachmentPolicy.ClampMaxFileMB(v)),
+                "每条数量",
+                HistoryBox(_s.AttachmentMaxCount, 20, "个",
+                    "单条消息最多附件数（默认 " + AttachmentPolicy.DefaultMaxCount + "，1–20）\nMaximum attachments per message (default " + AttachmentPolicy.DefaultMaxCount + ", 1–20)",
+                    v => _s.AttachmentMaxCount = AttachmentPolicy.ClampMaxCount(v))), Dpi.S(42));
+            Row(NewLabel("附件保留"), Pair(
+                HistoryBox(_s.AttachmentKeepDays, 3650, "天",
+                    "附件保留天数，超期自动清理（默认 " + AttachmentPolicy.DefaultKeepDays + "；0 = 不限制）；仍被未结束任务引用的附件保留\nDays to keep attachments, expired ones are removed automatically (default " + AttachmentPolicy.DefaultKeepDays + "; 0 = unlimited); attachments of unfinished tasks are kept",
+                    v => _s.AttachmentKeepDays = AttachmentPolicy.ClampKeepDays(v)),
+                "内联字数",
+                HistoryBox(_s.AttachmentInlineMaxChars, 200000, "字",
+                    "文本附件内联到任务正文的字数上限（单文件，默认 " + AttachmentPolicy.DefaultInlineMaxChars + "，1000–200000），超出部分截断并注明\nCharacters of one text attachment inlined into a task (default " + AttachmentPolicy.DefaultInlineMaxChars + ", 1000–200000); the rest is truncated with a note",
+                    v => _s.AttachmentInlineMaxChars = AttachmentPolicy.ClampInlineMaxChars(v))), Dpi.S(42));
+            {
+                var attachRow = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = new Padding(0, Dpi.S(4), 0, Dpi.S(4)) };
+                var clean = new FlatButton { Text = "立即清理过期附件 / Clean now", Dock = DockStyle.Left, Width = Dpi.S(230) };
+                var gap = new Panel { Dock = DockStyle.Left, Width = Dpi.S(8) };
+                var openFolder = new FlatButton { Text = "打开附件目录 / Open folder", Ghost = true, Dock = DockStyle.Left, Width = Dpi.S(200) };
+                var cleanStatus = new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Font = Theme.Small, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, Padding = new Padding(Dpi.S(12), 0, 0, 0) };
+                openFolder.Click += (s2, e2) => { try { AttachmentStore.OpenRoot(); } catch (Exception ex) { cleanStatus.Text = ex.Message; } };
+                clean.Click += async (s2, e2) =>
+                {
+                    if (actions?.CleanAttachments == null) return;
+                    clean.Enabled = false;
+                    string r = await actions.CleanAttachments();
+                    if (IsDisposed) return;
+                    clean.Enabled = true;
+                    cleanStatus.Text = r ?? "清理正在进行中 / A cleanup is already running";
+                    new ToolTip().SetToolTip(cleanStatus, cleanStatus.Text);
+                };
+                attachRow.Controls.Add(cleanStatus);
+                attachRow.Controls.Add(openFolder);
+                attachRow.Controls.Add(gap);
+                attachRow.Controls.Add(clean);
+                Row(null, attachRow, Dpi.S(42), true);
             }
 
             preset.SelectedIndexChanged += (s2, e2) =>
@@ -940,6 +1080,24 @@ namespace VSManager
                 return row;
             }
 
+            Row(null, Toggle("发送前关闭已保存文档 / Close saved documents before sending",
+                "默认关闭；跳过未保存、状态未知和调试中的文档，不关闭工具窗口 / Off by default; skip unsaved, unknown and debugging states; never close tool windows",
+                _s.CloseVsDocumentsBeforeSend, v => _s.CloseVsDocumentsBeforeSend = v), Dpi.S(72), true);
+            var documentThreshold = new NumericUpDown
+            {
+                Minimum = 0, Maximum = 1000, Value = Math.Max(0, Math.Min(1000, _s.CloseVsDocumentsThreshold)),
+                Dock = DockStyle.Left, Width = Dpi.S(90), BackColor = Theme.Elevated, ForeColor = Theme.Text
+            };
+            documentThreshold.ValueChanged += (s, e) =>
+            {
+                if (_loading) return;
+                _s.CloseVsDocumentsThreshold = (int)documentThreshold.Value;
+                Changed?.Invoke();
+            };
+            Row(NewLabel("标签阈值 / Tab threshold"), documentThreshold, Dpi.S(42));
+            Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted,
+                Text = "仅在文档标签页数量严格大于阈值时执行；默认 10，范围 0–1000。\r\nRun only when document tabs strictly exceed the threshold; default 10, range 0–1000." }, Dpi.S(48), true);
+
             Control timeoutHost, retriesHost;
             (timeoutHost, _sendTimeout) = NewTextBox(_s.SendConfirmTimeoutSeconds.ToString(), false);
             Row(NewLabel("确认超时 / Timeout"), NumberRow(_sendTimeout, timeoutHost,
@@ -952,6 +1110,14 @@ namespace VSManager
             (retriesHost, _sendRetries) = NewTextBox(_s.SendRetryCount.ToString(), false);
             Row(NewLabel("重试次数 / Retries"), NumberRow(_sendRetries, retriesHost,
                 "次（0–5，默认 " + AppSettings.DefaultSendRetryCount + "）/ times (0–5, default " + AppSettings.DefaultSendRetryCount + ")"), Dpi.S(42));
+
+            Row(null, Toggle("自动确认行尾标准化 / Auto-confirm line ending normalization",
+                "仅在发送被行尾弹窗阻挡且选中 Windows (CR LF) 时点击“是” / Select Yes only for Windows CR LF normalization",
+                _s.SendAutoNormalizeLineEndings, v => _s.SendAutoNormalizeLineEndings = v), Dpi.S(56), true);
+
+            Row(null, Toggle("自动关闭安全通知 / Auto-dismiss safe notices",
+                "仅处理已识别的单按钮完成通知；覆盖、删除、丢弃修改、安装、授权及未知弹窗仍需确认 / Known completion notices only; risky or unknown dialogs remain manual",
+                _s.SendAutoDismissNotices, v => _s.SendAutoDismissNotices = v), Dpi.S(56), true);
 
             Control locateTimeoutHost, locateRetriesHost;
             (locateTimeoutHost, _locateTimeout) = NewTextBox(_s.SendLocateTimeoutSeconds.ToString(), false);

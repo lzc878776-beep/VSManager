@@ -130,13 +130,16 @@ VSManager/
 | | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | 置顶、最小化到托盘、全局热键 |
 | | `ClickToActivate` | false | 单击列表即激活 VS |
 | | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | 界面尺寸记忆（0＝默认） |
+| | `TaskListGroupByVs` / `TaskListGroupSort` / `TaskListCollapsedGroups` | true / `activity` / 空 | 任务清单按 VS 分组、分组排序（`activity` 或 `number`）、已折叠的分组，见[任务清单分组](#任务清单分组) |
 | Copilot 监听与发送 | `MonitorCopilot` / `PollMs` | true / 1500 | 监听 Copilot 状态及轮询间隔（毫秒） |
 | | `Sound` / `Popup` | true / true | 完成时提示音、托盘气泡 |
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | 识别 Copilot 窗格与「忙碌」按钮 |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | 后台发送、后台同步对话、自动打开对话窗格 |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | 窗格被切走时自动切回、显示对话步骤 |
+| | `AutoOpenCopilotPane` | true | 发送前 / 手动打开时，若对话窗格缺失、被隐藏或停留在历史记录，自动打开到当前会话 |
 | | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | 写入 Copilot 输入框后的确认超时（秒，2–120）、粘贴未确认或未找到输入框时是否自动重试及粘贴重试次数（0–5） |
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | 每轮定位 Copilot 输入框的轮询超时（秒，1–60）、未找到时重新打开窗格并重试的次数（0–5，`SendAutoRetry=false` 时不重试） |
+| | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | 显式开启后，仅在文档标签数量严格超过阈值（0–1000）时清理已保存文档；未保存、未知状态与调试会话跳过 |
 | 解决方案登记 | `SolutionCloseConfirm` | true | AI 关闭 VS 前总是弹窗确认（关闭时仍会检查未保存修改） |
 | | `SolutionOpenWaitSeconds` | 90 | AI 打开解决方案后等待 VS 出现的最长时间（秒，10–600） |
 | | `PendingVsSettleSeconds` | 20 | 暂存任务在目标 VS 出现后再等待的秒数，让解决方案与 Copilot 加载完成（0–300） |
@@ -147,6 +150,8 @@ VSManager/
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI 兼容接口与模型 |
 | | `AgentKeyProtected` | 空 | API Key（DPAPI 加密；也可用 `VSMANAGER_AGENT_API_KEY`） |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进 |
+| | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | 默认仅授权已登记解决方案目录；额外根目录必须在「AI 文件授权」中应用确认，或由用户编辑本机配置；两者都为空时拒绝全部访问 |
+| | `AgentPowerShellEnabled` | false | 兼容保留字段；AI 任意脚本入口停用，旧配置设为 true 也不能绕过文件白名单 |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | 单次文本上限（字符） |
 | | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | 输出上限（0＝模型默认）、历史条数、单轮工具调用次数 |
 | | `AgentMaxFileLines` / `AgentMaxReadCount` | 4000 / 400 | 读取文件行数、读取对话条数上限 |
@@ -164,6 +169,9 @@ VSManager/
 | Web 远程 | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / 空（自动生成） | 局域网远程控制 |
 | 归档 | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / 空 / 0 | 历史归档 |
 | 内存 | `VsMemoryAutoEnabled` / `VsMemoryThresholdMB` / `VsMemoryAutoClean` | false / 6144 / false | 见[内存监控](#内存监控) |
+| 定期内存清理 | `AutoTrimVsMemory` / `AutoTrimIntervalMinutes` / `AutoTrimThresholdMB` | false / 30（5–1440）/ 0（不限制） | 见[内存监控](#内存监控) |
+| AI 助手附件 | `AttachmentMaxFileMB` / `AttachmentMaxCount` | 10（1–100）/ 5（1–20） | 单个附件大小上限、每条消息附件数量上限 |
+| | `AttachmentKeepDays` / `AttachmentInlineMaxChars` | 30（0 = 不限制）/ 20000 | 附件保留天数；文本附件内联到任务正文的字数上限，见[AI 助手附件](#ai-助手附件) |
 | 发布 | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` | 空 / 空 / `VSManager` | 本地目录、所有者、仓库名 |
 | | `PublishVisibility` / `PublishBranch` | `public` / `main` | 可见性、默认分支 |
 | | `PublishAuthorName` / `PublishAuthorEmail` | `VSManager contributors` / 空（noreply） | 提交作者 |
@@ -208,6 +216,55 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 
 点击主窗口顶部的「📜 对话记录」打开历史窗口，可按关键词（或「#任务编号」）搜索、按日期筛选、切换正序 / 倒序，并可显示工具调用步骤。主界面的 AI 对话区只显示本次运行的会话（重启后清空），完整历史在该窗口中查看。每条记录包含时间、角色（user / assistant / notice）、文本以及关联的任务编号；写入时逐条追加并立即刷盘。容量由「属性 → AI 总控助手 → 对话记录」中的 `AgentChatKeepDays`（默认 30 天）与 `AgentChatMaxRecords`（默认 2000 条）控制，超出时只裁剪该文件中最旧的记录，不影响任务清单与归档。
 
+### AI 授权文件工具
+
+在「属性 → AI 文件授权」配置根目录白名单。默认只纳入已登记解决方案的父目录，不因某个 VS 正在运行而自动授权；额外目录每行一条，支持环境变量，必须点击「应用授权目录」并确认后生效。也可编辑本机 `settings.json` 的 `AgentIncludeSolutionRoots` 与 `AgentFileRoots`。禁用登记目录且额外列表为空时拒绝全部文件访问；模型不能自行更改授权。允许读取的内容可能发送给配置的 AI 服务。
+
+| 工具 | 参数与默认值 | 返回内容 |
+|---|---|---|
+| `find_files` | `directory`；`pattern="*"`、`recursive=true`、`maxDepth=3`、`maxResults=100` | 文件名通配符（`*`、`?`）匹配及元数据 |
+| `search_file_contents` | `directory`、`keyword`；`filePattern="*"`、`recursive=true`、`maxDepth=3`、`maxResults=100`、`maxFileBytes=1048576` | 忽略大小写的字面关键词匹配，含相对路径、行号与打码片段；先脱敏再匹配，不支持正则 |
+| `read_file` | `path`；`startLine=1`、`maxLines=200` | 带行号的打码文本与 `nextStartLine`；0 表示没有后续行 |
+| `list_directory` | `directory`；`maxResults=200` | 直接子项的类型、文件字节数和 UTC 修改时间；目录大小不递归计算 |
+
+共同硬限制：只接受不超过 240 字符的完整本机路径；深度最多 8（根目录为 0）、最多 200 条结果、5,000 个遍历条目、5 秒协作式预算和 16,000 个输出字符。读取单文件最多 1 MiB、单次最多 500 行，且服从用户设置的更低行数/字符额度。只解码 UTF-8 或带 BOM 的 UTF-16；读取时单行最多 2,048 字符，搜索片段单行最多 1,024 字符，更低字符额度可能进一步缩短。超长行会明确标记截断，但其省略部分不能通过下一行续读。系统 I/O 调用本身不能强制中止。
+
+目录遍历跳过 `bin`、`obj`、`node_modules`、`.git`、`packages`、`.vs`、`.svn`、`.hg`。禁止越界、设备/UNC 路径、备用数据流、目录跳转、重解析点及硬链接；通过原生句柄验证最终路径并固定祖先目录。系统/安装目录、凭据目录、浏览器资料目录、`.ssh`、`.aws`、`.azure`、`.kube`、私钥、`.env`、凭据相关名称、`settings.json` 及副本始终拒绝。AppData 默认禁止，只有额外获得授权且符合临时目录规则的 LocalAppData 临时目录例外。二进制可以列元数据，但不读取或内容搜索。
+
+文本在分页或搜索前整文件打码：已配置的服务密钥，以及中英文密码/密钥/令牌赋值、连接字符串、私钥块、Bearer/Basic、常见服务 Token、JWT 和带凭据的 URL。规则不能识别所有未知编码或混淆秘密，不应据此授权敏感资料目录。旧 `read_vs_file`、`scan_vs_code` 共用相同边界；扫描改为安全元数据列表，关键源码按需通过文件工具读取。任意 `run_powershell` 已从 AI 工具中移除，旧开关不能重新开放；截图仍需逐次预览批准，文件与截图中的文字均不构成操作授权。
+
+审计保存在 `%APPDATA%\VSManager\logs\file-audit.log`：记录操作、关联编号、脱敏路径及路径标识、开始/结果状态、数量和耗时，不记录搜索词或文件内容。读取前和返回前均须成功写入审计，否则不返回内容；无法读取的条目会汇总提示，不静默伪装为完整结果。审计及白名单仅保留本机，不提交到仓库。
+
+### 发送前文档清理
+
+在「属性 → 发送确认」显式开启 `CloseVsDocumentsBeforeSend`（默认 false）。仅在目标 VS 的文档标签页数严格大于 `CloseVsDocumentsThreshold`（默认 10）时，才在实际发送之前清理已保存文档；多个视图按文档窗口计数。调试中、调试状态未知、未保存或无法确认状态的文档一律跳过；工具窗口、Copilot 窗格和 VS 进程不关闭，也不会自动保存或丢弃修改。
+
+先使用 DTE 文档窗口 `Close(0)`（保留保存提示，避免竞态丢失修改）；每步重新确认保存状态、窗口身份和调试状态。失败时只有唯一文档标题、路径、窗口句柄和 UIA 文档标签身份均可证明时，才点击该标签内的关闭按钮；身份不明或有模态窗口则拒绝后备操作。不发送全局“关闭全部”命令。清理串行执行，有枚举上限和 8 秒协作式预算；已进入的 COM/UIA 调用不能强制中止，不会遗留超时后继续关闭窗口的后台操作。
+
+清理及通知失败单独记录，不改写任务文本、发送返回值或任务状态。诊断写入现有发送日志（右键 VS →「查看发送日志」），包含初始标签数、标题、保存状态、关闭方式和失败信息；清理结果及跳过的未保存文件名仅在本机 AI 助手界面显示，不加入模型上下文、不触发自动跟进，另按现有弹窗与语音设置播报数量。关闭标签页不保证 VS 的工作集立即下降。
+
+### 打开对话助手
+
+找到 Copilot 窗格不等于可以输入：窗格可能自动隐藏、被覆盖，或停留在「查看聊天历史记录」列表（此时「返回」按钮可见，对话列表与输入框不可见）。AI 工具 `open_copilot`（参数 `vs`：VS 编号或名称）按以下顺序降级：
+
+1. DTE 执行 `View.GitHub.Copilot.Chat`，工具窗口自动隐藏时固定显示、不可见时设为可见（不改变停靠方式）；
+2. 仍不可见时用 UI Automation 聚焦窗格；
+3. 停留在历史记录时点击「返回」（`backToChat`）切回当前会话；
+4. 校验输入框可见且可编辑，再把 VS 切到前台并聚焦输入框。
+
+每步的窗格状态、候选数量、是否自动隐藏与耗时写入发送日志；结果按现有弹窗与语音设置播报「已打开对话助手」或「未能打开对话助手，请手动打开」。`AutoOpenCopilotPane`（默认 true）开启时，发送任务前也会先按同样的步骤打开窗格（不抢前台），定位输入框重试时同样会退出历史记录。
+
+### AI 助手附件
+
+- 输入：AI 助手输入框支持粘贴截图（Ctrl+V）、拖拽文件和「＋ 附件」按钮。支持图片（png/jpg/jpeg/gif/bmp/webp）、文本与代码（txt/log/cs/xaml/json/xml/md/csv 等）以及常见文档（pdf/docx/xlsx 等，只发送路径引用）。默认单个 10 MB、每条 5 个，超限时明确提示。
+- 存储：附件复制到 `%APPDATA%\VSManager\attachments\yyyy-MM-dd\`，文件名为「时间戳-6 位随机后缀.扩展名」；对话记录、任务清单（tasks.json）与归档只保存引用（编号、原始文件名、大小、类型、SHA-256、相对路径），不内嵌二进制内容。对话中的附件显示为可点击链接（在资源管理器中定位），保存与清理记入 `logs\attachments.log`。该目录已加入 `.gitignore` 与发布自检，不会被提交。
+- 随任务发送：AI 调用 `send_task` 时用 `attachments` 参数（编号或 `last`）指定附件，只能引用用户在本次对话中提供的文件。发送时图片复用现有的图片发送流程粘贴到 VS Copilot（单条最多 4 张，webp 与超出的图片改为路径引用）；文本文件以带文件名的代码块内联到正文（超长截断并注明）；二进制与文档只发送路径。图片在提交前失败时改为只发送文字（附图片路径），记为「文字已送达、图片未送达」并提示，不判为任务失败。图片内容不会发给 AI 模型。
+- 任务清单显示 `📎 N`，右键「查看附件」可打开或定位文件。设置窗口可调整上限与保留天数（`AttachmentKeepDays` 默认 30，0 表示不限制），并提供「立即清理过期附件」；仍被未结束任务引用的附件不会被清理。
+
+### 任务清单分组
+
+右侧任务清单默认按目标 VS 分组（`TaskListGroupByVs` 默认 true），每组一个标题行：已打开的 VS 显示「@编号 名称」（编号与左侧列表一致），未打开的显示「名称（未打开）」，并统计任务数、执行中、排队、待打开与失败数量。组内沿用原排序（执行中 / 排队按编号在前，已结束的按完成时间倒序）；组间默认「有执行中的优先，再按最近活动倒序」（`TaskListGroupSort = activity`），也可选按 VS 编号（`number`）。「等待目标 VS」的任务在目标已打开时归入该 VS 分组，否则归入单独的「等待打开」分组。点击标题折叠 / 展开（折叠状态保存在本机 settings.json 的 `TaskListCollapsedGroups`），右键标题可全部折叠 / 展开、切换排序或改为平铺列表；标题栏的 ▤ / ≡ 按钮在分组与平铺之间切换。分组只影响显示，标题行不可选中；排队、发布与清除 / 历史等操作不变。
+
 ### 内存监控
 
 点击主窗口顶部的「🧠 内存」打开内存面板：按 VSManager 本体、各 VS 实例（devenv 及其全部子进程，如 ServiceHub、WebView2、MSBuild、Copilot 语言服务）和无归属的共享组件（如 VBCSCompiler）分组，显示每个进程的 PID、所属 VS、工作集、私有字节与占比，默认每 5 秒自动刷新。
@@ -217,6 +274,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 - 调试器组件、测试宿主、终端 / Copilot 代理命令、被调试的程序等标为「不建议」，只展示不清理。
 - 每次清理的前后数值显示在面板底部，并写入 `%APPDATA%\VSManager\logs\memory.log`。
 - 超阈值自动策略（默认关闭）：`VsMemoryAutoEnabled`（默认 false）、`VsMemoryThresholdMB`（默认 6144）、`VsMemoryAutoClean`（默认 false = 只提示）。每分钟检查一次，同一 VS 30 分钟内最多处理一次；VS 正在调试 / 生成 / Copilot 运行中时只提示。
+- 定期自动清理（默认关闭，在内存面板底部配置）：`AutoTrimVsMemory`（默认 false）、`AutoTrimIntervalMinutes`（默认 30，范围 5–1440）、`AutoTrimThresholdMB`（默认 0 = 不限制；大于 0 时只清理工作集超过该值的 VS）。后台定时器每 30 秒检查是否到期（不占用界面线程），到期后复用上面的温和清理，清理范围完全相同。正在调试、生成、Copilot 运行、有发送中 / 执行中任务，或自动化接口不可用（无法确认状态）的 VS 一律跳过并在 `memory.log` 记录原因。面板显示上次结果与下次预计时间，并提供「立即执行一次」。实际释放内存时通知并播报「已自动清理 N 个 VS 实例内存，释放 X MB」；无效果或全部跳过时只记日志。
 
 ### 自动重启
 
@@ -245,18 +303,24 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 }
 ```
 
-> 示例中的路径仅为示意，请填写真实的 `.sln` / `.slnx` 完整路径（环境变量不会自动展开）。`DefaultVs` 为可选的 VS 编号（0 = 未设置），仅在读不到某个 VS 的解决方案路径时，用来判断该解决方案是否已在该编号的 VS 中打开。
+> 示例中的路径仅为示意，请配置 `.sln` / `.slnx` 完整路径；匹配、扫描及打开时支持展开环境变量。`DefaultVs` 为可选的 VS 编号（0 = 未设置），仅在该 VS 的当前解决方案路径与启动路径均未知时作为识别后备；不能覆盖已知路径。
 
-**界面入口**：「属性 → 解决方案登记」卡片的「管理登记表…」、实例列表右键菜单「登记此解决方案」（一键登记已打开的 VS）与「解决方案登记…」。登记窗口支持新增 / 修改 / 删除、浏览选择解决方案、「从已打开的 VS 登记」、直接打开所选解决方案，并显示每条是否已打开及对应 VS 编号。
+**界面入口**：「属性 → 解决方案登记」卡片的「管理登记表…」、实例列表右键菜单「登记此解决方案」（一键登记已打开的 VS）与「解决方案登记…」。登记窗口支持新增 / 修改 / 删除、浏览选择解决方案、「从已打开的 VS 登记」、直接打开所选解决方案，并显示每条是否已打开及对应 VS 编号；新增「从目录扫描并登记」与「重新读取配置」入口。直接编辑配置文件后可重新读取，放弃未保存的界面修改前会确认。
 
-**别名匹配规则**（不区分大小写与全角半角，忽略空白与标点）：
+**多路径与扫描**：`Solutions` 数组可保存多条记录，没有登记数量上限。扫描目录由用户指定，深度为 0–3，默认 3（根目录为 0）；跳过 `bin`、`obj`、`node_modules`、`.git`、`packages`、`.vs`、`TestResults`、`artifacts`、`dist` 及链接。扫描在后台执行，可取消；单次预算为 20 秒、5,000 个目录、50,000 个条目、2,000 个结果，达到任一限制会明确提示结果不完整。取消和时间限制不能强制中止正在进行的单次文件系统调用。候选默认不勾选，确认后才批量登记；以文件名为默认别名，同名自动加编号，重复路径跳过，已有说明与同义词不被覆盖。扫描上限不限制登记表的总容量。
+
+**本机隐私**：登记表不会自动填入任何真实目录。文件及其备份、临时副本仅留在本机；忽略规则覆盖大小写变体。发布自检检查当前文件、索引及 HEAD 历史；发现登记表文件会直接阻止发布，不能通过普通的“确认继续”绕过。
+
+**别名匹配规则**
 
 1. 完整路径一致、别名完全一致 → 命中；同义词完全一致、文件名（不含扩展名）一致次之；
 2. 去掉「解决方案 / 项目 / 工程 / 方案 / 代码 / solution / project / repo / 仓库」等通用后缀后一致（如「下单项目」→「下单」）；
 3. 互相包含（至少 2 个字符）、按顺序出现的字符、说明中包含、二元组相似度等模糊规则得分较低；
-4. 最高分唯一 → 直接使用；多条得分接近 → 列出候选让用户或 AI 选择；无匹配 → 报错并列出全部已登记别名。
+4. 精确类匹配取并列最高分，模糊匹配取与最高分相差不足 10 分的候选；只有一条候选才直接使用，多条则列出供选择；无匹配时明确报错并列出全部已登记别名。
 
-**AI 工具**：
+显式目录路径未命中时不回退到模糊别名；同路径的多条登记也返回候选。识别已打开 VS 时优先使用实际路径，其次是当前路径未知时的启动路径；仅凭标题识别要求实例唯一且登记文件名没有歧义。
+
+**AI 工具**
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
@@ -495,13 +559,16 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | Always on top, minimize to tray, global hotkeys |
 | | `ClickToActivate` | false | A single click in the list activates the VS |
 | | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | Remembered UI sizes (0 = default) |
+| | `TaskListGroupByVs` / `TaskListGroupSort` / `TaskListCollapsedGroups` | true / `activity` / empty | Group the task list by VS, group order (`activity` or `number`), collapsed groups. See [Task list groups](#task-list-groups) |
 | Copilot monitoring & sending | `MonitorCopilot` / `PollMs` | true / 1500 | Monitor Copilot state and polling interval (ms) |
 | | `Sound` / `Popup` | true / true | Sound and tray balloon on completion |
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | How the Copilot pane and its "busy" button are recognized |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | Send in the background, sync chats in the background, open the chat pane automatically |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | Switch back to the pane when it is replaced, show chat steps |
+| | `AutoOpenCopilotPane` | true | Before sending / on manual open, open the current conversation when the pane is missing, hidden or on the history list |
 | | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | Confirmation timeout after writing to the Copilot input box (seconds, 2–120), whether an unconfirmed paste or a missing input box is retried automatically, and how often a paste is retried (0–5) |
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | Polling timeout of each round locating the Copilot input box (seconds, 1–60) and how often the pane is reopened and the lookup retried when it is not found (0–5; no retry when `SendAutoRetry=false`) |
+| | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | After explicit opt-in, close saved documents only when tab count strictly exceeds the threshold (0–1000); skip unsaved, unknown and debugging states |
 | Solution registry | `SolutionCloseConfirm` | true | Always ask before the AI closes a VS (unsaved changes are checked regardless) |
 | | `SolutionOpenWaitSeconds` | 90 | How long the AI waits for VS to appear after opening a solution (seconds, 10–600) |
 | | `PendingVsSettleSeconds` | 20 | Extra seconds a parked task waits after its VS appears so the solution and Copilot can load (0–300) |
@@ -512,6 +579,8 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI-compatible endpoint and model |
 | | `AgentKeyProtected` | empty | API key (DPAPI-encrypted; or `VSMANAGER_AGENT_API_KEY`) |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish |
+| | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | Defaults to registered solution directories only; extra roots require Apply/confirmation in AI file authorization or a user-edited local configuration; no roots means deny all |
+| | `AgentPowerShellEnabled` | false | Legacy compatibility field; arbitrary AI scripts are disabled, and setting this to true cannot bypass the file allowlist |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | Per-call text limits (characters) |
 | | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | Output limit (0 = model default), history messages, tool calls per round |
 | | `AgentMaxFileLines` / `AgentMaxReadCount` | 4000 / 400 | File lines and chat messages read at most |
@@ -529,6 +598,9 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | Web remote | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / empty (generated) | LAN remote control |
 | Archive | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / empty / 0 | History archive |
 | Memory | `VsMemoryAutoEnabled` / `VsMemoryThresholdMB` / `VsMemoryAutoClean` | false / 6144 / false | See [Memory monitor](#memory-monitor) |
+| Periodic memory cleanup | `AutoTrimVsMemory` / `AutoTrimIntervalMinutes` / `AutoTrimThresholdMB` | false / 30 (5–1440) / 0 (no limit) | See [Memory monitor](#memory-monitor) |
+| AI assistant attachments | `AttachmentMaxFileMB` / `AttachmentMaxCount` | 10 (1–100) / 5 (1–20) | Size limit per attachment, attachments per message |
+| | `AttachmentKeepDays` / `AttachmentInlineMaxChars` | 30 (0 = unlimited) / 20000 | Days to keep attachments; characters of a text attachment inlined into the task body. See [AI assistant attachments](#ai-assistant-attachments) |
 | Publish | `PublishRepoPath` / `PublishOwner` / `PublishRepoName` | empty / empty / `VSManager` | Local folder, owner, repository name |
 | | `PublishVisibility` / `PublishBranch` | `public` / `main` | Visibility, default branch |
 | | `PublishAuthorName` / `PublishAuthorEmail` | `VSManager contributors` / empty (noreply) | Commit author |
@@ -573,6 +645,55 @@ All of these are listed in `.gitignore`; do not commit them. The publish scan al
 
 Click "📜 对话记录" (Chat history) at the top of the main window to open the history window: search by keywords (or "#task-id"), filter by date, switch between oldest-first and newest-first, and optionally show tool-call steps. The chat area in the main window only shows the current session (cleared on restart); the full history lives in this window. Each record holds the time, role (user / assistant / notice), text and related task ids, and is appended and flushed to disk immediately. Capacity is controlled by `AgentChatKeepDays` (default 30 days) and `AgentChatMaxRecords` (default 2000) in Settings → AI assistant → Chat history; only the oldest records in this file are trimmed, the task list and archive are not affected.
 
+### Authorized AI file tools
+
+Configure roots in Settings → AI file authorization. Defaults include registered solution parents only, not arbitrary running VS instances. Enter one extra root per line (environment variables supported), then click Apply authorized roots and confirm. Alternatively edit `AgentIncludeSolutionRoots` and `AgentFileRoots` in local `settings.json`. Disabling registry roots with no extra roots denies all file access; the model cannot grant itself permission. Readable content may be sent to the configured AI service.
+
+| Tool | Parameters and defaults | Output |
+|---|---|---|
+| `find_files` | `directory`; `pattern="*"`, `recursive=true`, `maxDepth=3`, `maxResults=100` | Filename glob matches (`*`, `?`) and metadata |
+| `search_file_contents` | `directory`, `keyword`; `filePattern="*"`, `recursive=true`, `maxDepth=3`, `maxResults=100`, `maxFileBytes=1048576` | Case-insensitive literal matches with relative path, line number and masked snippet; redaction precedes matching; no regex |
+| `read_file` | `path`; `startLine=1`, `maxLines=200` | Masked numbered lines and `nextStartLine`; 0 means no following lines |
+| `list_directory` | `directory`; `maxResults=200` | Immediate children with type, file bytes and UTC modification time; directory sizes are not computed recursively |
+
+Shared hard bounds: full local paths up to 240 characters; depth 8 (root is 0), 200 results, 5,000 traversed entries, a 5-second cooperative budget and 16,000 output characters. File reads allow up to 1 MiB and 500 lines, also respecting lower user-configured line/character quotas. Decoding supports UTF-8 and BOM-marked UTF-16. Read lines cap at 2,048 characters and search snippets at 1,024, possibly lower under smaller output quotas. Long lines are explicitly marked truncated; omitted characters cannot be recovered by advancing to the next line. Individual system I/O calls cannot be forcibly interrupted.
+
+Traversal skips `bin`, `obj`, `node_modules`, `.git`, `packages`, `.vs`, `.svn` and `.hg`. Escapes, device/UNC paths, alternate streams, traversal segments, reparse points and hard links are denied; native handles verify final paths and pin ancestors. System/installation directories, credential and browser profiles, `.ssh`, `.aws`, `.azure`, `.kube`, private keys, `.env`, credential-related names, `settings.json` and its copies stay blocked. AppData is denied except explicitly granted LocalAppData temporary directories meeting the temp-path rules. Binary metadata can be listed, but binary content is not read or searched.
+
+Whole-file redaction precedes pagination/search: configured service secrets plus Chinese/English password/key/token assignments, connection strings, private-key blocks, Bearer/Basic, common service tokens, JWTs and credential-bearing URLs. Rules cannot recognize every encoded or obfuscated secret; do not authorize sensitive data folders on that assumption. Legacy `read_vs_file` and `scan_vs_code` share the same boundary; scanning now returns safe metadata, with key source files read on demand. Arbitrary `run_powershell` is removed from AI tools and its legacy switch cannot restore it. Screenshots still require individual preview approval, and file/screenshot text never grants permission.
+
+Audit records stay in `%APPDATA%\VSManager\logs\file-audit.log`: operation, request ID, masked path/path ID, start/result status, counts and elapsed time, without queries or file content. Both pre-read and pre-return audit writes must succeed or no content is returned. Unreadable entries are reported rather than silently presenting incomplete results as complete. Audit and allowlist remain local and must not be committed.
+
+### Pre-send document cleanup
+
+Explicitly enable `CloseVsDocumentsBeforeSend` in Settings → Send confirmation (default false). Saved documents are cleaned immediately before the actual send only when the target VS's document tab count strictly exceeds `CloseVsDocumentsThreshold` (default 10); multiple views count as document windows. Debugging, unknown debugger state, unsaved documents and unreadable state are skipped. Tool windows, Copilot panes and the VS process are never closed; changes are neither automatically saved nor discarded.
+
+DTE document-window `Close(0)` is tried first (preserving save prompts to avoid losing edits in a race), with saved state, window identity and debugger state rechecked at every step. On failure, UIA clicks a tab's own close button only when its unique document title, path, HWND and document-tab identity are proven. Ambiguous identities or modal windows refuse fallback. No global Close All command is sent. Cleanup is serial, with enumeration limits and an 8-second cooperative budget; an in-progress COM/UIA call cannot be forcibly interrupted, and no background operation is left to close windows after a timeout.
+
+Cleanup and notification failures are logged separately without rewriting task text, send results or task status. Diagnostics use the existing send log (right-click VS → View send log), recording initial tab count, title, saved state, close method and failure details. Results and skipped unsaved filenames appear locally in the AI assistant UI without entering model context or triggering automatic follow-up; existing popup and voice preferences also report the counts. Closing tabs does not guarantee an immediate reduction in VS working set.
+
+### Opening the chat assistant
+
+Finding the Copilot pane does not mean it accepts input: it may be auto-hidden, covered, or stuck on the "View chat history" list ("Back" visible, conversation list and input offscreen). The AI tool `open_copilot` (parameter `vs`: VS number or name) falls back in this order:
+
+1. DTE runs `View.GitHub.Copilot.Chat`, pins the tool window when auto-hidden and makes it visible (the docking style is unchanged);
+2. If still hidden, UI Automation focuses the pane;
+3. On the history list it presses "Back" (`backToChat`) to return to the current conversation;
+4. It verifies the input is visible and editable, then brings VS to the front and focuses the input.
+
+Pane state, candidate count, auto-hide state and timings of every step go to the send log; the result is announced through the existing popup and voice settings ("Copilot chat opened" or "Could not open the Copilot chat; please open it manually"). With `AutoOpenCopilotPane` (default true) the same steps run before sending a task (without stealing the foreground), and input-locate retries also leave the history list.
+
+### AI assistant attachments
+
+- Input: the AI assistant input accepts pasted screenshots (Ctrl+V), dragged files and the "＋ Attach" button. Supported: images (png/jpg/jpeg/gif/bmp/webp), text and code (txt/log/cs/xaml/json/xml/md/csv and more) and common documents (pdf/docx/xlsx and more, sent as a path reference only). Defaults: 10 MB per file, 5 per message; limits are reported clearly.
+- Storage: attachments are copied to `%APPDATA%\VSManager\attachments\yyyy-MM-dd\` named "timestamp-6 random hex.ext". The transcript, the task list (tasks.json) and archives keep only references (id, original name, size, kind, SHA-256, relative path), never binary content. Attachments appear as clickable links in the chat (locate in Explorer); saves and cleanups go to `logs\attachments.log`. The folder is in `.gitignore` and the publish self-check, so it is never committed.
+- Sending with tasks: the AI passes `attachments` (ids or `last`) to `send_task`; only files the user provided in the current conversation can be used. Images are pasted into VS Copilot through the existing image-send flow (at most 4 per message; webp and extra images become path references); text files are inlined as code blocks with the file name (truncated with a note); binary files and documents are sent as paths. If images fail before submission, the text is sent alone (with image paths), recorded as "text delivered, images not delivered" and reported, without failing the task. Image content is never sent to the AI model.
+- The task list shows `📎 N` and the context menu has "View attachments" to open or locate files. The settings window adjusts the limits and retention (`AttachmentKeepDays` default 30, 0 = unlimited) and offers "Clean now"; attachments still used by unfinished tasks are never removed.
+
+### Task list groups
+
+The task list on the right is grouped by target VS by default (`TaskListGroupByVs` default true), with one header per group: an open VS shows "@number name" (the number matches the list on the left), a VS that is not open shows "name (not open)", plus counts of tasks, running, queued, waiting and failed items. Items keep the existing order inside a group (running / queued by ID first, finished ones by completion time, newest first). Groups are ordered "running first, then latest activity" by default (`TaskListGroupSort = activity`) or by VS number (`number`). "Waiting for VS" tasks join their target's group when that VS is open, otherwise a separate "Waiting to open" group. Click a header to collapse / expand (saved in `TaskListCollapsedGroups` in the local settings.json); right-click a header to collapse / expand all, change the order or switch to the flat list; the ▤ / ≡ button in the title bar toggles grouped and flat views. Grouping is display-only and headers cannot be selected; queueing, publishing, clear / history and the other actions are unchanged.
+
 ### Memory monitor
 
 Click "🧠 内存" (Memory) at the top of the main window to open the memory panel. It groups processes into VSManager itself, each VS instance (devenv and all its descendants such as ServiceHub, WebView2, MSBuild and the Copilot language server) and orphaned shared components (such as VBCSCompiler), and shows PID, owner, working set, private bytes and share for each process; it refreshes every 5 seconds by default.
@@ -582,6 +703,7 @@ Click "🧠 内存" (Memory) at the top of the main window to open the memory pa
 - Debugger components, test hosts, terminal / Copilot agent commands and the program under debugging are marked "Not advised" and are only displayed.
 - Before/after numbers of every cleanup are shown at the bottom of the panel and written to `%APPDATA%\VSManager\logs\memory.log`.
 - Threshold policy (off by default): `VsMemoryAutoEnabled` (default false), `VsMemoryThresholdMB` (default 6144), `VsMemoryAutoClean` (default false = notify only). Checked once a minute, at most once per 30 minutes per VS; a VS that is debugging / building / running Copilot is only notified.
+- Periodic auto cleanup (off by default, configured at the bottom of the memory panel): `AutoTrimVsMemory` (default false), `AutoTrimIntervalMinutes` (default 30, range 5–1440), `AutoTrimThresholdMB` (default 0 = no limit; otherwise only VS instances above this working set). A background timer checks every 30 seconds whether a run is due (never on the UI thread) and reuses the gentle cleanup above with exactly the same scope. A VS that is debugging, building, running Copilot, has a task being sent / running, or has no automation interface (state unknown) is skipped and the reason is written to `memory.log`. The panel shows the last result, the next expected time and a "Run once now" button. When memory is actually freed it notifies and announces "Auto-cleaned memory of N VS instance(s), freed X MB"; ineffective or fully skipped runs are only logged.
 
 ### Auto restart
 
@@ -610,18 +732,24 @@ Click "🧠 内存" (Memory) at the top of the main window to open the memory pa
 }
 ```
 
-> The path above is only an illustration; enter the real full path of the `.sln` / `.slnx` (environment variables are not expanded). `DefaultVs` is an optional VS number (0 = unset), used only when the solution path of a VS cannot be read, to decide whether the solution is already open in that VS.
+> The path above is only an illustration; configure a full `.sln` / `.slnx` path. Environment variables are expanded during matching, scanning and opening. `DefaultVs` is an optional VS number (0 = unset), used as a fallback only when both the VS's current solution path and launch path are unknown; it cannot override known paths.
 
-**UI entries**: "Manage registry…" in the Settings → Solution registry card, and "Register this solution" (one-click registration of an open VS) / "Solution registry…" in the instance list context menu. The registry window supports add / edit / delete, browsing for a solution, "Register from an open VS", opening the selected solution, and shows whether each entry is open and in which VS.
+**UI entries**: "Manage registry…" in the Settings → Solution registry card, and "Register this solution" (one-click registration of an open VS) / "Solution registry…" in the instance list context menu. The registry window supports add / edit / delete, browsing for a solution, "Register from an open VS", opening the selected solution, and shows whether each entry is open and in which VS. New entries provide "Scan folder…" and "Reload file". Reload after editing the configuration directly; discarding unsaved editor changes requires confirmation.
 
-**Alias matching** (case, full/half width, whitespace and punctuation are ignored):
+**Multiple paths and scanning**: the `Solutions` array holds multiple records with no registry count limit. The user supplies the scan folder and depth (0–3, default 3; root is depth 0). Scanning skips `bin`, `obj`, `node_modules`, `.git`, `packages`, `.vs`, `TestResults`, `artifacts`, `dist`, and links. It runs in the background and can be cancelled. Each scan is limited to 20 seconds, 5,000 folders, 50,000 entries or 2,000 results; reaching any limit explicitly reports incomplete results. Cancellation and time limits cannot forcibly interrupt an individual filesystem call already in progress. Candidates start unchecked and are registered only after selection and confirmation. File names become default aliases, collisions receive numbered suffixes, duplicate paths are skipped, and existing descriptions and synonyms are preserved. Scan limits do not limit total registry capacity.
+
+**Local privacy**: no real folder is automatically added. Registry files, backups and temporary copies stay local; ignore rules cover case variants. Publication checks inspect current files, the index and HEAD history. Registry files block publication and cannot be bypassed with ordinary "continue anyway" approval.
+
+**Alias matching**
 
 1. Same full path or exact alias → hit; exact synonym or file name (without extension) comes next;
 2. Equal after removing generic suffixes such as 解决方案 / 项目 / 工程 / solution / project / repo (e.g. "下单项目" → "下单");
 3. Fuzzy rules (containment of at least 2 characters, characters in order, description contains, bigram similarity) score lower;
-4. A single best score is used directly; several close scores are listed as candidates for the user or the AI to pick; no match is an error that lists all registered aliases.
+4. Exact-class matches keep the tied highest score; fuzzy matches keep candidates within fewer than 10 points of the highest score. Only a single candidate is used directly; multiple candidates are listed for selection, and no match explicitly reports an error with all registered aliases.
 
-**AI tools**:
+An unmatched explicit directory path never falls back to fuzzy aliases; multiple registrations of the same path also return candidates. Open VS detection prefers the actual path, then the launch path only if the current path is unknown. Title-only detection requires a unique instance and an unambiguous registered filename.
+
+**AI tools**
 
 | Tool | Parameters | Description |
 |---|---|---|

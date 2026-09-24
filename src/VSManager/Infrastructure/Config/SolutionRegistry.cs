@@ -122,18 +122,76 @@ namespace VSManager
             return string.Join("、", items.Select(e => "「" + e.Alias + "」" + (e.Synonyms.Count > 0 ? "（" + e.SynonymText + "）" : "")));
         }
 
+        /// <summary>批量登记选中的本机解决方案；保留已有条目，别名冲突加编号，保存失败不更新内存。/ Registers selected local solutions, preserving existing entries, numbering alias collisions and keeping memory unchanged if saving fails.</summary>
+        public string ImportPaths(IEnumerable<string> paths, out List<SolutionEntry> added)
+        {
+            added = new List<SolutionEntry>();
+            var files = new List<string>();
+            foreach (string path in paths ?? Enumerable.Empty<string>())
+            {
+                try
+                {
+                    string full = SolutionDirectoryScanner.ResolveSolutionPath(path);
+                    if (!File.Exists(full))
+                        return "解决方案不存在或扩展名不是 .sln / .slnx / Solution missing or extension is not .sln / .slnx: " + path;
+                    files.Add(full);
+                }
+                catch (Exception ex) when (ex is ArgumentException || ex is NotSupportedException || ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException)
+                {
+                    return "无法登记路径 / Cannot register path: " + path + " — " + ex.Message;
+                }
+            }
+            lock (_lock)
+            {
+                var items = _items.Select(e => e.Clone()).ToList();
+                var knownPaths = new HashSet<string>(items.Select(e => SolutionMatcher.CanonicalPath(e.Path)), StringComparer.OrdinalIgnoreCase);
+                var aliases = new HashSet<string>(items.Select(e => SolutionMatcher.Normalize(e.Alias)), StringComparer.OrdinalIgnoreCase);
+                var imported = new List<SolutionEntry>();
+                foreach (string path in files)
+                {
+                    if (!knownPaths.Add(SolutionMatcher.CanonicalPath(path))) continue;
+                    string name = Path.GetFileNameWithoutExtension(path);
+                    if (SolutionMatcher.Normalize(name).Length == 0) name = "解决方案 Solution";
+                    string alias = name;
+                    for (int suffix = 2; !aliases.Add(SolutionMatcher.Normalize(alias)); suffix++) alias = name + " (" + suffix + ")";
+                    var entry = new SolutionEntry { Alias = alias, Path = path };
+                    items.Add(entry);
+                    imported.Add(entry);
+                }
+                if (imported.Count == 0) return null;
+                string error = WriteEntries(items);
+                if (error != null) return error;
+                _items = items;
+                added = imported.Select(e => e.Clone()).ToList();
+            }
+            NotifyChanged();
+            return null;
+        }
+
         public string Save()
         {
-            FileModel model;
-            lock (_lock) model = new FileModel { Solutions = _items.Select(e => e.Clone()).ToList() };
+            List<SolutionEntry> items;
+            lock (_lock) items = _items.Select(e => e.Clone()).ToList();
+            string error = WriteEntries(items);
+            NotifyChanged();
+            return error;
+        }
+
+        private string WriteEntries(List<SolutionEntry> entries)
+        {
+            var model = new FileModel { Solutions = entries };
             var r = AtomicFile.Write(FilePath, stream =>
             {
                 using (var w = JsonReaderWriterFactory.CreateJsonWriter(stream, System.Text.Encoding.UTF8, false, true))
                     new DataContractJsonSerializer(typeof(FileModel)).WriteObject(w, model);
             }, backupBeforeOverwrite: true, skipFallbackOnSerializationError: true);
             LastError = r.Ok ? null : "保存 solutions.json 失败 / Failed to save solutions.json：" + (r.FallbackError ?? r.Error).Message;
-            try { Changed?.Invoke(); } catch { }
             return LastError;
+        }
+
+        private void NotifyChanged()
+        {
+            try { Changed?.Invoke(); } catch { }
         }
     }
 }

@@ -42,6 +42,17 @@ namespace VSManager
     }
 
     /// <summary>
+    /// 可选宿主能力：发送带附件的任务（图片粘贴到 Copilot、文本文件内联、其他文件发送路径）。未实现时带附件的任务按普通文字发送。
+    /// Optional host capability: sends a task with attachments (images pasted into Copilot, text files inlined, other files as
+    /// paths). Without it, tasks with attachments are sent as plain text.
+    /// </summary>
+    public interface ITaskAttachmentDispatchHost
+    {
+        /// <summary>返回结果文字（以「已发送」开头表示任务文字已送达）。/ Returns the result (starting with "已发送" when the task text was delivered).</summary>
+        Task<string> SendTaskAsync(VsInstance v, QueuedTask t);
+    }
+
+    /// <summary>
     /// 任务调度器：跟踪执行中的任务，并把每个空闲 VS 最早排队的任务发布出去；失败、完成、取消、重试也在这里处理。
     /// 状态流转统一交给 <see cref="TaskStateMachine"/>，只在界面线程调用。
     /// Task dispatcher: tracks running tasks and publishes the oldest waiting task of every idle VS; also handles failure,
@@ -91,17 +102,24 @@ namespace VSManager
                     }
                 }
 
-                foreach (var t in TaskStateMachine.NextToDispatch(_tasks.Items, now))
+                foreach (var t in _tasks.NextToDispatch(now))
                 {
                     if (_host.IsSending) break;
                     var v = _host.FindVs(t.VsKey);
                     if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting
-                        || _tasks.Find(t.Id) != t || TaskStateMachine.BlockingTask(_tasks.Items, t) != null) continue;
+                        || _tasks.Find(t.Id) != t || _tasks.BlockingTask(t) != null) continue;
+                    var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
+                        && ResentTaskMatcher.SameTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
                     TaskStateMachine.BeginSend(t, _host.NameOf(v));
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
                     string r;
-                    try { r = await _host.SendAsync(v, TaskStateMachine.DispatchText(t)); }
+                    try
+                    {
+                        r = t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
+                            ? await attachmentHost.SendTaskAsync(v, t)
+                            : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
+                    }
                     catch (Exception ex)
                     {
                         Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message);
@@ -110,15 +128,16 @@ namespace VSManager
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
                     {
                         case SendDecision.Delivered:
-                            _tasks.Commit();
-                            _host.SetStatus($"任务清单：#{t.Id} 已发布到「{t.VsName}」");
+                            AnnounceDelivery(t, skipped);
                             break;
                         case SendDecision.Fail:
                             AfterFail(t, r);
                             break;
                         default:
                             _tasks.Commit();
-                            _host.SetStatus($"任务清单：#{t.Id} 发送失败（{r}），30 秒后重试");
+                            _host.SetStatus(SendRetryPolicy.IsBlocked(r)
+                                ? $"任务清单：#{t.Id} {r}；处理后自动继续，未消耗重试次数"
+                                : $"任务清单：#{t.Id} 发送失败（{r}），30 秒后重试");
                             break;
                     }
                 }
@@ -159,13 +178,38 @@ namespace VSManager
             AfterFail(t, error);
         }
 
+        private string FailurePolicyText => _tasks.SkipFailedPredecessors
+            ? "已启用跳过失败前序，后续排队任务可继续；失败记录保留 / Failed predecessors are skipped; queued successors may continue and failure history is retained"
+            : "严格模式：未被取代的失败前序会暂停该目标后续任务；失败记录保留 / Strict mode: unsuperseded failures pause this target's successors; failure history is retained";
+
+        private void AnnounceDelivery(QueuedTask t, int[] skipped)
+        {
+            string status = $"任务清单：#{t.Id} 已发布到「{t.VsName}」/ Task #{t.Id} delivered to \"{t.VsName}\"";
+            string ids = string.Join(", ", skipped.Select(id => "@" + id));
+            string zh = $"前序 {ids} 失败，已跳过继续";
+            string en = $"Predecessor {ids} failed; skipped and continued";
+            t.PredecessorNotice = skipped.Length > 0 ? zh + " / " + en : null;
+            _tasks.Commit();
+            if (skipped.Length > 0)
+            {
+                string message = $"任务 @{t.Id} / Task @{t.Id}: {t.PredecessorNotice}";
+                _host.LogEvent(t.VsName, message);
+                AppLog.Write(AppLog.TasksFile, message);
+                _host.SetStatus(status + "；" + t.PredecessorNotice);
+                _host.AnnounceTask(t, zh, en);
+            }
+            else _host.SetStatus(status);
+        }
+
         private void AfterFail(QueuedTask t, string error)
         {
             _tasks.Commit();
-            _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败：{error}");
+            _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
             if (t.FromAgent)
-                _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName}",
-                    $"[任务失败通知] 任务 #{t.Id} 在「{t.VsName}」发布或执行失败：{error}。任务内容：{TextUtil.Clip(t.Text, 300)}。该目标后续任务已暂停；请处理错误，重发时以「重发 #{t.Id}：」开头，原失败条目会被移除，重发任务成功返回前不得继续后续步骤。");
+                _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName} / Task #{t.Id} failed",
+                    $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」发布或执行失败 / Send or execution failed: {error}。" +
+                    $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" +
+                    "请仅汇报失败，不要重复发布已排队任务，也不要自动重试失败任务 / Report the failure only; do not duplicate queued tasks or automatically retry failed tasks.");
         }
 
         /// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task: stores the latest Copilot answer and notifies the AI assistant.</summary>
@@ -185,14 +229,14 @@ namespace VSManager
                 catch (Exception ex)
                 {
                     if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t)
-                        Fail(t, "读取任务结果失败，后续任务已暂停：" + ex.Message);
+                        Fail(t, "读取任务结果失败 / Failed to read task result: " + ex.Message);
                     return;
                 }
                 if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
                 if (!TaskStateMachine.TryReadSuccess(t, answer, out string result))
                 {
                     t.Result = TextUtil.Clip(answer, 1500);
-                    Fail(t, "未收到本次任务的成功回执，后续任务已暂停。" + TextUtil.Clip(answer, 300));
+                    Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300));
                     return;
                 }
                 t.Result = TextUtil.Clip(result, 1500);
@@ -205,6 +249,7 @@ namespace VSManager
                     _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）",
                         $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复：" + t.Result +
+                        (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
                 }
             }
@@ -249,8 +294,8 @@ namespace VSManager
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
-            else if (TaskStateMachine.BlockingTask(_tasks.Items, t) is QueuedTask blocker)
-                _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id} 成功返回（{TaskStateMachine.StatusText(blocker, _clock())}）");
+            else if (_tasks.BlockingTask(t) is QueuedTask blocker)
+                _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id}（{TaskStateMachine.StatusText(blocker, _clock())}）/ Task #{t.Id} is blocked by predecessor #{blocker.Id}");
             Pump();
         }
     }

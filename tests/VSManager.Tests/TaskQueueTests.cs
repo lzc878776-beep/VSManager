@@ -34,6 +34,41 @@ namespace VSManager.Tests
         private static QueuedTask T(int id, string status, string vs = "A", DateTime? created = null) =>
             new QueuedTask { Id = id, VsKey = vs, VsName = vs, Text = "task " + id, Status = status, Created = created ?? new DateTime(2026, 1, 1) };
 
+        private static string Snapshot(QueuedTask task)
+        {
+            using (var stream = new MemoryStream())
+            {
+                new System.Runtime.Serialization.Json.DataContractJsonSerializer(typeof(QueuedTask)).WriteObject(stream, task);
+                return Encoding.UTF8.GetString(stream.ToArray());
+            }
+        }
+
+        [TestMethod]
+        public void PolicyChangesAndUiHideMarks_AreIndependent()
+        {
+            var q = NewQueue();
+            var failed = q.Add("A", "A", "failed", "AI");
+            TaskStateMachine.Fail(failed, "error", _clock.Now);
+            var next = q.Add("A", "A", "next", "AI");
+            Assert.IsTrue(q.SkipFailedPredecessors);
+            Assert.AreEqual(0, q.Ahead(next));
+            _settings.SkipFailedPredecessors = false;
+            Assert.IsFalse(q.SkipFailedPredecessors);
+            Assert.AreEqual(1, q.Ahead(next));
+            StringAssert.Contains(q.StatusText(next, _clock.Now), "已暂停");
+            TaskHideList.Add(_settings.HiddenResentTasks, failed.Id, next.Id, _clock.Now);
+            Assert.AreSame(failed, q.BlockingTask(next));
+            TaskHideList.Remove(_settings.HiddenResentTasks, failed.Id);
+            Assert.AreSame(failed, q.BlockingTask(next));
+            var resend = q.Add("A", "A", "resend #1: corrected", "AI");
+            Assert.IsNull(q.BlockingTask(next));
+            TaskHideList.Add(_settings.HiddenResentTasks, failed.Id, resend.Id, _clock.Now);
+            TaskHideList.Remove(_settings.HiddenResentTasks, failed.Id);
+            Assert.IsNull(q.BlockingTask(next));
+            q.SkipFailedPredecessors = true;
+            Assert.IsTrue(_settings.SkipFailedPredecessors);
+        }
+
         [TestMethod]
         public void Add_AssignsIncreasingIds_AndPersistsCounter()
         {
@@ -191,71 +226,95 @@ namespace VSManager.Tests
             Assert.AreEqual(2, _store.Saved.Count);
         }
 
-        [TestMethod]
-        public void Resend_RemovesFailedEntry_PreservesOrderAndSurvivesRestart()
+        [DataTestMethod]
+        [DataRow(true)]
+        [DataRow(false)]
+        public void Resend_PreservesFailedRecord_AndQueuesAtTail(bool autoHide)
         {
+            _settings.AutoHideResentFailedTasks = autoHide;
             var q = NewQueue();
             var first = q.Add("A", "A", "original", "AI");
             var next = q.Add("A", "A", "next", "AI");
-            TaskStateMachine.Fail(first, "error", _clock.Now);
+            first.Started = _clock.Now.AddMinutes(-1);
+            first.Result = "original result";
+            first.Attempts = 3;
+            TaskStateMachine.Fail(first, "original error", _clock.Now);
             q.Commit();
-            _settings.AutoHideResentFailedTasks = false;
+            string before = Snapshot(first);
             var retry = q.Add("A", "A", "resend #1: corrected instructions", "AI");
-            Assert.IsNull(q.Find(first.Id));
-            Assert.AreEqual(first.Id, retry.Order);
+            Assert.AreSame(first, q.Find(first.Id));
+            Assert.AreEqual(retry.Id, retry.Order);
             CollectionAssert.AreEqual(new[] { first.Id }, retry.Replaces);
-            Assert.AreEqual(1, q.Ahead(next));
-            CollectionAssert.AreEqual(new[] { retry }, TaskStateMachine.NextToDispatch(q.Items, _clock.Now));
-            Assert.IsTrue(_archive.Events.Contains("#1:removed"));
-            Assert.IsFalse(_store.Saved.Any(t => t.Id == first.Id));
+            Assert.AreEqual(0, q.Ahead(next));
+            Assert.AreEqual(1, q.Ahead(retry));
+            CollectionAssert.AreEqual(new[] { next }, q.NextToDispatch(_clock.Now));
+            q.SkipFailedPredecessors = false;
+            CollectionAssert.AreEqual(new[] { next }, q.NextToDispatch(_clock.Now));
+            Assert.IsFalse(_archive.Events.Contains("#1:removed"));
+            Assert.AreEqual(before, Snapshot(first));
+            Assert.AreEqual(before, Snapshot(_store.Saved.Single(t => t.Id == first.Id)));
             Assert.AreSame(retry, q.Add("a", "A", "corrected instructions", "AI"));
-            Assert.AreEqual(2, q.Items.Count);
+            Assert.AreEqual(3, q.Items.Count);
 
             var restored = new TaskQueue(_settings, new MemoryTaskStore { Initial = _store.Saved }, new RecordingArchive(), _clock.Func);
-            Assert.AreEqual(first.Id, restored.Find(retry.Id).Order);
-            CollectionAssert.AreEqual(new[] { retry.Id }, TaskStateMachine.NextToDispatch(restored.Items, _clock.Now).Select(t => t.Id).ToArray());
-            var path = _data.File("replacement.json");
-            var json = new JsonTaskStore(path);
+            Assert.AreEqual(retry.Id, restored.Find(retry.Id).Order);
+            CollectionAssert.AreEqual(new[] { next.Id }, restored.NextToDispatch(_clock.Now).Select(t => t.Id).ToArray());
+            var json = new JsonTaskStore(_data.File("replacement.json"));
             Assert.IsNull(json.Save(q.Items.ToList()));
             var loaded = json.Load(new System.Collections.Generic.List<string>());
-            Assert.AreEqual(first.Id, loaded.Single(t => t.Id == retry.Id).Order);
+            Assert.AreEqual(retry.Id, loaded.Single(t => t.Id == retry.Id).Order);
             CollectionAssert.AreEqual(new[] { first.Id }, loaded.Single(t => t.Id == retry.Id).Replaces);
+            Assert.AreEqual(before, Snapshot(loaded.Single(t => t.Id == first.Id)));
         }
 
         [TestMethod]
-        public void RepeatedResend_KeepsOriginalPosition()
+        public void RepeatedResend_KeepsHistoryAndJoinsTail()
         {
             var q = NewQueue();
+            q.SkipFailedPredecessors = false;
             var first = q.Add("A", "A", "original", "AI");
-            q.Add("A", "A", "next", "AI");
+            var next = q.Add("A", "A", "next", "AI");
             TaskStateMachine.Fail(first, "error", _clock.Now);
             var retry = q.Add("A", "A", "resend #1: corrected", "AI");
             TaskStateMachine.Fail(retry, "error again", _clock.Now);
             var second = q.Add("A", "A", "resend #3: corrected again", "AI");
-            Assert.IsNull(q.Find(retry.Id));
-            Assert.AreEqual(first.Id, second.Order);
-            CollectionAssert.AreEqual(new[] { second }, TaskStateMachine.NextToDispatch(q.Items, _clock.Now));
+            Assert.AreSame(first, q.Find(first.Id));
+            Assert.AreSame(retry, q.Find(retry.Id));
+            Assert.AreEqual(second.Id, second.Order);
+            CollectionAssert.AreEqual(new[] { next }, q.NextToDispatch(_clock.Now));
+            next.Status = QueueStatus.Done;
+            CollectionAssert.AreEqual(new[] { second }, q.NextToDispatch(_clock.Now));
         }
 
         [TestMethod]
-        public void Load_ReconcilesPreviouslyHiddenDuplicates()
+        public void Load_DoesNotRewriteOrReconcileFailureHistory()
         {
             var failed = T(1, QueueStatus.Failed);
             failed.Text = "the original failed task";
+            failed.Error = "original error"; failed.Result = "original result"; failed.Finished = _clock.Now;
             var resent = T(3, QueueStatus.Waiting);
             resent.Text = failed.Text;
+            resent.QueueOrder = 1;
             _store.Initial.AddRange(new[] { failed, T(2, QueueStatus.Waiting), resent });
+            var before = _store.Initial.Select(Snapshot).ToArray();
             var q = NewQueue();
-            Assert.IsNull(q.Find(1));
-            Assert.AreEqual(1, q.Find(3).Order);
-            Assert.IsTrue(_archive.Events.Contains("#1:removed"));
-            Assert.IsFalse(_store.Saved.Any(t => t.Id == 1));
+            Assert.AreEqual(3, q.Items.Count);
+            Assert.AreEqual(3, q.Find(3).Order);
+            Assert.AreEqual(1, q.Find(3).QueueOrder);
+            CollectionAssert.AreEqual(before, q.Items.Select(Snapshot).ToArray());
+            Assert.AreEqual(0, _archive.Events.Count);
+            Assert.AreEqual(0, _store.SaveCount);
+            Assert.IsFalse(File.Exists(AppSettings.FilePath));
+            CollectionAssert.AreEqual(new[] { 2 }, q.NextToDispatch(_clock.Now).Select(t => t.Id).ToArray());
+            q.SkipFailedPredecessors = false;
+            Assert.AreSame(q.Find(1), q.BlockingTask(q.Find(2)));
         }
 
         [TestMethod]
         public void HistoryTrimming_DoesNotRemoveFailureBarrier()
         {
             _settings.TaskHistoryLimit = 1;
+            _settings.SkipFailedPredecessors = false;
             var q = NewQueue();
             var failed = q.Add("A", "A", "failed", "AI");
             TaskStateMachine.Fail(failed, "error", _clock.Now);
@@ -267,8 +326,35 @@ namespace VSManager.Tests
             }
             var next = q.Add("A", "A", "next", "AI");
             Assert.AreSame(failed, q.Find(failed.Id));
-            Assert.AreSame(failed, TaskStateMachine.BlockingTask(q.Items, next));
-            Assert.AreEqual(0, TaskStateMachine.NextToDispatch(q.Items, _clock.Now).Count);
+            Assert.AreSame(failed, q.BlockingTask(next));
+            Assert.AreEqual(0, q.NextToDispatch(_clock.Now).Count);
+        }
+
+        [TestMethod]
+        public void HistoryTrimming_RetainsResendLinks_AndDoesNotRestoreStrictFailureBarrier()
+        {
+            _settings.TaskHistoryLimit = 1;
+            _settings.SkipFailedPredecessors = false;
+            var q = NewQueue();
+            var failed = q.Add("A", "A", "first", "AI");
+            TaskStateMachine.Fail(failed, "failed", _clock.Now);
+            var replacement = q.Add("A", "A", "resend @1: corrected", "AI");
+            replacement.Status = QueueStatus.Done;
+            replacement.Finished = _clock.Now;
+            for (int i = 0; i < 3; i++)
+            {
+                var completed = q.Add("B", "B", "finished " + i, "用户");
+                completed.Status = QueueStatus.Done;
+                completed.Finished = _clock.Now.AddMinutes(i + 1);
+                q.Commit();
+            }
+            var next = q.Add("A", "A", "next", "AI");
+            Assert.AreSame(failed, q.Find(failed.Id));
+            Assert.AreSame(replacement, q.Find(replacement.Id));
+            Assert.IsNull(q.BlockingTask(next));
+            var restored = new TaskQueue(_settings, new MemoryTaskStore { Initial = _store.Saved }, new RecordingArchive(), _clock.Func);
+            Assert.IsNull(restored.BlockingTask(restored.Find(next.Id)));
+            Assert.IsFalse(_archive.Events.Contains("#2:removed"));
         }
 
         [TestMethod]

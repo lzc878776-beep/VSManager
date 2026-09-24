@@ -31,7 +31,7 @@ namespace VSManager
     /// <summary>重新发布判定结果。/ Result of the resend check.</summary>
     public sealed class ResendMatch
     {
-        /// <summary>Old failed entries reliably identified for replacement and removal from the queue.</summary>
+        /// <summary>可靠匹配的失败历史，仅可在界面隐藏，不从任务记录删除。/ Reliably matched failure history; may be hidden in the UI but is never deleted from task records.</summary>
         public readonly List<QueuedTask> Hide = new List<QueuedTask>();
         /// <summary>内容相近但无法可靠判定、保留不动的条目。/ Similar entries that cannot be identified reliably and are kept.</summary>
         public readonly List<KeptResend> Kept = new List<KeptResend>();
@@ -127,9 +127,9 @@ namespace VSManager
         private static bool IsPath(string key) => !string.IsNullOrEmpty(key) && !key.StartsWith("title:", StringComparison.Ordinal);
 
         /// <summary>
-        /// Finds failed entries for replacement: matching content and target, or an explicit resend id for the same target.
-        /// An explicit id permits corrected instructions and short text, and replaces only that id.
-        /// Ambiguous content-only matches and different targets are kept with an explanation.
+        /// 匹配同目标的失败历史（正文相同或显式引用编号），不修改历史记录；显式编号允许更正正文和短文本。
+        /// Matches same-target failure history by content or explicit id without modifying it; explicit ids permit corrected or short text.
+        /// 不可靠的正文匹配和其他目标保留并说明原因。/ Unreliable content matches and different targets are kept with an explanation.
         /// </summary>
         public static ResendMatch Find(IEnumerable<QueuedTask> items, QueuedTask resent)
         {

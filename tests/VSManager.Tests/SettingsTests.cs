@@ -139,6 +139,70 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void DesktopTools_DefaultsAndOptOutSurviveReload()
+        {
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var settings = AppSettings.Load();
+            Assert.IsTrue(settings.AgentScreenshotEnabled);
+            Assert.IsFalse(settings.AgentPowerShellEnabled);
+            settings.AgentScreenshotEnabled = false;
+            settings.AgentPowerShellEnabled = false;
+            Assert.IsTrue(settings.Save());
+            settings = AppSettings.Load();
+            Assert.IsFalse(settings.AgentScreenshotEnabled);
+            Assert.IsFalse(settings.AgentPowerShellEnabled);
+        }
+
+        [TestMethod]
+        public void SkipFailedPredecessors_DefaultsOn_ForOldFiles_AndOptOutPersists()
+        {
+            Assert.IsTrue(new AppSettings().SkipFailedPredecessors);
+            Assert.IsTrue(AppSettings.Load().SkipFailedPredecessors);
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var settings = AppSettings.Load();
+            Assert.IsTrue(settings.SkipFailedPredecessors);
+            settings.SkipFailedPredecessors = false;
+            Assert.IsTrue(settings.Save());
+            StringAssert.Contains(File.ReadAllText(AppSettings.FilePath), "\"SkipFailedPredecessors\"");
+            Assert.IsFalse(AppSettings.Load().SkipFailedPredecessors);
+            settings.SkipFailedPredecessors = true;
+            Assert.IsTrue(settings.Save());
+            Assert.IsTrue(AppSettings.Load().SkipFailedPredecessors);
+        }
+
+        [TestMethod]
+        public void AutoNormalize_DefaultsOn_AndExplicitOptOutSurvivesReload()
+        {
+            Assert.IsTrue(new AppSettings().SendAutoNormalizeLineEndings);
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var settings = AppSettings.Load();
+            Assert.IsTrue(settings.SendAutoNormalizeLineEndings);
+            settings.SendAutoNormalizeLineEndings = false;
+            Assert.IsTrue(settings.Save());
+            Assert.IsFalse(AppSettings.Load().SendAutoNormalizeLineEndings);
+        }
+
+        [TestMethod]
+        public void AutoDismissNotices_DefaultsOn_AndCanBeDisabledIndependently()
+        {
+            Assert.IsTrue(new AppSettings().SendAutoDismissNotices);
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var settings = AppSettings.Load();
+            Assert.IsTrue(settings.SendAutoDismissNotices);
+            settings.SendAutoDismissNotices = false;
+            Assert.IsTrue(settings.Save());
+            var loaded = AppSettings.Load();
+            Assert.IsFalse(loaded.SendAutoDismissNotices);
+            Assert.IsTrue(loaded.SendAutoNormalizeLineEndings);
+            loaded.SendAutoDismissNotices = true;
+            loaded.SendAutoNormalizeLineEndings = false;
+            Assert.IsTrue(loaded.Save());
+            loaded = AppSettings.Load();
+            Assert.IsTrue(loaded.SendAutoDismissNotices);
+            Assert.IsFalse(loaded.SendAutoNormalizeLineEndings);
+        }
+
+        [TestMethod]
         public void SendConfirmation_DefaultsAndClamp()
         {
             var s = AppSettings.Load();

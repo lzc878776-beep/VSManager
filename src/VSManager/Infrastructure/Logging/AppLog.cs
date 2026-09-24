@@ -7,9 +7,9 @@ namespace VSManager
 {
     /// <summary>
     /// 统一的程序日志入口：写入 %APPDATA%\VSManager\logs\ 下的指定文件，每行「时间 内容」。
-    /// 日志写入失败时静默忽略，绝不影响主流程。
+    /// 普通日志失败不影响主流程；必须审计的操作通过 TryWrite 获取显式结果。
     /// Unified application log entry point: appends "time text" lines to a file under %APPDATA%\VSManager\logs\.
-    /// Logging failures are ignored silently and never affect the main flow.
+    /// Ordinary logging failures do not affect the main flow; mandatory audit uses TryWrite for an explicit result.
     /// </summary>
     public static class AppLog
     {
@@ -26,6 +26,13 @@ namespace VSManager
         /// <summary>追加一行日志。/ Appends one log line.</summary>
         public static void Write(string fileName, string text)
         {
+            try { TryWrite(fileName, text, out _); }
+            catch { }
+        }
+
+        /// <summary>必须审计的操作使用此入口；写入失败显式返回原因。/ Mandatory-audit operations use this entry; write failures explicitly return a reason.</summary>
+        public static bool TryWrite(string fileName, string text, out string error)
+        {
             try
             {
                 lock (Lock)
@@ -33,8 +40,14 @@ namespace VSManager
                     Directory.CreateDirectory(AppPaths.LogFolder);
                     File.AppendAllText(PathOf(fileName), DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + " " + text + "\r\n", Encoding.UTF8);
                 }
+                error = null;
+                return true;
             }
-            catch { }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException || ex is ArgumentException || ex is NotSupportedException)
+            {
+                error = ex.GetType().Name;
+                return false;
+            }
         }
 
         /// <summary>记录异常（类型、消息与调用栈）。/ Logs an exception (type, message and stack trace).</summary>

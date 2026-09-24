@@ -258,6 +258,17 @@ namespace VSManager
                 ["started"] = Time(t.Started),
                 ["finished"] = Time(t.Finished)
             };
+            // 附件只归档引用信息（编号、原始文件名、大小、类型、哈希、相对路径），不含内容
+            // Attachments are archived as references only (id, original name, size, kind, hash, relative path), never content
+            if (t.HasAttachments)
+            {
+                r["attachments"] = t.Attachments.Where(a => a != null).Select(a => new Dictionary<string, object>
+                {
+                    ["id"] = a.Id, ["name"] = a.Name, ["size"] = a.Size, ["kind"] = a.Kind, ["sha256"] = a.Sha256,
+                    ["path"] = "attachments/" + a.RelPath
+                }).ToList();
+                if (!string.IsNullOrEmpty(t.AttachmentNote)) r["attachmentNote"] = t.AttachmentNote;
+            }
             Enqueue(() => AppendJson("tasks", "tasks", r, at));
         }
 

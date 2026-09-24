@@ -70,7 +70,9 @@ namespace VSManager
                 default:
                     t.Status = QueueStatus.Waiting;
                     t.Error = result;
-                    t.NextTry = now + SendRetryPolicy.RetryDelay;
+                    bool blocked = SendRetryPolicy.IsBlocked(result);
+                    if (blocked) t.Attempts = Math.Max(0, t.Attempts - 1);
+                    t.NextTry = now + (blocked ? SendRetryPolicy.BlockedRetryDelay : SendRetryPolicy.RetryDelay);
                     break;
             }
             return d;
@@ -147,6 +149,7 @@ namespace VSManager
             t.Result = null;
             t.Started = t.Finished = null;
             t.NextTry = DateTime.MinValue;
+            t.PredecessorNotice = null;
         }
 
         /// <summary>上次退出时正在发送的任务重新排队。/ A task that was being sent when the app exited goes back to the queue.</summary>
@@ -171,18 +174,28 @@ namespace VSManager
             return RunningVerdict.None;
         }
 
-        /// <summary>Earlier unfinished or failed work blocks the same target; explicit cancellation/removal skips it.</summary>
-        public static QueuedTask BlockingTask(IEnumerable<QueuedTask> items, QueuedTask task) =>
-            items.Where(x => x != task && ResentTaskMatcher.SameTarget(x, task)
-                && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
-                    || (x.Order < task.Order && (QueueStatus.Active(x.Status) || x.Status == QueueStatus.Failed))))
-                .OrderBy(x => x.Order).ThenBy(x => x.Id).FirstOrDefault();
+        /// <summary>同一目标的活动任务阻塞后续任务；默认跳过失败，严格模式仍忽略已被取代的失败。/ Active work blocks its target; failures are skipped by default, and superseded failures never block.</summary>
+        public static QueuedTask BlockingTask(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors = true) =>
+            BlockingTasks(items, task, skipFailedPredecessors).FirstOrDefault();
 
-        public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now)
+        internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors)
         {
             var all = items.ToList();
-            return all.Where(x => x.Status == QueueStatus.Waiting && x.NextTry <= now && BlockingTask(all, x) == null)
-                .OrderBy(x => x.Order).ThenBy(x => x.Id).ToList();
+            return all.Where(x => x != task && ResentTaskMatcher.SameTarget(x, task)
+                && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
+                    || (x.Id < task.Id && (QueueStatus.Active(x.Status)
+                        || (!skipFailedPredecessors && x.Status == QueueStatus.Failed
+                            && !all.Any(replacement => replacement.Id > x.Id
+                                && ResentTaskMatcher.SameTarget(x, replacement)
+                                && replacement.Replaces != null && replacement.Replaces.Contains(x.Id)))))))
+                .OrderBy(x => x.Id);
+        }
+
+        public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now, bool skipFailedPredecessors = true)
+        {
+            var all = items.ToList();
+            return all.Where(x => x.Status == QueueStatus.Waiting && x.NextTry <= now && BlockingTask(all, x, skipFailedPredecessors) == null)
+                .OrderBy(x => x.Id).ToList();
         }
 
         /// <summary>Ignore resend markers and formatting when detecting an already queued task.</summary>
@@ -194,11 +207,11 @@ namespace VSManager
                 && ResentTaskMatcher.Normalize(ResentTaskMatcher.StripMarker(t.Text, out _)) == normalized);
         }
 
-        public static string StatusText(QueuedTask t, DateTime now, IEnumerable<QueuedTask> items)
+        public static string StatusText(QueuedTask t, DateTime now, IEnumerable<QueuedTask> items, bool skipFailedPredecessors = true)
         {
-            var blocker = t.Status == QueueStatus.Waiting ? BlockingTask(items, t) : null;
+            var blocker = t.Status == QueueStatus.Waiting ? BlockingTask(items, t, skipFailedPredecessors) : null;
             return blocker?.Status == QueueStatus.Failed
-                ? $"已暂停（前序 #{blocker.Id} 失败）" : StatusText(t, now);
+                ? $"已暂停（前序 #{blocker.Id} 失败）/ Paused (predecessor #{blocker.Id} failed)" : StatusText(t, now);
         }
 
         /// <summary>任务状态的简短文字（界面、AI 工具返回共用）。/ Short status text (shared by the UI and AI tool results).</summary>
@@ -206,7 +219,7 @@ namespace VSManager
         {
             switch (t.Status)
             {
-                case QueueStatus.Waiting: return t.Attempts > 0 ? "等待重试" : "排队中";
+                case QueueStatus.Waiting: return SendRetryPolicy.IsBlocked(t.Error) ? "等待处理 VS 弹窗" : t.Attempts > 0 ? "等待重试" : "排队中";
                 case QueueStatus.WaitingVs: return "等待目标 VS（等待打开「" + (t.Target ?? t.VsName) + "」）";
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中（" + TextUtil.FormatDuration(now - (t.Started ?? now)) + "）";

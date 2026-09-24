@@ -49,6 +49,17 @@ namespace VSManager
 
         public IReadOnlyList<QueuedTask> Items => _items;
 
+        /// <summary>实时读取失败前序策略；修改后下轮调度生效。/ Live failed-predecessor policy; changes apply on the next dispatch round.</summary>
+        public bool SkipFailedPredecessors
+        {
+            get => _settings.SkipFailedPredecessors;
+            set => _settings.SkipFailedPredecessors = value;
+        }
+
+        public QueuedTask BlockingTask(QueuedTask task) => TaskStateMachine.BlockingTask(_items, task, SkipFailedPredecessors);
+        public List<QueuedTask> NextToDispatch(DateTime now) => TaskStateMachine.NextToDispatch(_items, now, SkipFailedPredecessors);
+        public string StatusText(QueuedTask task, DateTime now) => TaskStateMachine.StatusText(task, now, _items, SkipFailedPredecessors);
+
         /// <summary>最近一次保存失败的原因；保存成功后为 null。/ Reason of the last failed save; null after a successful save.</summary>
         public string SaveError { get; private set; }
 
@@ -72,10 +83,6 @@ namespace VSManager
             _clock = clock ?? (() => DateTime.Now);
             Load();
             foreach (var t in _items) _archived[t.Id] = t.Clone();
-            bool reconciled = false;
-            foreach (var t in _items.Where(x => QueueStatus.Active(x.Status) || x.Status == QueueStatus.Done).ToList())
-                reconciled |= ReplaceFailed(t);
-            if (reconciled) Commit();
         }
 
         private void Load()
@@ -143,14 +150,31 @@ namespace VSManager
         public QueuedTask AddParked(string vsKey, string alias, string text, string source) =>
             Add(vsKey, alias, text, source, QueueStatus.WaitingVs, alias);
 
-        private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target)
+        /// <summary>
+        /// 添加带附件的任务；只有文字与附件（按哈希）都相同才复用已有任务。<paramref name="parked"/> 为 true 时暂存。
+        /// Adds a task with attachments; an existing task is reused only when both the text and the attachments (by hash) match.
+        /// Parks it when <paramref name="parked"/> is true.
+        /// </summary>
+        public QueuedTask Add(string vsKey, string vsName, string text, string source, AttachmentRef[] attachments, bool parked = false) =>
+            Add(vsKey, vsName, text, source, parked ? QueueStatus.WaitingVs : QueueStatus.Waiting, parked ? vsName : null, attachments);
+
+        /// <summary>两组附件是否相同（按哈希与文件名）。/ Whether two attachment sets match (by hash and file name).</summary>
+        public static bool SameAttachments(AttachmentRef[] a, AttachmentRef[] b)
         {
-            var duplicate = TaskStateMachine.FindActiveDuplicate(_items, vsKey, text);
+            string Key(AttachmentRef[] x) => string.Join("|", (x ?? new AttachmentRef[0]).Where(r => r != null)
+                .Select(r => (r.Sha256 ?? "") + ":" + (r.Name ?? "")).OrderBy(s => s, StringComparer.Ordinal));
+            return Key(a) == Key(b);
+        }
+
+        private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target, AttachmentRef[] attachments = null)
+        {
+            if (attachments != null && attachments.Length == 0) attachments = null;
+            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(i => SameAttachments(i.Attachments, attachments)), vsKey, text);
             if (duplicate != null) return duplicate;
             var t = new QueuedTask
             {
                 Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
-                Status = status, Created = _clock(), Target = target
+                Status = status, Created = _clock(), Target = target, Attachments = attachments
             };
             ReplaceFailed(t);
             _items.Add(t);
@@ -166,19 +190,14 @@ namespace VSManager
         {
             var matches = ResentTaskMatcher.Find(_items, t);
             foreach (var kept in matches.Kept)
-                Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id}：{kept.Reason}");
+                Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id} / Task #{t.Id} retains failed task #{kept.Task.Id}: {kept.Reason}");
             if (matches.Hide.Count == 0) return false;
-            t.QueueOrder = Math.Min(t.Order, matches.Hide.Min(x => x.Order));
             t.Replaces = (t.Replaces ?? new int[0]).Concat(matches.Hide.Select(x => x.Id)).Distinct().ToArray();
-            foreach (var old in matches.Hide) _items.Remove(old);
             return true;
         }
 
-        /// <summary>同一 VS 中排在该任务前面的未完成任务数。/ Number of unfinished tasks ahead of this one for the same VS.</summary>
-        public int Ahead(QueuedTask task) =>
-            _items.Count(t => t != task && ResentTaskMatcher.SameTarget(t, task)
-                && (QueueStatus.Active(t.Status) || t.Status == QueueStatus.Failed)
-                && (t.Status == QueueStatus.Running || t.Status == QueueStatus.Sending || t.Order < task.Order));
+        /// <summary>按当前策略阻塞该任务的同目标任务数。/ Number of same-target tasks blocking this task under the current policy.</summary>
+        public int Ahead(QueuedTask task) => TaskStateMachine.BlockingTasks(_items, task, SkipFailedPredecessors).Count();
 
         public bool Remove(int id)
         {
@@ -196,7 +215,10 @@ namespace VSManager
             int limit = _settings.TaskHistoryLimit;
             if (limit > 0)
             {
-                var old = _items.Where(t => t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
+                // 保留重发关系，防止裁剪后严格模式再次被旧失败阻塞。/ Preserve resend links so trimming cannot resurrect a strict-mode failure barrier.
+                var failures = _items.Where(t => t.Status == QueueStatus.Failed).ToList();
+                var old = _items.Where(t => (t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
+                        && !(t.Replaces != null && failures.Any(f => t.Replaces.Contains(f.Id) && ResentTaskMatcher.SameTarget(f, t))))
                     .OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
                 foreach (var t in old) _items.Remove(t);
             }

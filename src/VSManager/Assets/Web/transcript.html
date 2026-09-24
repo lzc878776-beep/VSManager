@@ -87,6 +87,8 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
     }
 
     function safeUrl(value) {
+        // 本机附件链接：只允许固定格式的附件编号 / Local attachment links: only ids of the fixed format are allowed
+        if (value && /^vsm-attachment:\d{8}-\d{9}-[0-9a-f]{6}$/.test(value)) return value;
         if (!value || value.length > 4096 || !/^https?:\/\//i.test(value) || /[\x00-\x20\x7f]/.test(value)) return null;
         try {
             const url = new URL(value);
@@ -209,7 +211,8 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
         event.preventDefault();
         if (!event.isTrusted) return;
         const href = safeUrl(link.getAttribute('href'));
-        if (href) send('link', href);
+        if (href && href.indexOf('vsm-attachment:') === 0) send('attachment', href.substring(15));
+        else if (href) send('link', href);
     });
     document.addEventListener('auxclick', function (event) { if (event.target.closest('a')) event.preventDefault(); });
     document.addEventListener('dragstart', function (event) { event.preventDefault(); });
