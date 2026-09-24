@@ -125,6 +125,8 @@ namespace VSManager
             sb.AppendLine("    向打开 VSManager 项目的 VS 发布任务时，本工具会自动在任务末尾附加该约束；你撰写的提交信息、发布说明等对外文字也必须遵守。");
             sb.AppendLine("11. 解决方案登记：用户用口语名称（如「订单项目」）指代解决方案时，用 list_solutions 查看登记表，open_solution 打开（已打开则只激活），close_vs 关闭（有未保存修改时会拒绝，如实转告用户，不要设法强制关闭）。");
             sb.AppendLine("    send_task 的 vs 参数也可以填登记的别名：目标未打开时任务会暂存为「等待目标 VS」，对应 VS 打开后自动推送；用户希望马上执行时再调用 open_solution。别名匹配到多条时请用户选择。");
+            sb.AppendLine("12. 一键布局：用户想同时查看多个 VS 的 Copilot 对话（如“最小化所有 VS，把对话框排到副屏”）时调用 arrange_copilot_panes（默认第二屏幕、横向均布、最小化 VS）；");
+            sb.AppendLine("    用户要求恢复原来的窗口布局时调用 restore_copilot_layout。没有指明屏幕时 screen 填 0。");
             if (!string.IsNullOrWhiteSpace(extra))
             {
                 sb.AppendLine();
@@ -173,6 +175,8 @@ namespace VSManager
             sb.AppendLine("    When dispatching tasks to the VS with the VSManager project, this tool automatically appends this constraint to the task; commit messages, release notes and any other public text you write must follow it as well.");
             sb.AppendLine("11. Solution registry: when the user refers to a solution by a spoken name (e.g. \"the order project\"), use list_solutions to see the registry, open_solution to open it (it only activates the VS if already open) and close_vs to close it (it refuses when there are unsaved changes - tell the user; never try to force it).");
             sb.AppendLine("    The vs parameter of send_task may also be a registered alias: when the target is not open the task is parked as \"waiting for target VS\" and pushed automatically once that VS opens; call open_solution only when the user wants it to run now. When an alias matches several entries, ask the user to choose.");
+            sb.AppendLine("12. One-click layout: when the user wants to watch several VS Copilot chats at once (e.g. \"minimize all VS and put the chats on the second screen\"), call arrange_copilot_panes (defaults: second screen, side by side, minimize VS);");
+            sb.AppendLine("    call restore_copilot_layout when the user wants the previous window layout back. Use screen 0 when no screen is specified.");
             if (!string.IsNullOrWhiteSpace(extra))
             {
                 sb.AppendLine();

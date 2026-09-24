@@ -28,6 +28,8 @@ namespace VSManager
         [DllImport("user32.dll")] public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
         [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+        [DllImport("user32.dll")] public static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
+        [DllImport("user32.dll")] public static extern bool SetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT wp);
         [DllImport("kernel32.dll")] public static extern uint GetCurrentThreadId();
         [DllImport("user32.dll")] public static extern bool RegisterHotKey(IntPtr hWnd, int id, uint mod, uint vk);
         [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hWnd, int id);
@@ -44,10 +46,18 @@ namespace VSManager
         [StructLayout(LayoutKind.Sequential)]
         public struct FLASHWINFO { public uint cbSize; public IntPtr hwnd; public uint dwFlags; public uint uCount; public uint dwTimeout; }
 
+        [StructLayout(LayoutKind.Sequential)]
+        public struct POINT { public int X, Y; }
+
+        /// <summary>窗口的正常位置与显示状态（最大化 / 最小化）。/ A window's normal position and show state (maximized / minimized).</summary>
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WINDOWPLACEMENT { public int length, flags, showCmd; public POINT ptMinPosition, ptMaxPosition; public RECT rcNormalPosition; }
+
         public const int SW_RESTORE = 9, SW_MAXIMIZE = 3, SW_SHOW = 5;
+        public const int SW_SHOWNOACTIVATE = 4, SW_SHOWMINIMIZED = 2, SW_SHOWMINNOACTIVE = 7;
         public const uint SWP_NOZORDER = 0x0004, SWP_NOACTIVATE = 0x0010, SWP_SHOWWINDOW = 0x0040;
         public const uint SWP_NOSIZE = 0x0001, SWP_NOMOVE = 0x0002;
-        public static readonly IntPtr HWND_TOPMOST = new IntPtr(-1), HWND_NOTOPMOST = new IntPtr(-2), HWND_BROADCAST = new IntPtr(0xFFFF);
+        public static readonly IntPtr HWND_TOP = IntPtr.Zero, HWND_TOPMOST = new IntPtr(-1), HWND_NOTOPMOST = new IntPtr(-2), HWND_BROADCAST = new IntPtr(0xFFFF);
         public const int ASFW_ANY = -1;
         public const uint GW_OWNER = 4;
         public const int WM_HOTKEY = 0x0312;

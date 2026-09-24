@@ -33,6 +33,14 @@ namespace VSManager
         /// <summary>审批模式下请求用户确认。</summary>
         Task<bool> Confirm(string title, string detail);
         Task<string> DockPanes();
+        /// <summary>
+        /// 一键布局：把各 VS 的 Copilot 对话窗格浮动并在指定屏幕均布排列，可最小化 VS 主窗口；targets 为 null 表示全部 VS。screen 为 1 起的屏幕编号，0 表示自动。
+        /// One-click layout: floats the Copilot chat panes and spreads them over a screen, optionally minimizing the VS main
+        /// windows; null targets = all VS. screen is the 1-based screen number, 0 = auto.
+        /// </summary>
+        Task<string> ArrangeCopilotPanes(IList<VsInstance> targets, int screen, PaneArrangement arrangement, bool minimize);
+        /// <summary>还原一键布局之前的窗口布局。/ Restores the window layout from before the one-click layout.</summary>
+        Task<string> RestoreCopilotLayout();
         /// <summary>解决方案登记表。/ The solution registry.</summary>
         SolutionRegistry Solutions { get; }
         /// <summary>已打开该登记解决方案的 VS，未打开时返回 null。/ The VS that has the registered solution open; null when not open.</summary>
@@ -264,6 +272,8 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, Task<string>>)NewCopilotThread, "new_copilot_thread"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)ActivateVs, "activate_vs"),
                 AIFunctionFactory.Create((Func<Task<string>>)DockPanes, "dock_copilot_panes"),
+                AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
+                AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetVsNote, "set_vs_note"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
@@ -635,6 +645,16 @@ namespace VSManager
                 case "new_copilot_thread": return target + "新建 Copilot 线程";
                 case "activate_vs": return "切换到" + target;
                 case "dock_copilot_panes": return "把 Copilot 切换为工具窗模式";
+                case "arrange_copilot_panes":
+                {
+                    string scr = Arg("screen");
+                    string only = Arg("vs").Trim();
+                    return "一键布局：" + (only.Length > 0 ? "VS " + OneLine(only, 30) + " 的" : "") + "Copilot 对话→" +
+                           (scr.Length == 0 || scr == "0" ? "副屏" : "屏幕" + scr) +
+                           (PaneGrid.ParseArrangement(Arg("layout")) == PaneArrangement.Grid ? "网格排列" : "横向均布") +
+                           (Arg("minimizeVs").Equals("false", StringComparison.OrdinalIgnoreCase) ? "" : "，最小化 VS") + " / Arrange Copilot panes";
+                }
+                case "restore_copilot_layout": return "还原 Copilot 对话布局 / Restore layout";
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
                 case "cancel_task": return "取消任务 #" + Arg("id");
@@ -845,6 +865,45 @@ namespace VSManager
 
         [Description("把所有 VS 的 Copilot 对话窗格切换为停靠的工具窗口（不再作为文档标签被隐藏），当无法读取对话或监听状态时可调用。")]
         private Task<string> DockPanes() => _host.DockPanes();
+
+        [Description("一键布局：把各 VS 的 Copilot 对话窗格切换为浮动窗口，在指定屏幕（默认第二屏幕）按工作区宽度横向均布排列（一行放不下时自动换行，每格不小于最小宽度），并可同时最小化各 VS 主窗口，便于集中查看多个 VS 的对话。" +
+                     "执行前会记录原布局，可用 restore_copilot_layout 还原。未连接 DTE 或没有对话窗格的 VS 会跳过并说明原因。")]
+        private async Task<string> ArrangeCopilotPanes(
+            [Description("目标屏幕编号（与「属性」中的屏幕1、屏幕2…一致）；0 表示自动：有多块屏幕时用第二屏幕，否则用唯一的屏幕")] int screen = 0,
+            [Description("排列方式：horizontal（横向均布，默认）或 grid（网格，行列数接近）")] string layout = "horizontal",
+            [Description("是否最小化各 VS 主窗口，默认 true")] bool minimizeVs = true,
+            [Description("可选：只排列部分 VS，编号或名称用逗号分隔（如 \"1,3\"）；留空表示全部 VS")] string vs = "")
+        {
+            var arrangement = PaneGrid.ParseArrangement(layout);
+            if (arrangement == null) return "未知的排列方式：" + layout + "（可选 horizontal / grid）";
+            List<VsInstance> targets = null;
+            var parts = (vs ?? "").Split(new[] { ',', '，', '、', ';', '；' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(p => p.Trim()).Where(p => p.Length > 0).ToList();
+            if (parts.Count > 0)
+            {
+                targets = new List<VsInstance>();
+                foreach (var p in parts)
+                {
+                    if (!Resolve(p, out var v, out var err)) return err;
+                    if (!targets.Contains(v)) targets.Add(v);
+                }
+            }
+            else if (_host.Instances.Count == 0) return "当前没有正在运行的 Visual Studio。";
+            string scope = targets == null ? "全部 " + _host.Instances.Count + " 个 VS" : string.Join("、", targets.Select(t => _host.NameOf(t)));
+            if (_settings().AgentConfirm && !await ConfirmAsync("一键布局 Copilot 对话窗格",
+                    $"把{scope}的 Copilot 对话窗格浮动到{(screen <= 0 ? "第二屏幕" : "屏幕" + screen)}" +
+                    (arrangement == PaneArrangement.Grid ? "按网格排列" : "横向均布") + (minimizeVs ? "，并最小化 VS 主窗口" : "") + "。原布局可还原。"))
+                return "用户拒绝了该操作。";
+            return Truncate(await _host.ArrangeCopilotPanes(targets, screen, arrangement.Value, minimizeVs), MaxToolText);
+        }
+
+        [Description("还原 arrange_copilot_panes 之前的窗口布局：恢复各 VS 主窗口的位置与最大化状态，并把 Copilot 对话窗格放回原来的停靠位置。")]
+        private async Task<string> RestoreCopilotLayout()
+        {
+            if (_settings().AgentConfirm && !await ConfirmAsync("还原 Copilot 对话布局", "恢复一键布局之前的 VS 主窗口与 Copilot 对话窗格位置。"))
+                return "用户拒绝了该操作。";
+            return Truncate(await _host.RestoreCopilotLayout(), MaxToolText);
+        }
 
         [Description("记录或更新指定 VS 的职责描述（负责的项目 / 模块 / 任务类型），之后会据此自动选择发布任务的目标。note 为空表示清除。")]
         private async Task<string> SetVsNote(

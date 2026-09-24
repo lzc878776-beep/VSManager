@@ -58,7 +58,7 @@ namespace VSManager
             if (string.IsNullOrEmpty(v.SolutionPath)) { SetStatus("无法读取该 VS 的解决方案路径，无法登记 / Cannot read this VS's solution path"); return; }
             var existing = _solutions.FindByPath(v.SolutionPath);
             if (existing != null) { SetStatus($"该解决方案已登记为「{existing.Alias}」/ Already registered as \"{existing.Alias}\""); return; }
-            var alias = Prompt.Show(this, "登记解决方案 / Register solution", "别名（口语名称）/ Alias (spoken name)：", NameOf(v));
+            var alias = Prompt.Show(this, "登记解决方案 / Register solution", "别名（口语名称）/ Alias (spoken name)：", SolutionNameOf(v));
             if (string.IsNullOrWhiteSpace(alias)) return;
             var syn = Prompt.Show(this, "登记解决方案 / Register solution", "同义词（逗号或顿号分隔，可留空）/ Synonyms (comma separated, optional)：", "");
             var entry = new SolutionEntry { Alias = alias.Trim(), Path = v.SolutionPath, Synonyms = SolutionEntry.ParseSynonyms(syn) };
