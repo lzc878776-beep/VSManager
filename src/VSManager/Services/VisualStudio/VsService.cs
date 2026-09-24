@@ -25,6 +25,10 @@ namespace VSManager
         public string LaunchPath;
         public string Title = "";
         public string Key = "";
+        /// <summary>进程启动时间（UTC Ticks），与 Pid 一起唯一标识一个 VS 实例（PID 可能被复用）。</summary>
+        public long StartTicks;
+        /// <summary>实例级配置键：同一解决方案被多个 VS 打开时用它区分各实例。</summary>
+        public string InstanceKey => "inst:" + Pid + ":" + StartTicks;
         public volatile CopilotState Copilot = CopilotState.Unknown;
         public DateTime BusySince;
         public int IdleCount;
@@ -115,7 +119,10 @@ namespace VSManager
                     var hwnd = FindMainWindow(p);
                     if (hwnd == IntPtr.Zero) continue;
                     if (!existing.TryGetValue(p.Id, out var vs))
+                    {
                         vs = new VsInstance { Pid = p.Id };
+                        try { vs.StartTicks = p.StartTime.ToUniversalTime().Ticks; } catch { }
+                    }
                     vs.MainHwnd = hwnd;
                     vs.Title = Native.GetText(hwnd);
                     if (dtes.TryGetValue(p.Id, out var dte)) vs.Dte = dte;
@@ -494,6 +501,25 @@ namespace VSManager
                 return mw > 0 && mh > 0 && w > mw * 0.6 && h < mh * 0.4;
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// 在 DTE 窗口集合中查找 Copilot 对话工具窗口，找不到返回 null。必须在 DteWorker 线程调用。
+        /// Finds the Copilot chat tool window among the DTE windows; null when not found. DteWorker thread only.
+        /// </summary>
+        internal static object FindCopilotWindow(object dteObject, string keyword)
+        {
+            if (dteObject == null) return null;
+            if (string.IsNullOrWhiteSpace(keyword)) keyword = "Copilot";
+            dynamic dte = dteObject;
+            try { if (IsCopilotWindow(dte.ActiveWindow, keyword)) return dte.ActiveWindow; } catch { }
+            try
+            {
+                foreach (dynamic w in dte.Windows)
+                    if (IsCopilotWindow(w, keyword)) return w;
+            }
+            catch { }
+            return null;
         }
 
         private static bool IsCopilotWindow(dynamic w, string keyword)

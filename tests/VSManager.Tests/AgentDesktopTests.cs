@@ -679,6 +679,8 @@ namespace VSManager.Tests
             public Task<string> Activate(VsInstance v) { Activated.Add(v); return Task.FromResult("已激活 / Activated"); }
             public Task<string> ErrorList(VsInstance v, int max) => throw new NotSupportedException();
             public Task<string> DockPanes() => throw new NotSupportedException();
+            public Task<string> ArrangeCopilotPanes(IList<VsInstance> targets, int screen, PaneArrangement arrangement, bool minimize) => throw new NotSupportedException();
+            public Task<string> RestoreCopilotLayout() => throw new NotSupportedException();
             public VsInstance FindOpenSolution(SolutionEntry e) => SolutionMatcher.FindOpenSolution(e, Instances, Solutions.Items);
             public Task<string> ParkTask(SolutionEntry e, string text) => Task.FromResult("Parked @" + Queue.AddParked(e.Path, e.Alias, text, "AI").Id);
             public Task<string> LaunchSolution(string path)

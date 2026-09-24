@@ -56,6 +56,8 @@ namespace VSManager
 
 		// 对话缓存：每个 VS 最近一次读取到的对话与未发送的输入草稿，切换时立即显示
 		private readonly Dictionary<int, ChatTranscript> _chatCache = new Dictionary<int, ChatTranscript>();
+		/// <summary>各 VS 当前激活对话的标题（Copilot 自动总结），同一解决方案多开时用来区分实例。可能在后台线程读取。</summary>
+		private readonly System.Collections.Concurrent.ConcurrentDictionary<int, string> _chatTitles = new System.Collections.Concurrent.ConcurrentDictionary<int, string>();
 		private readonly Dictionary<int, string> _drafts = new Dictionary<int, string>();
 		/// <summary>界面刚发送、尚未出现在 Copilot 对话中的消息（先显示在对话末尾，避免“发出去没反应”的空档）。</summary>
 		private readonly Dictionary<int, PendingSend> _pendingSend = new Dictionary<int, PendingSend>();
@@ -392,7 +394,8 @@ namespace VSManager
 			ctx.Items.Add("清除名称", null, (s, e) =>
 			{
 				if (Selected == null) return;
-				_settings.SetAlias(Selected.Key, null);
+				if (_settings.GetAlias(Selected.InstanceKey) != null) _settings.SetAlias(Selected.InstanceKey, null);
+				else _settings.SetAlias(Selected.Key, null);
 				_settings.Save();
 				UpdateRow(Selected);
 				UpdateChatHeader();
@@ -403,6 +406,9 @@ namespace VSManager
 			ctx.Items.Add("打开 Copilot 对话助手", null, (s, e) => OpenPane());
 			ctx.Items.Add("Copilot 切换为工具窗模式（全部 VS）", null, (s, e) => DockAllPanes());
 			ctx.Items.Add("一键布局（主界面 + 工具窗）", null, (s, e) => QuickLayout());
+			ctx.Items.Add("一键布局：Copilot 对话 → 副屏横向均布（最小化 VS）/ Arrange Copilot panes", null,
+				async (s, e) => await ArrangePanesAsync(null, 0, PaneArrangement.Horizontal, true));
+			ctx.Items.Add("还原 Copilot 对话布局 / Restore Copilot layout", null, async (s, e) => await RestorePaneLayoutAsync());
 			ctx.Items.Add("主界面 → 主屏幕", null, (s, e) => { if (Check()) MoveMain(Selected, true); });
 			ctx.Items.Add("输出/错误栏 → 副屏幕", null, (s, e) => { if (Check()) MoveTools(Selected); });
 			ctx.AddGroup("VS 调试与生成 / VS debug and build");
@@ -475,6 +481,59 @@ namespace VSManager
 			string summary = $"工具窗模式：{list.Count} 个 VS，切换 {changed} 个" + (failed > 0 ? $"，失败 {failed} 个" : "，其余已是工具窗口");
 			SetStatus(summary);
 			return summary + "\n" + string.Join("\n", lines);
+		}
+
+		private bool _arranging;
+
+		/// <summary>
+		/// 一键布局：把 Copilot 对话窗格浮动并均布到指定屏幕（可最小化 VS 主窗口）。只在界面线程调用；DTE / 窗口操作在 DteWorker 线程执行。
+		/// One-click layout: floats the Copilot chat panes and spreads them over a screen (optionally minimizing the VS main
+		/// windows). UI thread only; DTE / window work runs on the DteWorker thread.
+		/// </summary>
+		private async Task<string> ArrangePanesAsync(IList<VsInstance> targets, int screenNo, PaneArrangement arrangement, bool minimize)
+		{
+			if (_arranging || _docking) return "正在调整窗格布局，请稍候 / Layout change in progress";
+			var list = (targets ?? _instances).Where(v => v != null && Native.IsWindow(v.MainHwnd)).ToList();
+			if (list.Count == 0) { SetStatus("没有正在运行的 VS"); return "没有正在运行的 VS / No running VS"; }
+			var screens = ScreenHelper.Ordered();
+			int idx = PaneGrid.PickScreenIndex(screenNo, screens.Count);
+			if (idx < 0)
+				return $"没有屏幕 {screenNo} / No screen {screenNo}。可用屏幕 / Screens：\n" + string.Join("\n", screens.Select((s, i) => ScreenHelper.Label(s, i)));
+			var screen = screens[idx];
+			var area = screen.WorkingArea;
+			var names = list.Select(NameOf).ToList();
+			string keyword = _settings.CopilotPaneKeyword;
+			int minW = Dpi.S(360), minH = Dpi.S(300);
+			_arranging = true;
+			SetStatus($"正在把 {list.Count} 个 Copilot 对话窗格排列到屏幕{idx + 1}…");
+			var fg = Native.GetForegroundWindow();
+			string r;
+			try { r = await DteWorker.Run(() => CopilotLayout.Arrange(list, names, area, arrangement, minimize, keyword, minW, minH)); }
+			catch (Exception ex) { r = "一键布局失败 / Layout failed：" + ex.Message; }
+			finally { _arranging = false; }
+			foreach (var v in list) _chatSvc.PaneRestored(v.Pid);
+			// 之前的前台窗口没有被最小化（如 VSManager 自身）时把焦点还给它 / Give focus back to the previous window unless it was minimized
+			if (fg != IntPtr.Zero && Native.IsWindow(fg) && !Native.IsIconic(fg) && Native.GetForegroundWindow() != fg) Native.Activate(fg);
+			r = "目标屏幕 / Screen：" + ScreenHelper.Label(screen, idx) + (screens.Count < 2 ? "（只有一块屏幕 / only one screen）" : "") + "\n" + r;
+			SetStatus(r.Split('\n').Skip(1).FirstOrDefault() ?? r);
+			return r;
+		}
+
+		/// <summary>还原一键布局之前的窗口布局。只在界面线程调用。/ Restores the layout from before the one-click layout. UI thread only.</summary>
+		private async Task<string> RestorePaneLayoutAsync()
+		{
+			if (_arranging || _docking) return "正在调整窗格布局，请稍候 / Layout change in progress";
+			var live = _instances.ToList();
+			string keyword = _settings.CopilotPaneKeyword;
+			_arranging = true;
+			SetStatus("正在还原 Copilot 对话布局…");
+			string r;
+			try { r = await DteWorker.Run(() => CopilotLayout.Restore(live, keyword)); }
+			catch (Exception ex) { r = "还原失败 / Restore failed：" + ex.Message; }
+			finally { _arranging = false; }
+			foreach (var v in live) _chatSvc.PaneRestored(v.Pid);
+			SetStatus(r.Split('\n')[0]);
+			return r;
 		}
 
 		private void LayoutHeader()
@@ -1119,6 +1178,16 @@ namespace VSManager
 
 		private void OnChatUpdated(VsInstance v, ChatTranscript t)
 		{
+			if (t.PaneFound)
+			{
+				string title = (t.Title ?? "").Trim();
+				_chatTitles.TryGetValue(v.Pid, out var oldTitle);
+				if (oldTitle != title)
+				{
+					_chatTitles[v.Pid] = title;
+					if (Twins(v).Count > 1) UpdateRow(v);
+				}
+			}
 			Archive.VsChat(v.Key, NameOf(v), t, v.Copilot == CopilotState.Busy);
 			if (v != Selected)
 			{
@@ -1364,6 +1433,11 @@ namespace VSManager
 
 		Task<string> IAgentHost.DockPanes() => OnUiAsync(DockAllPanes);
 
+		Task<string> IAgentHost.ArrangeCopilotPanes(IList<VsInstance> targets, int screen, PaneArrangement arrangement, bool minimize) =>
+			OnUiAsync(() => ArrangePanesAsync(targets, screen, arrangement, minimize));
+
+		Task<string> IAgentHost.RestoreCopilotLayout() => OnUiAsync(RestorePaneLayoutAsync);
+
 		private Task<T> OnUi<T>(Func<T> f) => OnUiAsync(() => Task.FromResult(f()));
 
 		private Task<T> OnUiAsync<T>(Func<Task<T>> f)
@@ -1597,8 +1671,30 @@ namespace VSManager
 			return false;
 		}
 
-		private string NameOf(VsInstance v) =>
+		private string NameOf(VsInstance v) => _settings.GetAlias(v.InstanceKey) ?? AutoNameOf(v);
+
+		/// <summary>解决方案级名称（别名或解决方案名），不区分实例。</summary>
+		private string SolutionNameOf(VsInstance v) =>
 			_settings.GetAlias(v.Key) ?? (string.IsNullOrEmpty(v.SolutionPath) ? null : _settings.GetAlias("title:" + v.DisplaySolution)) ?? v.DisplaySolution;
+
+		/// <summary>未设实例名称时的显示名：同一解决方案多开时追加当前对话标题，标题不可用或重复时追加序号。</summary>
+		private string AutoNameOf(VsInstance v)
+		{
+			string name = SolutionNameOf(v);
+			var twins = Twins(v);
+			int idx = twins.IndexOf(v);
+			if (twins.Count < 2 || idx < 0) return name;
+			string title = ChatTitleOf(v);
+			if (title.Length > 0 && !twins.Any(x => x != v && string.Equals(ChatTitleOf(x), title, StringComparison.OrdinalIgnoreCase)))
+				return name + " · " + Clip(title, 24);
+			return name + " #" + (idx + 1) + (title.Length > 0 ? " · " + Clip(title, 24) : "");
+		}
+
+		private string ChatTitleOf(VsInstance v) => _chatTitles.TryGetValue(v.Pid, out var t) && t != null ? t : "";
+
+		/// <summary>打开同一解决方案的所有 VS 实例（含自身，按 PID 排序）。</summary>
+		private List<VsInstance> Twins(VsInstance v) =>
+			_instances.Where(x => string.Equals(x.Key, v.Key, StringComparison.OrdinalIgnoreCase)).ToList();
 
 		private string StateText(VsInstance v)
 		{
@@ -1643,6 +1739,7 @@ namespace VSManager
 			if (groupSignature != _taskGroupSignature) { _taskGroupSignature = groupSignature; _taskPanel.RefreshItems(); }
 			var alive = new HashSet<int>(list.Select(v => v.Pid));
 			foreach (var pid in _chatCache.Keys.Where(k => !alive.Contains(k)).ToList()) _chatCache.Remove(pid);
+			foreach (var pid in _chatTitles.Keys.Where(k => !alive.Contains(k)).ToList()) _chatTitles.TryRemove(pid, out _);
 			foreach (var pid in _drafts.Keys.Where(k => !alive.Contains(k)).ToList()) _drafts.Remove(pid);
 			foreach (var pid in _imageDrafts.Keys.Where(k => !alive.Contains(k)).ToList()) _imageDrafts.Remove(pid);
 			foreach (var pid in _profiles.Keys.Where(k => !alive.Contains(k)).ToList()) _profiles.Remove(pid);
@@ -1658,6 +1755,7 @@ namespace VSManager
 				int idx = list.FindIndex(v => v.Pid == selPid);
 				if (idx >= 0) _list.SelectedIndex = idx;
 				RegisterHotkeys();
+				PruneInstanceAliases(list);
 			}
 			if (!_agentMode && _list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
 			if (_list.Items.Count == 0 && _chatSvc.Target != null) OnSelectionChanged();
@@ -1680,13 +1778,47 @@ namespace VSManager
 		{
 			var v = Selected;
 			if (v == null) { SetStatus("请先选择一个 VS"); return; }
-			var name = Prompt.Show(this, "重命名", "显示名称（留空恢复为解决方案名）：", _settings.GetAlias(v.Key) ?? v.DisplaySolution);
-			if (name == null) return;
-			_settings.SetAlias(v.Key, string.IsNullOrWhiteSpace(name) || name == v.DisplaySolution ? null : name);
+			string instAlias = _settings.GetAlias(v.InstanceKey);
+			// 同一解决方案被多个 VS 打开时，名称只作用于当前实例，避免所有实例一起被改名
+			bool perInstance = instAlias != null || Twins(v).Count > 1;
+			if (perInstance)
+			{
+				string auto = AutoNameOf(v);
+				var name = Prompt.Show(this, "重命名（仅当前 VS 实例）", "该解决方案在多个 VS 中打开，名称只作用于当前实例（留空恢复为按对话标题自动命名）：", instAlias ?? auto);
+				if (name == null) return;
+				_settings.SetAlias(v.InstanceKey, string.IsNullOrWhiteSpace(name) || name.Trim() == auto ? null : name);
+			}
+			else
+			{
+				var name = Prompt.Show(this, "重命名", "显示名称（留空恢复为解决方案名）：", _settings.GetAlias(v.Key) ?? v.DisplaySolution);
+				if (name == null) return;
+				_settings.SetAlias(v.Key, string.IsNullOrWhiteSpace(name) || name == v.DisplaySolution ? null : name);
+			}
 			_settings.Save();
 			SetStatus($"已命名为「{NameOf(v)}」");
 			UpdateRow(v);
 			UpdateChatHeader();
+		}
+
+		/// <summary>删除已退出的 VS 实例的实例级名称（PID + 启动时间不再对应运行中的进程）。</summary>
+		private void PruneInstanceAliases(List<VsInstance> list)
+		{
+			var live = new HashSet<string>(list.Select(v => v.InstanceKey), StringComparer.OrdinalIgnoreCase);
+			var livePids = new HashSet<int>(list.Select(v => v.Pid));
+			int removed = _settings.Aliases.RemoveAll(a =>
+			{
+				if (a?.Key == null || !a.Key.StartsWith("inst:", StringComparison.OrdinalIgnoreCase) || live.Contains(a.Key)) return false;
+				var parts = a.Key.Split(':');
+				if (parts.Length != 3 || !int.TryParse(parts[1], out int pid) || livePids.Contains(pid)) return true;
+				// 暂未出现在列表中的实例（如正在加载）：进程仍在且启动时间一致则保留
+				try
+				{
+					using (var p = System.Diagnostics.Process.GetProcessById(pid))
+						return p.StartTime.ToUniversalTime().Ticks.ToString() != parts[2];
+				}
+				catch { return true; }
+			});
+			if (removed > 0) _settings.Save();
 		}
 
 		private void EditNote()

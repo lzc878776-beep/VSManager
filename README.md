@@ -355,6 +355,21 @@ Every launch, including watchdog recovery, waits for **Start** in the expanded t
 
 > 兼容性：旧版本 VSManager 读取到 `waiting_vs` 状态会把该任务视为已取消。
 
+### 一键布局：集中查看 Copilot 对话
+
+把各 VS 的 Copilot 对话窗格切换为浮动窗口，在指定屏幕（默认第二屏幕）按工作区宽度横向均布，并最小化 VS 主窗口，只留下纯净的对话内容。
+
+- **入口**：实例列表右键菜单「一键布局：Copilot 对话 → 副屏横向均布（最小化 VS）」与「还原 Copilot 对话布局」；或对 AI 助手说“最小化所有 VS，把对话框排到副屏”。
+- **排列规则**：每格宽度不小于 360 像素（按系统 DPI 缩放），一行放不下时自动换行并平均分配到各行；也可选网格排列。只有一块屏幕时排在该屏幕。
+- **降级处理**：未连接自动化接口（DTE）、找不到或无法浮动对话窗格的 VS 会跳过并说明原因，不会被最小化；窗格未打开时会先自动打开。
+- **还原**：执行前记录主窗口位置 / 最大化状态与窗格的停靠状态（仅保存在内存中，重启 VSManager 后不再可还原）；还原时先恢复主窗口，再把原本停靠的窗格放回原位。
+- **说明**：浮动工具窗口归 VS 主窗口所有，主窗口最小化时 Windows 会一并隐藏它们，VSManager 会在最小化后以不激活的方式重新显示窗格。前台粘贴发送消息时可能会把对应 VS 恢复到前台。
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `arrange_copilot_panes` | `screen`（屏幕编号，0 = 自动）、`layout`（`horizontal` / `grid`）、`minimizeVs`（默认 true）、`vs`（可选，如 `"1,3"`） | 一键布局；遵守「AI 操作需要确认」（`AgentConfirm`） |
+| `restore_copilot_layout` | 无 | 还原一键布局之前的窗口布局；同样遵守 `AgentConfirm` |
+
 ## 发布到 GitHub
 
 点击主窗口顶部的「🚀 发布」打开发布窗口，流程为：检查 git → 未初始化时 `git init` → 补齐 `.gitignore`（排除 bin/obj/dist、settings.json、tasks.json、日志、归档目录）→ 敏感信息自检 → `git add` → 提交（中英双语提交信息）→ 创建或关联远程仓库 → `git push`。
@@ -768,6 +783,21 @@ An unmatched explicit directory path never falls back to fuzzy aliases; multiple
 **Parking and auto push**: automatic dispatch below requires manually clicking **Start** after this launch; before that the list shows "Waiting for Start", and opening VS does not dispatch tasks. When `send_task` targets a registered alias whose VS is not open, the task is saved in tasks.json with status `waiting_vs` (kept across restarts), the task list shows "⏳ pushed once it opens", and a notification / voice message says "任务已暂存，等待打开订单项目 / Task parked, waiting for 订单项目 to open". The dispatcher checks every 2 seconds; as soon as the solution is detected — whether opened by `open_solution` or manually — the task moves to `waiting` and is published through the normal flow after `PendingVsSettleSeconds`. Transitions: `waiting_vs → waiting → sending → running → done`; `waiting_vs` can also be cancelled (`cancelled`).
 
 > Compatibility: older VSManager versions treat a `waiting_vs` task as cancelled.
+
+### One-click layout: watch the Copilot chats together
+
+Floats the Copilot chat pane of every VS, spreads the panes side by side over the work area of a chosen screen (the second screen by default) and minimizes the VS main windows, leaving just the conversations.
+
+- **Entry points**: instance list context menu "一键布局：Copilot 对话 → 副屏横向均布 / Arrange Copilot panes" and "还原 Copilot 对话布局 / Restore Copilot layout"; or ask the AI assistant to "minimize all VS and put the chats on the second screen".
+- **Layout rules**: each cell is at least 360 px wide (scaled by the system DPI); when a row is full the panes wrap and are balanced across rows; a grid layout is also available. With a single screen the panes go to that screen.
+- **Fallbacks**: a VS without the automation interface (DTE), or whose pane cannot be found or floated, is skipped with the reason and is not minimized; a closed pane is opened first.
+- **Restore**: the main window position / maximized state and the pane docking state are recorded first (in memory only, so they cannot be restored after VSManager restarts); restoring brings the main windows back first and then re-docks the panes that were docked.
+- **Note**: floating tool windows are owned by the VS main window, so Windows hides them when it is minimized; VSManager shows the panes again without activating them. A foreground paste when sending a message may bring that VS back to the front.
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `arrange_copilot_panes` | `screen` (screen number, 0 = auto), `layout` (`horizontal` / `grid`), `minimizeVs` (default true), `vs` (optional, e.g. `"1,3"`) | One-click layout; honors "confirm AI actions" (`AgentConfirm`) |
+| `restore_copilot_layout` | none | Restores the layout from before the one-click layout; also honors `AgentConfirm` |
 
 ## Publish to GitHub
 

@@ -514,6 +514,8 @@ namespace VSManager.Tests
             public Task<string> ErrorList(VsInstance v, int max) => throw new NotSupportedException();
             public Task<bool> Confirm(string title, string detail) => throw new NotSupportedException();
             public Task<string> DockPanes() => throw new NotSupportedException();
+            public Task<string> ArrangeCopilotPanes(IList<VsInstance> targets, int screen, PaneArrangement arrangement, bool minimize) => throw new NotSupportedException();
+            public Task<string> RestoreCopilotLayout() => throw new NotSupportedException();
             public Task<string> ParkTask(SolutionEntry e, string text) => throw new NotSupportedException();
             public Task<string> LaunchSolution(string path) => throw new NotSupportedException();
             public Task<string> CheckCanClose(VsInstance v) => throw new NotSupportedException();
