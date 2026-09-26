@@ -14,6 +14,68 @@ namespace VSManager.Tests
             new QueuedTask { Id = id, VsKey = vs, VsName = vs, Text = "t" + id, Status = QueueStatus.Waiting, Created = T0 };
 
         [TestMethod]
+        public void ReleaseLevels_ParseKeysAndNames()
+        {
+            Assert.AreEqual(ReleaseLevel.Completed, ReleaseLevels.TryParse("completed"));
+            Assert.AreEqual(ReleaseLevel.NeedsUser, ReleaseLevels.TryParse("待验证"));
+            Assert.AreEqual(ReleaseLevel.NeedsUser, ReleaseLevels.TryParse("Needs-User"));
+            Assert.AreEqual(ReleaseLevel.Failed, ReleaseLevels.TryParse("2"));
+            Assert.IsNull(ReleaseLevels.TryParse("maybe"));
+            foreach (var level in ReleaseLevels.All) Assert.AreEqual(level, ReleaseLevels.TryParse(ReleaseLevels.Key(level)));
+        }
+
+        [DataTestMethod]
+        [DataRow(ReleaseLevel.Completed, true, true)]
+        [DataRow(ReleaseLevel.NeedsUser, true, false)]
+        [DataRow(ReleaseLevel.Failed, false, false)]
+        public void BlockingTask_FollowsReleaseLevel(ReleaseLevel level, bool failedBlocks, bool needsUserBlocks)
+        {
+            var failed = Waiting(1); TaskStateMachine.Fail(failed, "x", T0);
+            var afterFailed = Waiting(2);
+            var verify = Waiting(3, "B"); verify.Status = QueueStatus.Running; TaskStateMachine.Complete(verify, T0, needsUser: true);
+            var afterVerify = Waiting(4, "B");
+            var done = Waiting(5, "C"); done.Status = QueueStatus.Running; TaskStateMachine.Complete(done, T0);
+            var afterDone = Waiting(6, "C");
+            var items = new List<QueuedTask> { failed, afterFailed, verify, afterVerify, done, afterDone };
+
+            Assert.AreEqual(failedBlocks, TaskStateMachine.BlockingTask(items, afterFailed, level) == failed);
+            Assert.AreEqual(needsUserBlocks, TaskStateMachine.BlockingTask(items, afterVerify, level) == verify);
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, afterDone, level));
+            if (needsUserBlocks) StringAssert.Contains(TaskStateMachine.StatusText(afterVerify, T0, items, level), "待验证");
+            if (failedBlocks) StringAssert.Contains(TaskStateMachine.StatusText(afterFailed, T0, items, level), "前序 #1 失败");
+
+            Assert.IsTrue(TaskStateMachine.Release(failed));
+            Assert.IsFalse(TaskStateMachine.Release(failed), "重复放行被拒绝 / double release is refused");
+            Assert.IsTrue(TaskStateMachine.Release(verify));
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, afterFailed, level));
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, afterVerify, level));
+            Assert.IsFalse(TaskStateMachine.Release(done), "成功的任务无需放行 / success needs no release");
+        }
+
+        [TestMethod]
+        public void Supplement_AccumulatesInfo_RequeuesAndCaps()
+        {
+            var t = Waiting();
+            t.CompletionToken = "tok";
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "info", out _), "排队中不能补充 / waiting cannot be supplemented");
+            for (int i = 1; i <= TaskStateMachine.MaxSupplements; i++)
+            {
+                TaskStateMachine.Fail(t, "err" + i, T0);
+                t.Released = true;
+                Assert.IsTrue(TaskStateMachine.Supplement(t, "info" + i, out string error), error);
+                Assert.AreEqual(QueueStatus.Waiting, t.Status);
+                Assert.AreEqual(i, t.SupplementCount);
+                Assert.IsFalse(t.Released, "重新排队清除放行 / requeue clears release");
+            }
+            string text = TaskStateMachine.DispatchText(t);
+            StringAssert.Contains(text, "【补充信息】info1 ｜ info2 ｜ info3");
+            TaskStateMachine.Fail(t, "again", T0);
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "info4", out string capped));
+            StringAssert.Contains(capped, "上限");
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "  ", out _));
+        }
+
+        [TestMethod]
         public void SendRetryPolicy_DeliveredOnlyWithPrefix()
         {
             Assert.IsTrue(SendRetryPolicy.IsDelivered("已发送"));

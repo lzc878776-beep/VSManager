@@ -171,6 +171,28 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void ReleaseLevel_DefaultsFailed_MigratesLegacySwitch_AndPersists()
+        {
+            Assert.AreEqual(ReleaseLevel.Failed, new AppSettings().ReleaseLevel);
+            File.WriteAllText(AppSettings.FilePath, "{\"SkipFailedPredecessors\":false}");
+            Assert.AreEqual(ReleaseLevel.NeedsUser, AppSettings.Load().ReleaseLevel, "旧版关闭跳过 → 待验证 / legacy opt-out → needs_user");
+            File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
+            var settings = AppSettings.Load();
+            Assert.AreEqual(ReleaseLevel.Failed, settings.ReleaseLevel);
+
+            settings.ReleaseLevel = ReleaseLevel.Completed;
+            Assert.IsFalse(settings.SkipFailedPredecessors);
+            settings.SkipFailedPredecessors = false;
+            Assert.AreEqual(ReleaseLevel.Completed, settings.ReleaseLevel, "关闭旧开关不改变已完成级 / legacy off keeps Completed");
+            Assert.IsTrue(settings.Save());
+            StringAssert.Matches(File.ReadAllText(AppSettings.FilePath), new System.Text.RegularExpressions.Regex("\"TaskReleaseLevel\"\\s*:\\s*\"completed\""));
+            Assert.AreEqual(ReleaseLevel.Completed, AppSettings.Load().ReleaseLevel);
+
+            File.WriteAllText(AppSettings.FilePath, "{\"TaskReleaseLevel\":\"bogus\"}");
+            Assert.AreEqual(ReleaseLevel.Failed, AppSettings.Load().ReleaseLevel, "无法识别时回到默认 / unknown falls back to default");
+        }
+
+        [TestMethod]
         public void AutoNormalize_DefaultsOn_AndExplicitOptOutSurvivesReload()
         {
             Assert.IsTrue(new AppSettings().SendAutoNormalizeLineEndings);

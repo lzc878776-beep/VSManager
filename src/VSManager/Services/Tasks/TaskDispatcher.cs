@@ -96,7 +96,7 @@ namespace VSManager
                     var v = _host.FindVs(t.VsKey);
                     switch (TaskStateMachine.CheckRunning(t, v != null, v?.Copilot ?? CopilotState.Unknown, () => _host.CanDispatch(v), now))
                     {
-                        case RunningVerdict.VsClosed: Fail(t, TaskStateMachine.VsClosedError); break;
+                        case RunningVerdict.VsClosed: Fail(t, TaskStateMachine.VsClosedError, FailureKind.VsClosed); break;
                         case RunningVerdict.SawBusy: t.SawBusy = true; break;
                         case RunningVerdict.Unconfirmed: await FinishAsync(t, v, null); break;
                     }
@@ -122,7 +122,7 @@ namespace VSManager
                     }
                     catch (Exception ex)
                     {
-                        Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message);
+                        Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message, FailureKind.Delivery);
                         continue;
                     }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
@@ -172,15 +172,20 @@ namespace VSManager
         }
 
         /// <summary>任务失败：记录错误并通知 AI 助手（仅 AI 发布的任务）。/ Fails a task and notifies the AI assistant (AI tasks only).</summary>
-        public void Fail(QueuedTask t, string error)
+        public void Fail(QueuedTask t, string error, string kind = null)
         {
-            TaskStateMachine.Fail(t, error, _clock());
+            TaskStateMachine.Fail(t, error, _clock(), kind);
             AfterFail(t, error);
         }
 
-        private string FailurePolicyText => _tasks.SkipFailedPredecessors
-            ? "已启用跳过失败前序，后续排队任务可继续；失败记录保留 / Failed predecessors are skipped; queued successors may continue and failure history is retained"
-            : "严格模式：未被取代的失败前序会暂停该目标后续任务；失败记录保留 / Strict mode: unsuperseded failures pause this target's successors; failure history is retained";
+        private string FailurePolicyText => _tasks.ReleaseLevel == ReleaseLevel.Failed
+            ? "放行等级「失败」：后续排队任务可继续；失败记录保留 / Release level \"Failed\": queued successors may continue and failure history is retained"
+            : $"放行等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：未被取代、未放行的失败会暂停该目标后续任务；失败记录保留 / Release level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": unsuperseded, unreleased failures pause this target's successors; failure history is retained";
+
+        /// <summary>当前等级下该任务结果是否正在暂停同一目标的后续任务。/ Whether this outcome currently pauses successors on the same target.</summary>
+        private bool HoldsSuccessors(QueuedTask t) =>
+            ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) && !t.Released
+            && _tasks.Items.Any(x => x.Id > t.Id && QueueStatus.Active(x.Status) && ResentTaskMatcher.SameTarget(x, t));
 
         private void AnnounceDelivery(QueuedTask t, int[] skipped)
         {
@@ -206,10 +211,36 @@ namespace VSManager
             _tasks.Commit();
             _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
             if (t.FromAgent)
+            {
+                string reply = FailureKind.IsContent(t.FailureKind) && !string.IsNullOrWhiteSpace(t.Result)
+                    ? "\nCopilot 回复 / Copilot reply：" + TextUtil.Clip(t.Result, 1200) : "";
                 _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName} / Task #{t.Id} failed",
-                    $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」发布或执行失败 / Send or execution failed: {error}。" +
-                    $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" +
-                    "请仅汇报失败，不要重复发布已排队任务，也不要自动重试失败任务 / Report the failure only; do not duplicate queued tasks or automatically retry failed tasks.");
+                    $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」失败 / failed（{FailureKind.Label(t.FailureKind)}）：{TextUtil.Clip(error, 300)}。" +
+                    $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" + reply + "\n" +
+                    TaskFailureAnalyzer.Guidance(t) + "\n" +
+                    (ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) ? BlockedFailureAdvice(t) :
+                    "不要重复发布已排队任务；未经用户同意不要重试 / Do not duplicate queued tasks; do not retry without the user's consent."));
+            }
+        }
+
+        /// <summary>
+        /// 失败阻塞后续时给 AI 的决策建议：自行补充信息重试，或转交用户。
+        /// Advice for the AI when a failure pauses successors: retry with self-supplied info, or hand over to the user.
+        /// </summary>
+        private string BlockedFailureAdvice(QueuedTask t)
+        {
+            int left = TaskStateMachine.MaxSupplements - t.SupplementCount;
+            string waiting = HoldsSuccessors(t) ? "该失败正在暂停同一 VS 的后续任务 / This failure is pausing successors on the same VS. " : "";
+            return waiting +
+                "请根据 Copilot 回复判断：① 若失败原因明确且你能从已有信息（回复、对话、目录、常识）补齐所需内容，" +
+                $"调用 retry_task_with_info 插入补充信息重试该任务（还可补充 {Math.Max(0, left)} 次）；" +
+                "② 若需要用户决定、需要只有用户知道的信息、涉及取舍或风险，或补充次数已用完，就把失败原因和需要的信息告诉用户，" +
+                "由用户补充（之后用 retry_task_with_info 带上）、放行（release_task）或取消。不要重复发布已排队任务。 / " +
+                "Judge from the Copilot reply: (1) if the cause is clear and you can supply what is missing from existing information, " +
+                $"call retry_task_with_info to retry the task with supplementary info ({Math.Max(0, left)} left); " +
+                "(2) if it needs a user decision, information only the user has, involves trade-offs or risk, or the supplement limit is used up, " +
+                "tell the user the cause and what is needed; the user may supplement (then pass it via retry_task_with_info), release (release_task) or cancel. " +
+                "Do not duplicate queued tasks.";
         }
 
         /// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task: stores the latest Copilot answer and notifies the AI assistant.</summary>
@@ -229,26 +260,37 @@ namespace VSManager
                 catch (Exception ex)
                 {
                     if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t)
-                        Fail(t, "读取任务结果失败 / Failed to read task result: " + ex.Message);
+                        Fail(t, "读取任务结果失败 / Failed to read task result: " + ex.Message, FailureKind.ReadError);
                     return;
                 }
                 if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
-                if (!TaskStateMachine.TryReadSuccess(t, answer, out string result))
+                var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
+                if (receipt == TaskReceipt.Failed)
                 {
-                    t.Result = TextUtil.Clip(answer, 1500);
-                    Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300));
+                    t.Result = TextUtil.Clip(result, 1500);
+                    Fail(t, "Copilot 回报本任务未完成 / Copilot reported the task as not completed: " + TextUtil.Clip(result, 300), FailureKind.Reported);
                     return;
                 }
+                if (receipt == TaskReceipt.None)
+                {
+                    t.Result = TextUtil.Clip(answer, 1500);
+                    Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300), FailureKind.NoReceipt);
+                    return;
+                }
+                bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
-                TaskStateMachine.Complete(t, _clock());
+                TaskStateMachine.Complete(t, _clock(), needsUser);
                 _tasks.Commit();
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）",
+                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成{(needsUser ? "（待用户验证）" : "")} · {t.VsName}（{took}）",
                         $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复：" + t.Result +
+                        (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
+                        (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
+                            ? "\n放行等级为「已完成」：同一 VS 的后续任务已暂停，用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Release level \"Completed\": successors on the same VS are paused; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
                 }
@@ -277,6 +319,31 @@ namespace VSManager
             TaskStateMachine.Requeue(t);
             _tasks.Commit();
             Pump();
+        }
+
+        /// <summary>放行失败 / 待验证的任务，让后续继续发布。/ Releases a failed / awaiting-verification task so successors can dispatch.</summary>
+        public bool Release(QueuedTask t, out string error)
+        {
+            error = null;
+            if (t == null || _tasks.Find(t.Id) != t) { error = "任务不存在 / Task not found"; return false; }
+            if (t.Released) { error = "任务已放行 / Task already released"; return false; }
+            if (!TaskStateMachine.Release(t)) { error = "只有失败或待验证的任务可以放行 / Only failed or awaiting-verification tasks can be released"; return false; }
+            _tasks.Commit();
+            _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 已放行，后续任务可继续 / Task #{t.Id} released");
+            Pump();
+            return true;
+        }
+
+        /// <summary>插入补充信息后重试失败 / 待验证的任务。/ Retries a failed / awaiting-verification task with supplementary info.</summary>
+        public bool RetryWithInfo(QueuedTask t, string info, out string error)
+        {
+            error = null;
+            if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)) { error = "任务已被替换或正在处理 / Task was replaced or is being processed"; return false; }
+            if (!TaskStateMachine.Supplement(t, info, out error)) return false;
+            _tasks.Commit();
+            _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 补充信息后重新排队（第 {t.SupplementCount} 次）/ Task #{t.Id} requeued with info");
+            Pump();
+            return true;
         }
 
         /// <summary>立即发布（跳过重试等待）；不能立即发布时说明原因。/ Publishes now (skips the retry delay); explains why when it cannot.</summary>

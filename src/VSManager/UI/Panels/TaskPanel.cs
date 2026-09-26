@@ -367,6 +367,8 @@ namespace VSManager
             m.AddGroup("任务操作与历史 / Tasks and history");
             var dispatch = m.Items.Add("立即尝试发布", null, (s, e) => Do("dispatch"));
             var retry = m.Items.Add("重新排队", null, (s, e) => Do("retry"));
+            var supplement = m.Items.Add("补充信息后重试… / Retry with info…", null, (s, e) => Do("supplement"));
+            var release = m.Items.Add("放行后续任务 / Release successors", null, (s, e) => Do("release"));
             var cancel = m.Items.Add("取消任务", null, (s, e) => Do("cancel"));
             var copy = m.Items.Add("复制任务内容", null, (s, e) => Do("copy"));
             var attachments = m.Items.Add("查看附件 / View attachments", null, (s, e) => Do("attachments"));
@@ -404,6 +406,7 @@ namespace VSManager
                 if (header != null)
                 {
                     dispatch.Visible = retry.Visible = cancel.Visible = copy.Visible = attachments.Visible = remove.Visible = false;
+                    supplement.Visible = release.Visible = false;
                     unhide.Visible = stop.Visible = open.Visible = false;
                     toggleGroup.Text = header.Collapsed ? "展开该分组 / Expand group" : "折叠该分组 / Collapse group";
                     expandAll.Enabled = _groupKeys.Any(k => _collapsedGroups.Contains(k));
@@ -424,6 +427,7 @@ namespace VSManager
                 var c = _list.SelectedItem as ExternalChat;
                 bool isChat = c != null;
                 dispatch.Visible = retry.Visible = cancel.Visible = !isChat;
+                supplement.Visible = release.Visible = !isChat;
                 attachments.Visible = false;
                 stop.Visible = isChat;
                 unhide.Visible = !isChat && _list.SelectedItem is QueuedTask ht && IsResentHidden(ht);
@@ -448,6 +452,13 @@ namespace VSManager
                 if (withFiles) attachments.Text = $"查看附件（{t.Attachments.Length}）/ View attachments";
                 dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
                 retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled);
+                supplement.Enabled = has && TaskStateMachine.IsHoldOutcome(t) && t.SupplementCount < TaskStateMachine.MaxSupplements;
+                supplement.Text = has && t.SupplementCount > 0
+                    ? $"补充信息后重试…（{t.SupplementCount}/{TaskStateMachine.MaxSupplements}）/ Retry with info…"
+                    : "补充信息后重试… / Retry with info…";
+                // 仅当前等级下会阻塞后续的结果才需要放行 / Release only matters for outcomes that block at the current level
+                release.Enabled = has && !t.Released && TaskStateMachine.IsHoldOutcome(t) && ReleaseLevels.Blocks(_queue.ReleaseLevel, t);
+                release.Text = has && t.Released ? "已放行 / Released" : "放行后续任务 / Release successors";
                 cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
                 cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
                 remove.Enabled = has && t.Status != QueueStatus.Sending;
@@ -470,7 +481,7 @@ namespace VSManager
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             int waiting = _queue?.Items.Count(t => t.Status == QueueStatus.Waiting) ?? 0;
             int paused = _queue?.Items.Count(t => t.Status == QueueStatus.Waiting
-                && TaskStateMachine.BlockingTask(_queue.Items, t, _queue.SkipFailedPredecessors)?.Status == QueueStatus.Failed) ?? 0;
+                && TaskStateMachine.PausedText(TaskStateMachine.BlockingTask(_queue.Items, t, _queue.ReleaseLevel)) != null) ?? 0;
             int parked = _queue?.Items.Count(t => t.Status == QueueStatus.WaitingVs) ?? 0;
             int running = _queue?.Items.Count(t => t.Status == QueueStatus.Running || t.Status == QueueStatus.Sending) ?? 0;
             int chatting = _externals?.Invoke().Count(c => c.Generating) ?? 0;
@@ -637,7 +648,7 @@ namespace VSManager
             switch (t.Status)
             {
                 case QueueStatus.Waiting:
-                    text = TaskStateMachine.StatusText(t, DateTime.Now, _queue.Items, _queue.SkipFailedPredecessors); fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
+                    text = TaskStateMachine.StatusText(t, DateTime.Now, _queue.Items, _queue.ReleaseLevel); fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
                 case QueueStatus.WaitingVs:
                     text = "待打开 VS"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; break;
                 case QueueStatus.Sending:
@@ -645,10 +656,10 @@ namespace VSManager
                 case QueueStatus.Running:
                     text = "执行中 · " + Dur(DateTime.Now - (t.Started ?? DateTime.Now)); fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Done:
-                    text = "✓ 已完成" + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
-                    fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; break;
+                    text = (t.NeedsUser ? "✓ 待验证" : "✓ 已完成") + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+                    fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
                 case QueueStatus.Failed:
-                    text = "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;
+                    text = t.Released ? "失败 · 已放行" : "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;
                 default:
                     text = "已取消"; fg = Theme.NoneFg; bg = Theme.NoneBg; dot = Theme.NoneDot; break;
             }

@@ -115,7 +115,7 @@ namespace VSManager
                 Toggle("在任务清单中显示 VS 手动对话", "可停止、打开、复制；启用「归档」时会保存并在重启后恢复，关闭归档则仅保存在内存中",
                     _s.WatchConversations, v => _s.WatchConversations = v),
                 Toggle("跳过失败前序任务 / Skip failed predecessors",
-                    "默认开启：失败记录保留，后续按编号继续；关闭则失败暂停后续 / On by default: keep failed records and continue by ID; off pauses successors",
+                    "等价于 AI 助手顶栏放行等级「失败」（默认）；关闭切到「待验证」，失败暂停后续；「已完成」请用滑块设置 / Same as release level \"Failed\" on the AI header slider (default); off switches to \"Awaiting verification\" so failures pause successors; use the slider for \"Completed\"",
                     _s.SkipFailedPredecessors, v => _s.SkipFailedPredecessors = v),
                 Toggle("重发后隐藏原失败条目 / Hide superseded failed entries",
                     "仅隐藏界面，记录与归档保留；重发任务按新编号排队 / UI-only hiding; records and archive remain; resends queue by their new ID",

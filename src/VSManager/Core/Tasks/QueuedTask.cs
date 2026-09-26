@@ -64,6 +64,22 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public AttachmentRef[] Attachments;
         /// <summary>最近一次发送的附件送达说明（例如图片未送达的原因）。/ Attachment delivery note of the last send (e.g. why images were not delivered).</summary>
         [DataMember(EmitDefaultValue = false)] public string AttachmentNote;
+        /// <summary>失败类别（见 <see cref="VSManager.FailureKind"/>），未失败时为 null。/ Failure category (see <see cref="VSManager.FailureKind"/>); null unless failed.</summary>
+        [DataMember(EmitDefaultValue = false)] public string FailureKind;
+        /// <summary>已完成，但需要用户测试或确认。/ Completed, but needs user testing or confirmation.</summary>
+        [DataMember(EmitDefaultValue = false)] public bool NeedsUser;
+        /// <summary>前一次失败尝试的反馈摘要，随下一次发送附给 Copilot。/ Feedback summary of the previous failed attempt, sent to Copilot with the next attempt.</summary>
+        [DataMember(EmitDefaultValue = false)] public string PriorFailure;
+        /// <summary>
+        /// 已手动放行：失败或待验证的条目不再暂停后续任务（结果与历史保持不变）；重新排队时清除。
+        /// Released manually: a failed or awaiting-verification entry no longer pauses successors (outcome and history are kept);
+        /// cleared on requeue.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public bool Released;
+        /// <summary>重试时插入的补充信息（多次补充按顺序累积），随任务发送给 Copilot。/ Supplementary info inserted on retries (accumulated in order), sent to Copilot with the task.</summary>
+        [DataMember(EmitDefaultValue = false)] public string Supplement;
+        /// <summary>已插入补充信息重试的次数。/ Number of retries with supplementary info.</summary>
+        [DataMember(EmitDefaultValue = false)] public int SupplementCount;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -83,7 +99,9 @@ namespace VSManager
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
             CompletionToken = CompletionToken,
-            Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote
+            Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote,
+            FailureKind = FailureKind, NeedsUser = NeedsUser, PriorFailure = PriorFailure,
+            Released = Released, Supplement = Supplement, SupplementCount = SupplementCount
         };
     }
 }

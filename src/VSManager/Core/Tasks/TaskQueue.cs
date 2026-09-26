@@ -49,16 +49,23 @@ namespace VSManager
 
         public IReadOnlyList<QueuedTask> Items => _items;
 
-        /// <summary>实时读取失败前序策略；修改后下轮调度生效。/ Live failed-predecessor policy; changes apply on the next dispatch round.</summary>
+        /// <summary>实时读取失败前序策略（旧版开关，映射到放行等级）；修改后下轮调度生效。/ Live failed-predecessor policy (legacy switch mapped to the release level); changes apply on the next dispatch round.</summary>
         public bool SkipFailedPredecessors
         {
             get => _settings.SkipFailedPredecessors;
             set => _settings.SkipFailedPredecessors = value;
         }
 
-        public QueuedTask BlockingTask(QueuedTask task) => TaskStateMachine.BlockingTask(_items, task, SkipFailedPredecessors);
-        public List<QueuedTask> NextToDispatch(DateTime now) => TaskStateMachine.NextToDispatch(_items, now, SkipFailedPredecessors);
-        public string StatusText(QueuedTask task, DateTime now) => TaskStateMachine.StatusText(task, now, _items, SkipFailedPredecessors);
+        /// <summary>实时读取放行等级；修改后下轮调度生效。/ Live release level; changes apply on the next dispatch round.</summary>
+        public ReleaseLevel ReleaseLevel
+        {
+            get => _settings.ReleaseLevel;
+            set => _settings.ReleaseLevel = value;
+        }
+
+        public QueuedTask BlockingTask(QueuedTask task) => TaskStateMachine.BlockingTask(_items, task, ReleaseLevel);
+        public List<QueuedTask> NextToDispatch(DateTime now) => TaskStateMachine.NextToDispatch(_items, now, ReleaseLevel);
+        public string StatusText(QueuedTask task, DateTime now) => TaskStateMachine.StatusText(task, now, _items, ReleaseLevel);
 
         /// <summary>最近一次保存失败的原因；保存成功后为 null。/ Reason of the last failed save; null after a successful save.</summary>
         public string SaveError { get; private set; }
@@ -129,7 +136,7 @@ namespace VSManager
         {
             int n = 0;
             foreach (var t in _interrupted)
-                if (t.Status == QueueStatus.Waiting && _items.Contains(t)) { TaskStateMachine.Fail(t, reason, _clock()); n++; }
+                if (t.Status == QueueStatus.Waiting && _items.Contains(t)) { TaskStateMachine.Fail(t, reason, _clock(), FailureKind.Delivery); n++; }
             _interrupted.Clear();
             if (n > 0) Commit();
             return n;
@@ -193,11 +200,14 @@ namespace VSManager
                 Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id} / Task #{t.Id} retains failed task #{kept.Task.Id}: {kept.Reason}");
             if (matches.Hide.Count == 0) return false;
             t.Replaces = (t.Replaces ?? new int[0]).Concat(matches.Hide.Select(x => x.Id)).Distinct().ToArray();
+            // 重发任务附带最近一次失败的反馈，让 Copilot 针对原因调整 / A resend carries the latest failure feedback so Copilot can adjust to the cause
+            if (t.PriorFailure == null)
+                t.PriorFailure = matches.Hide.OrderByDescending(x => x.Id).Select(TaskFailureAnalyzer.PriorFailureSummary).FirstOrDefault(s => s != null);
             return true;
         }
 
         /// <summary>按当前策略阻塞该任务的同目标任务数。/ Number of same-target tasks blocking this task under the current policy.</summary>
-        public int Ahead(QueuedTask task) => TaskStateMachine.BlockingTasks(_items, task, SkipFailedPredecessors).Count();
+        public int Ahead(QueuedTask task) => TaskStateMachine.BlockingTasks(_items, task, ReleaseLevel).Count();
 
         public bool Remove(int id)
         {
@@ -253,12 +263,13 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 归档事件名：created / retry / update / 新状态；没有变化时返回 null。
-        /// Archive event name: created / retry / update / the new status; null when nothing changed.
+        /// 归档事件名：created / retry / released / update / 新状态；没有变化时返回 null。
+        /// Archive event name: created / retry / released / update / the new status; null when nothing changed.
         /// </summary>
         internal static string ArchiveEventFor(QueuedTask prev, QueuedTask t)
         {
             if (prev == null) return "created";
+            if (!prev.Released && t.Released && prev.Status == t.Status) return "released";
             if (prev.Status == t.Status && prev.Attempts == t.Attempts && prev.Result == t.Result && prev.Error == t.Error && prev.Text == t.Text && prev.VsKey == t.VsKey) return null;
             if (prev.Status == QueueStatus.WaitingVs && t.Status == QueueStatus.Waiting) return "target_opened";
             if (t.Status == QueueStatus.Waiting && prev.Status != QueueStatus.Waiting) return "retry";

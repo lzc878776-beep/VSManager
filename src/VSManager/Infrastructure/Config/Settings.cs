@@ -221,8 +221,34 @@ namespace VSManager
         [DataMember] public bool WatchConversations;
         /// <summary>普通已结束任务保留上限；失败及维护重发关系所需记录除外，0 或负数保留全部。/ Completed history limit, excluding failures and required resend links; zero or negative keeps all.</summary>
         [DataMember] public int TaskHistoryLimit;
-        /// <summary>默认跳过失败前序继续排队任务；关闭时失败阻塞后续。/ Skip failed predecessors by default; disabling pauses successors on failure.</summary>
-        [DataMember] public bool SkipFailedPredecessors;
+        /// <summary>
+        /// 旧版开关（兼容保留）：等价于放行等级是否为「失败」。设为 true → 失败级；在失败级时设为 false → 待验证级。
+        /// Legacy switch (kept for compatibility): whether the release level is Failed. true → Failed; false while Failed → NeedsUser.
+        /// </summary>
+        [DataMember]
+        public bool SkipFailedPredecessors
+        {
+            get => _releaseLevel == VSManager.ReleaseLevel.Failed;
+            set
+            {
+                if (value) _releaseLevel = VSManager.ReleaseLevel.Failed;
+                else if (_releaseLevel == VSManager.ReleaseLevel.Failed) _releaseLevel = VSManager.ReleaseLevel.NeedsUser;
+            }
+        }
+        /// <summary>任务队列放行等级（completed / needs_user / failed）。/ Task queue release level (completed / needs_user / failed).</summary>
+        [DataMember]
+        public string TaskReleaseLevel
+        {
+            get => ReleaseLevels.Key(_releaseLevel);
+            set => _releaseLevel = ReleaseLevels.TryParse(value) ?? _releaseLevel;
+        }
+        private ReleaseLevel _releaseLevel = ReleaseLevels.Default;
+        /// <summary>放行等级：前序结束到哪一档仍自动发送后续任务。/ Release level: up to which outcome successors still dispatch automatically.</summary>
+        public ReleaseLevel ReleaseLevel
+        {
+            get => _releaseLevel;
+            set => _releaseLevel = ReleaseLevels.IsDefined(value) ? value : ReleaseLevels.Default;
+        }
         /// <summary>下一个任务编号，保证清除历史后编号也不重复。</summary>
         [DataMember] public int TaskNextId;
         /// <summary>
@@ -503,7 +529,7 @@ namespace VSManager
             TaskListCollapsedGroups = new List<string>();
             WatchConversations = true;
             TaskHistoryLimit = 0;
-            SkipFailedPredecessors = true;
+            _releaseLevel = ReleaseLevels.Default;
             TaskNextId = 0;
             ArchiveEnabled = true;
             ArchiveRoot = Archive.DefaultRoot;

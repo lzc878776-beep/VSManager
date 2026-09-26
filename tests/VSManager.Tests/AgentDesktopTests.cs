@@ -230,9 +230,13 @@ namespace VSManager.Tests
         public void QueuePrompts_DescribeCurrentPolicy_AndForbidBypasses(bool english)
         {
             string defaultPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "");
-            string strictPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", skipFailedPredecessors: false);
-            StringAssert.Contains(defaultPolicy, "SkipFailedPredecessors=true");
-            StringAssert.Contains(strictPolicy, "SkipFailedPredecessors=false");
+            string strictPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.NeedsUser);
+            string completedPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.Completed);
+            StringAssert.Contains(defaultPolicy, english ? "release level=failed" : "放行等级=failed");
+            StringAssert.Contains(strictPolicy, english ? "release level=needs_user" : "放行等级=needs_user");
+            StringAssert.Contains(completedPolicy, english ? "release level=completed" : "放行等级=completed");
+            StringAssert.Contains(strictPolicy, "retry_task_with_info");
+            StringAssert.Contains(completedPolicy, "release_task");
             StringAssert.Contains(defaultPolicy, english ? "never writes directly" : "不直接写入");
             StringAssert.Contains(defaultPolicy, english ? "never deleted" : "历史不删除");
             StringAssert.Contains(defaultPolicy, english ? "scripts, UI typing" : "脚本、UI 输入");

@@ -52,7 +52,7 @@ namespace VSManager
         /// with the reason; the others are not affected.
         /// </summary>
         public static string Arrange(IList<VsInstance> list, IList<string> names, Rectangle area, PaneArrangement arrangement,
-            bool minimize, string keyword, int minWidth, int minHeight)
+            bool minimize, string keyword, int minWidth, int minHeight, bool topmost = true)
         {
             var lines = new List<string>();
             var ready = new List<Prepared>();
@@ -75,10 +75,10 @@ namespace VSManager
                     if (Native.IsWindow(p.Vs.MainHwnd) && !Native.IsIconic(p.Vs.MainHwnd))
                         Native.ShowWindow(p.Vs.MainHwnd, Native.SW_SHOWMINNOACTIVE);
             Thread.Sleep(minimize ? 400 : 100);
-            Place(ready, grid);
+            Place(ready, grid, topmost);
             // 跨 DPI 屏幕移动时窗口会按新 DPI 自行调整一次尺寸，稍后再摆放一次 / Windows resize themselves once after a DPI change; place again
             Thread.Sleep(350);
-            Place(ready, grid);
+            Place(ready, grid, topmost);
 
             int shown = 0;
             var done = new List<string>();
@@ -90,8 +90,8 @@ namespace VSManager
             }
             lines.InsertRange(0, done);
             string head = $"已把 {shown} 个 Copilot 对话窗格{(arrangement == PaneArrangement.Grid ? "按网格" : "横向均布")}排列（{grid.Columns} 列 × {grid.Rows} 行）" +
-                          (minimize ? "，并最小化了对应的 VS 主窗口" : "") +
-                          $" / Arranged {shown} pane(s) in {grid.Columns} x {grid.Rows}" + (minimize ? ", VS main windows minimized" : "") + "。";
+                          (minimize ? "，并最小化了对应的 VS 主窗口" : "") + (topmost ? "，窗格已置顶" : "") +
+                          $" / Arranged {shown} pane(s) in {grid.Columns} x {grid.Rows}" + (minimize ? ", VS main windows minimized" : "") + (topmost ? ", panes kept on top" : "") + "。";
             if (grid.Rows > 1 && arrangement == PaneArrangement.Horizontal)
                 head += $"\n一行放不下（每格至少 {minWidth} 像素宽），已自动换行 / Wrapped to more rows (min width {minWidth}px)。";
             if (grid.Cramped) head += "\n⚠ 窗格较多，每格高度偏小 / Many panes, cells are short。";
@@ -116,6 +116,9 @@ namespace VSManager
             {
                 var vs = live.FirstOrDefault(v => v.Pid == s.Pid && (s.StartTicks == 0 || v.StartTicks == s.StartTicks));
                 if (vs == null || !Native.IsWindow(s.MainHwnd)) { lines.Add("· " + s.Name + "：VS 已关闭，跳过 / closed, skipped"); continue; }
+                // 取消一键布局设置的置顶 / Clear the topmost state set by the layout
+                if (Native.IsWindow(s.PaneHwnd))
+                    Native.SetWindowPos(s.PaneHwnd, Native.HWND_NOTOPMOST, 0, 0, 0, 0, Native.SWP_NOMOVE | Native.SWP_NOSIZE | Native.SWP_NOACTIVATE);
                 if (s.HasMain)
                 {
                     var wp = s.Main;
@@ -273,7 +276,7 @@ namespace VSManager
             return IntPtr.Zero;
         }
 
-        private static void Place(List<Prepared> ready, PaneGridResult grid)
+        private static void Place(List<Prepared> ready, PaneGridResult grid, bool topmost)
         {
             for (int i = 0; i < ready.Count && i < grid.Cells.Count; i++)
             {
@@ -281,7 +284,8 @@ namespace VSManager
                 if (!Native.IsWindow(h)) continue;
                 var r = grid.Cells[i];
                 if (Native.IsIconic(h) || Native.IsZoomed(h) || !Native.IsWindowVisible(h)) Native.ShowWindow(h, Native.SW_SHOWNOACTIVATE);
-                Native.SetWindowPos(h, Native.HWND_TOP, r.X, r.Y, r.Width, r.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
+                // 置顶显示，切到其他程序时也不会被盖住 / Keep on top so other apps do not cover the panes
+                Native.SetWindowPos(h, topmost ? Native.HWND_TOPMOST : Native.HWND_TOP, r.X, r.Y, r.Width, r.Height, Native.SWP_NOACTIVATE | Native.SWP_SHOWWINDOW);
             }
         }
     }

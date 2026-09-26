@@ -288,6 +288,7 @@ namespace VSManager
 			_agentPanel.Bind(_agent);
 			_agentPanel.RefreshConfig();
 			_agentPanel.SettingsRequested += OpenSettings;
+			_agentPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 
 			_sidebar.Controls.Add(_list);
 			_sidebar.Controls.Add(sideHint);
@@ -1223,7 +1224,7 @@ namespace VSManager
 			}
 			// 图片仍使用现有附件发送流程，但不得越过清单任务。/ Keep attachment delivery, without bypassing queued tasks.
 			if (_sending || !CanDispatch(v) || TaskStateMachine.BlockingTask(_tasks.Items,
-				new QueuedTask { Id = int.MaxValue, VsKey = v.Key }, _settings.SkipFailedPredecessors) != null)
+				new QueuedTask { Id = int.MaxValue, VsKey = v.Key }, _settings.ReleaseLevel) != null)
 			{
 				SetStatus("请等待该目标任务结束后发送图片；附件草稿已保留 / Wait for target tasks to finish before sending images; draft retained");
 				return;
@@ -1356,6 +1357,12 @@ namespace VSManager
 		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null)
 		{
 			if (v == null || string.IsNullOrWhiteSpace(text)) return "目标或任务内容无效 / Invalid target or task text";
+			if (source == "AI" && TaskFailureAnalyzer.FindVerbatimResend(_tasks.Items, v.Key, text) is QueuedTask same)
+				return $"未入队：任务 #{same.Id} 曾以相同内容失败（{FailureKind.Label(same.FailureKind)}），原样重发大概率仍会失败。"
+					+ $"请先根据其 Copilot 回复判断原因：遗留问题或需用户测试时向用户说明；确需重试时以「重发 @{same.Id}：」发布针对失败原因修正后的任务，或让用户在任务清单中重新排队。"
+					+ $"Copilot 回复：{Clip(same.Result ?? same.Error, 400)} / "
+					+ $"Not queued: task #{same.Id} already failed with the same text; a verbatim resend would likely fail again. Analyze its Copilot reply first: "
+					+ $"report pre-existing issues or needed user tests to the user; if a retry is needed, publish a revised task prefixed 'resend @{same.Id}:' that addresses the cause, or let the user requeue it.";
 			string name = NameOf(v);
 			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
 			var q = duplicate ?? (attachments != null && attachments.Length > 0
@@ -1366,9 +1373,11 @@ namespace VSManager
 			_taskTimer.Start();
 			string result = $"已加入任务清单：@{q.Id}「{name}」（{StatusText(q)}，前面 {_tasks.Ahead(q)} 个）；按编号调度 / "
 				+ $"Accepted into task list: @{q.Id}; {_tasks.Ahead(q)} ahead, dispatched in ID order";
-			result += _settings.SkipFailedPredecessors
+			result += _settings.ReleaseLevel == ReleaseLevel.Failed
 				? "；前序结束后自动推送，失败跳过 / Dispatch after predecessors finish, skipping failures"
-				: "；失败前序会暂停后续 / Failed predecessors pause successors";
+				: _settings.ReleaseLevel == ReleaseLevel.NeedsUser
+					? "；失败前序会暂停后续 / Failed predecessors pause successors"
+					: "；失败或待验证的前序会暂停后续 / Failed or awaiting-verification predecessors pause successors";
 			if (duplicate != null) result += "；已有相同任务，未重复添加 / Existing task reused; no duplicate added";
 			if (q.HasAttachments) result += "\n" + AttachmentQueuedNote(q);
 			if (hidden != null) result += "\n" + hidden;
@@ -1385,11 +1394,14 @@ namespace VSManager
 				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).ToList();
 			if (items.Count == 0) return "任务清单为空。";
 			var sb = new System.Text.StringBuilder();
+			sb.Append("放行等级 / Release level: ").Append(ReleaseLevels.Key(_settings.ReleaseLevel)).Append("（").Append(ReleaseLevels.ShortName(_settings.ReleaseLevel)).AppendLine("）");
 			foreach (var t in items)
 			{
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
 				if (!string.IsNullOrEmpty(t.Result) && t.Status == QueueStatus.Done) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
 				if (!string.IsNullOrEmpty(t.Error) && t.Status != QueueStatus.Done) sb.Append(" | 错误：").Append(t.Error);
+				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureKind)) sb.Append(" | 类别：").Append(FailureKind.Label(t.FailureKind));
+				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append('/').Append(TaskStateMachine.MaxSupplements).Append(" 次：").Append(Clip(t.Supplement, 200));
 				if (!string.IsNullOrEmpty(t.PredecessorNotice)) sb.Append(" | ").Append(t.PredecessorNotice);
 				if (TaskHideList.IsHidden(_settings.HiddenResentTasks, t))
 					sb.Append(" | 已被 #").Append(TaskHideList.ReplacedBy(_settings.HiddenResentTasks, t.Id)).Append(" 重新排队取代（界面已隐藏）/ superseded by #")
@@ -1872,7 +1884,7 @@ namespace VSManager
 
 		private static string Clip(string s, int max) => TextUtil.Clip(s, max);
 
-		private string StatusText(QueuedTask t) => TaskStateMachine.StatusText(t, DateTime.Now, _tasks.Items, _settings.SkipFailedPredecessors);
+		private string StatusText(QueuedTask t) => TaskStateMachine.StatusText(t, DateTime.Now, _tasks.Items, _settings.ReleaseLevel);
 
 		/// <summary>该 VS 当前能否接收新任务：Copilot 空闲、没有正在发送或刚送达等待响应的消息、不是刚刚完成。</summary>
 		private bool CanDispatch(VsInstance v) =>
@@ -1939,6 +1951,13 @@ namespace VSManager
 					return;
 				case "dispatch": _dispatcher.DispatchNow(t); return;
 				case "attachments": ShowTaskAttachments(t); return;
+				case "release":
+					SetStatus(_dispatcher.Release(t, out string releaseError)
+						? $"已放行任务 #{t.Id}，同一 VS 的后续任务将继续 / Task #{t.Id} released; successors continue"
+						: releaseError);
+					_taskPanel.RefreshItems();
+					return;
+				case "supplement": PromptSupplement(t); return;
 			}
 		}
 

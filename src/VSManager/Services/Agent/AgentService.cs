@@ -276,6 +276,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetVsNote, "set_vs_note"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
+                AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
+                AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
@@ -679,6 +682,13 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
                 case "cancel_task": return "取消任务 #" + Arg("id");
+                case "set_release_level":
+                {
+                    var level = ReleaseLevels.TryParse(Arg("level"));
+                    return "设置放行等级：" + (level.HasValue ? ReleaseLevels.ShortName(level.Value) : OneLine(Arg("level"), 20)) + " / Set release level";
+                }
+                case "release_task": return "放行任务 #" + Arg("id") + "，后续继续执行 / Release task";
+                case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + "：" + OneLine(Arg("info"), 50);
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
                 case "read_vs_file":
                 case "read_file": return "读取并脱敏授权文件 / Read and redact granted file";
@@ -721,7 +731,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         private string SystemPrompt()
         {
             var s = _settings();
-            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, s.SkipFailedPredecessors);
+            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel);
         }
 
         #endregion

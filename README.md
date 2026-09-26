@@ -336,7 +336,7 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 
 ### 一键布局：集中查看 Copilot 对话
 
-把各 VS 的 Copilot 对话窗格切换为浮动窗口，在指定屏幕（默认第二屏幕）按工作区宽度横向均布，并最小化 VS 主窗口，只留下纯净的对话内容。
+把各 VS 的 Copilot 对话窗格切换为浮动窗口，在指定屏幕（默认第二屏幕）按工作区宽度横向均布并置顶显示，同时最小化 VS 主窗口，只留下纯净的对话内容；还原布局时取消置顶。
 
 - **入口**：实例列表右键菜单「一键布局：Copilot 对话 → 副屏横向均布（最小化 VS）」与「还原 Copilot 对话布局」；或对 AI 助手说“最小化所有 VS，把对话框排到副屏”。
 - **排列规则**：每格宽度不小于 360 像素（按系统 DPI 缩放），一行放不下时自动换行并平均分配到各行；也可选网格排列。只有一块屏幕时排在该屏幕。
@@ -348,6 +348,26 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 |---|---|---|
 | `arrange_copilot_panes` | `screen`（屏幕编号，0 = 自动）、`layout`（`horizontal` / `grid`）、`minimizeVs`（默认 true）、`vs`（可选，如 `"1,3"`） | 一键布局；遵守「AI 操作需要确认」（`AgentConfirm`） |
 | `restore_copilot_layout` | 无 | 还原一键布局之前的窗口布局；同样遵守 `AgentConfirm` |
+
+### 任务回执
+
+任务清单派发的每条任务都有本轮回执 ID（GUID），Copilot 在最终回复最后一行输出三选一的回执：`SUCCESS`（已完成）、`NEEDS_USER`（改动已完成，需要用户测试或确认，显示为「待验证」）、`FAILED`（任务本身未完成；无关的遗留问题不算失败）。
+
+回执规则附在每条任务消息的末尾。VS 2026 的 Copilot 代理（内置 Copilot CLI）不会加载 `copilot-instructions.md` 等自定义指令文件，所以规则不能靠指令文件下发，每条任务都会带上完整规则。
+
+### 放行等级
+
+AI 总控助手顶栏有一个三刻度滑块（点击、拖动或 ←/→ 键切换，保存在 settings.json 的 `TaskReleaseLevel`），决定同一 VS 的前序任务以什么结果结束时自动发送下一项：
+
+| 等级 | 已完成 | 待验证 | 失败 |
+| --- | --- | --- | --- |
+| 「已完成」`completed` | 放行 | 暂停后续 | 暂停后续 |
+| 「待验证」`needs_user` | 放行 | 放行 | 暂停后续 |
+| 「失败」`failed`（默认） | 放行 | 放行 | 放行（失败记录保留） |
+
+- 排队中 / 发送中 / 执行中的前序始终阻塞后续；已取消的不阻塞。旧版「跳过失败前序任务」开关仍可用：开启 = 「失败」，关闭 = 「待验证」，旧配置会自动迁移。
+- 被暂停时，在任务清单右键失败 / 待验证的条目：「补充信息后重试…」把补充内容连同前次反馈发回原 VS（每个任务最多 3 次）；「放行后续任务」保留该条结果，让后续继续执行。
+- AI 助手收到失败通知后自行判断：能从 VS 返回的信息补齐时调用 `retry_task_with_info` 补充重试；需要用户决定或补充时，把失败原因与所需信息告诉你，由你补充、放行（`release_task`）或取消。也可以让它用 `set_release_level` 调整等级。开启「AgentConfirm 审批」时这三个工具都需要确认。
 
 ## 发布到 GitHub
 
@@ -765,7 +785,7 @@ An unmatched explicit directory path never falls back to fuzzy aliases; multiple
 
 ### One-click layout: watch the Copilot chats together
 
-Floats the Copilot chat pane of every VS, spreads the panes side by side over the work area of a chosen screen (the second screen by default) and minimizes the VS main windows, leaving just the conversations.
+Floats the Copilot chat pane of every VS, spreads the panes side by side over the work area of a chosen screen (the second screen by default), keeps them on top and minimizes the VS main windows, leaving just the conversations; restoring the layout clears the always-on-top state.
 
 - **Entry points**: instance list context menu "一键布局：Copilot 对话 → 副屏横向均布 / Arrange Copilot panes" and "还原 Copilot 对话布局 / Restore Copilot layout"; or ask the AI assistant to "minimize all VS and put the chats on the second screen".
 - **Layout rules**: each cell is at least 360 px wide (scaled by the system DPI); when a row is full the panes wrap and are balanced across rows; a grid layout is also available. With a single screen the panes go to that screen.
@@ -777,6 +797,26 @@ Floats the Copilot chat pane of every VS, spreads the panes side by side over th
 |---|---|---|
 | `arrange_copilot_panes` | `screen` (screen number, 0 = auto), `layout` (`horizontal` / `grid`), `minimizeVs` (default true), `vs` (optional, e.g. `"1,3"`) | One-click layout; honors "confirm AI actions" (`AgentConfirm`) |
 | `restore_copilot_layout` | none | Restores the layout from before the one-click layout; also honors `AgentConfirm` |
+
+### Task receipts
+
+Every task dispatched from the task list has a receipt ID (GUID) for the round. Copilot ends its final reply with one of three receipts: `SUCCESS` (done), `NEEDS_USER` (changes done, the user must test or confirm; shown as "awaiting verification") or `FAILED` (the task itself was not completed; unrelated pre-existing issues do not count).
+
+The receipt rules are appended to the end of every task message. The VS 2026 Copilot agent (a bundled Copilot CLI) does not load custom instructions files such as `copilot-instructions.md`, so the rules cannot be delivered that way; every task carries the full rules.
+
+### Release level
+
+The AI assistant header has a three-stop slider (click, drag or use ←/→; saved as `TaskReleaseLevel` in settings.json). It decides which predecessor outcomes let the next task on the same VS be sent automatically:
+
+| Level | Completed | Awaiting verification | Failed |
+| --- | --- | --- | --- |
+| "已完成" `completed` | releases | pauses successors | pauses successors |
+| "待验证" `needs_user` | releases | releases | pauses successors |
+| "失败" `failed` (default) | releases | releases | releases (failure kept) |
+
+- Waiting / sending / running predecessors always block successors; cancelled ones do not. The legacy "Skip failed predecessors" switch still works: on = `failed`, off = `needs_user`; old settings migrate automatically.
+- While paused, right-click the failed / awaiting-verification entry in the task list: "Retry with info…" sends your extra info plus the previous feedback back to the same VS (at most 3 times per task); "Release successors" keeps that outcome and lets the successors run.
+- On a failure notice the AI assistant decides by itself: if the VS reply gives enough to fill the gap it calls `retry_task_with_info`; if it needs your decision or input it tells you the cause and what is needed, and you supplement, release (`release_task`) or cancel. You can also ask it to change the level with `set_release_level`. With AgentConfirm approval on, all three tools ask for confirmation.
 
 ## Publish to GitHub
 

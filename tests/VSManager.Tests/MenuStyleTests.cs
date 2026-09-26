@@ -161,12 +161,14 @@ namespace VSManager.Tests
                     string cancelText = status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
                     CollectionAssert.AreEqual(new[]
                     {
-                        "任务操作与历史 / Tasks and history", "立即尝试发布", "重新排队", cancelText,
+                        "任务操作与历史 / Tasks and history", "立即尝试发布", "重新排队", "补充信息后重试… / Retry with info…", "放行后续任务 / Release successors", cancelText,
                         "复制任务内容", "从清单中删除", "清除已完成（仅界面）", "显示已清除的历史",
                         "撤销清除（恢复显示全部历史）", "VS 操作 / Visual Studio", "查看该 VS 的对话"
                     }, AvailableText(menu));
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs, Find(menu, "立即尝试发布").Enabled);
                     Assert.AreEqual(status == QueueStatus.Failed || status == QueueStatus.Cancelled, Find(menu, "重新排队").Enabled);
+                    Assert.AreEqual(status == QueueStatus.Failed, Find(menu, "补充信息后重试… / Retry with info…").Enabled);
+                    Assert.IsFalse(Find(menu, "放行后续任务 / Release successors").Enabled, "默认「失败」级无需放行 / nothing to release at the default level");
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs || status == QueueStatus.Running, Find(menu, cancelText).Enabled);
                     Assert.AreEqual(status != QueueStatus.Sending, Find(menu, "从清单中删除").Enabled);
                     var actions = new List<string>();

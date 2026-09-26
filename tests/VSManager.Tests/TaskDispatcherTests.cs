@@ -240,7 +240,8 @@ namespace VSManager.Tests
             _dispatcher.DispatchNow(next);
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
             Assert.AreEqual(0, _host.Announced.Count);
-            StringAssert.Contains(_host.NoticeBodies.Single(), "Strict mode");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "unreleased failures pause");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "retry_task_with_info");
 
             var retry = _queue.Add("A", "A", "resend #1: corrected first task", "AI");
             Assert.AreSame(first, _queue.Find(first.Id));
@@ -253,6 +254,66 @@ namespace VSManager.Tests
             _dispatcher.Retry(retry);
             Assert.AreEqual(1, retry.Attempts);
             Assert.AreEqual(4, _host.Sent.Count);
+        }
+
+        [TestMethod]
+        public async Task NeedsUserLevel_FailureBlocks_ReleaseLetsSuccessorRun()
+        {
+            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            _dispatcher.Fail(first, "execution failed");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            StringAssert.Contains(_host.NoticeBodies.Single(), "release_task");
+
+            Assert.IsTrue(_dispatcher.Release(first, out string error), error);
+            Assert.IsTrue(first.Released);
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+            Assert.IsFalse(_dispatcher.Release(first, out error), "重复放行被拒绝 / double release is refused");
+        }
+
+        [TestMethod]
+        public async Task RetryWithInfo_RequeuesFailedTask_WithSupplementBeforeSuccessor()
+        {
+            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            _dispatcher.Fail(first, "missing config path");
+            Assert.IsTrue(_dispatcher.RetryWithInfo(first, "use %APPDATA%\\VSManager\\settings.json", out string error), error);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, first.Status);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            Assert.AreEqual(1, first.SupplementCount);
+            StringAssert.Contains(_host.Sent.Last(), "【补充信息】use %APPDATA%");
+            await _dispatcher.FinishAsync(first, v, null);
+            Assert.AreEqual(QueueStatus.Done, first.Status);
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+        }
+
+        [TestMethod]
+        public async Task CompletedLevel_NeedsUserResultPausesSuccessor()
+        {
+            _queue.ReleaseLevel = ReleaseLevel.Completed;
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            _host.AnswerReader = t => Task.FromResult("please test the UI\r\n" + TaskStateMachine.NeedsUserReceipt(t));
+            await _dispatcher.PumpAsync();
+            await _dispatcher.FinishAsync(first, v, null);
+            Assert.IsTrue(first.NeedsUser);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status);
+            StringAssert.Contains(_host.NoticeBodies.Last(), "release_task");
+
+            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
         }
 
         [TestMethod]
@@ -315,8 +376,8 @@ namespace VSManager.Tests
             failed.Started = _clock.Now.AddMinutes(-1);
             _dispatcher.Fail(failed, "original error");
             var snapshot = failed.Clone();
-            StringAssert.Contains(_host.NoticeBodies.Single(), "Failed predecessors are skipped");
-            StringAssert.Contains(_host.NoticeBodies.Single(), "do not duplicate queued tasks or automatically retry failed tasks");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "Release level \"Failed\": queued successors may continue");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "Do not duplicate queued tasks; do not retry without the user's consent");
             Assert.IsFalse(_host.NoticeBodies.Single().Contains("后续任务已暂停"));
 
             _host.SendResults.Enqueue(SendRetryPolicy.BlockedPrefix + "dialog");

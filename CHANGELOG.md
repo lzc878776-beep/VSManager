@@ -7,8 +7,14 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 新增 / Added
 
-- 一键布局 Copilot 对话：把各 VS 的 Copilot 对话窗格浮动并在第二屏幕（可指定）横向均布或网格排列，可最小化 VS 主窗口；最小宽度限制下自动换行；记录原布局并可一键还原。新增 AI 工具 `arrange_copilot_panes`、`restore_copilot_layout` 与实例列表右键菜单入口。
-  One-click Copilot chat layout: floats the Copilot chat pane of each VS and spreads the panes side by side (or in a grid) on the second screen (configurable), optionally minimizing the VS main windows; wraps to more rows under a minimum width; the previous layout is recorded and can be restored. New AI tools `arrange_copilot_panes` and `restore_copilot_layout`, plus instance list context menu entries.
+- 任务队列放行等级：AI 总控助手顶栏新增三刻度滑块（已完成 / 待验证 / 失败），决定同一 VS 的前序以什么结果结束时自动执行下一项，设置持久化并兼容旧版「跳过失败前序」开关；被暂停时可「补充信息后重试」（每个任务最多 3 次）或「放行后续任务」；新增 AI 工具 `set_release_level`、`retry_task_with_info`、`release_task`，失败通知会提示 AI 在自行补充重试与转交用户之间判断。
+  Task queue release level: a three-stop slider in the AI assistant header (Completed / Awaiting verification / Failed) decides which predecessor outcomes let the next task on the same VS run automatically; the setting persists and stays compatible with the legacy "Skip failed predecessors" switch. Paused entries can be retried with supplementary info (at most 3 times per task) or released. New AI tools `set_release_level`, `retry_task_with_info` and `release_task`; failure notices ask the AI to choose between supplementing and retrying by itself or handing over to the user.
+
+- 任务结果更细分
+  Finer task outcomes: a new `NEEDS_USER` receipt (changes done, but the user must test or confirm) shows the task as "Done (awaiting user verification)" instead of failed; `FAILED` is only for work the task itself did not finish, and unrelated pre-existing errors do not count. Failures are classified (delivery / VS closed / read error / missing receipt / reported by Copilot); failure notices to the AI assistant include the Copilot reply and cause-specific guidance; the AI cannot resend a content-failed task verbatim, and resends or requeues automatically carry the previous failure feedback.
+
+- 一键布局 Copilot 对话：把各 VS 的 Copilot 对话窗格浮动并在第二屏幕（可指定）横向均布或网格排列并置顶显示，可最小化 VS 主窗口；最小宽度限制下自动换行；记录原布局并可一键还原（同时取消置顶）。新增 AI 工具 `arrange_copilot_panes`、`restore_copilot_layout` 与实例列表右键菜单入口。
+  One-click Copilot chat layout: floats the Copilot chat pane of each VS and spreads the panes side by side (or in a grid) on the second screen (configurable), kept on top, optionally minimizing the VS main windows; wraps to more rows under a minimum width; the previous layout is recorded and can be restored (which also clears always-on-top). New AI tools `arrange_copilot_panes` and `restore_copilot_layout`, plus instance list context menu entries.
 
 - AI 助手自动重启：内部异常、请求连续失败或长时间无响应时自动重建，状态栏提示；可选进程看门狗（默认关闭）在异常退出后自动拉起；防重启风暴（默认 5 分钟最多 3 次）；「⟳ 重启」菜单与托盘菜单提供手动重启。
   AI assistant auto-restart after internal errors, repeated request failures or hangs, with a status-bar notice; an optional process watchdog (off by default) relaunches the app after an abnormal exit; restart-storm guard (default 3 per 5 minutes); manual restart from the "⟳" menu and the tray menu.
