@@ -27,6 +27,7 @@ namespace VSManager
         /// open in that instance when the VS solution path cannot be read.
         /// </summary>
         [DataMember] public int DefaultVs;
+        [DataMember(EmitDefaultValue = false)] public WorktreeInfo Worktree;
 
         /// <summary>解决方案文件名（不含扩展名）。/ Solution file name without extension.</summary>
         public string FileName
@@ -50,7 +51,7 @@ namespace VSManager
         public SolutionEntry Clone() => new SolutionEntry
         {
             Alias = Alias, Path = Path, Description = Description, DefaultVs = DefaultVs,
-            Synonyms = (Synonyms ?? new List<string>()).ToList()
+            Worktree = Worktree?.Clone(), Synonyms = (Synonyms ?? new List<string>()).ToList()
         };
 
         public override string ToString() => Alias + "  —  " + Path;

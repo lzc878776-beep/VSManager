@@ -24,6 +24,7 @@ namespace VSManager.Tests
             _queue = new TaskQueue(new AppSettings(), new MemoryTaskStore(), new RecordingArchive(), _clock.Func);
             _host = new FakeDispatchHost();
             _dispatcher = new TaskDispatcher(_queue, _host, _clock.Func);
+            _dispatcher.Start();
         }
 
         [TestCleanup]

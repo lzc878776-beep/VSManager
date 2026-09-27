@@ -171,46 +171,55 @@ namespace VSManager
             {
                 string path = FilePath;
                 if (!File.Exists(path)) return 0;
-                var lines = new List<KeyValuePair<DateTime, string>>();
-                int damaged = 0;
-                try
-                {
-                    foreach (var line in File.ReadAllLines(path, Utf8))
-                    {
-                        var r = Parse(line);
-                        if (r == null) { if (line.Trim().Length > 0) damaged++; continue; }
-                        lines.Add(new KeyValuePair<DateTime, string>(r.Time, line));
-                    }
-                }
-                catch (Exception ex) { LastError = ex.Message; return 0; }
-
-                var keep = lines;
-                if (days > 0)
-                {
-                    var cutoff = DateTime.Now.AddDays(-days);
-                    keep = keep.Where(x => x.Key >= cutoff).ToList();
-                }
-                if (max > 0 && keep.Count > max) keep = keep.Skip(keep.Count - max).ToList();
-                int removed = lines.Count - keep.Count;
-                if (removed == 0 && damaged == 0) return 0;
-
                 string tmp = path + ".tmp";
+                int removed;
                 try
                 {
-                    using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
-                    using (var w = new StreamWriter(fs, Utf8))
+                    // 两遍流式读取，只保留一行；同一源句柄防止两遍之间被写入。/ Two streaming passes retain one line; keep the source locked against writes.
+                    using (var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                    using (var reader = new StreamReader(source, Utf8))
                     {
-                        foreach (var x in keep) { w.Write(x.Value); w.Write('\n'); }
-                        w.Flush();
-                        fs.Flush(true);
+                        DateTime cutoff = days > 0 ? DateTime.Now.AddDays(-days) : DateTime.MinValue;
+                        int valid = 0, eligible = 0, damaged = 0;
+                        string line;
+                        while ((line = reader.ReadLine()) != null)
+                        {
+                            var r = Parse(line);
+                            if (r == null) { if (!string.IsNullOrWhiteSpace(line)) damaged++; continue; }
+                            valid++;
+                            if (r.Time >= cutoff) eligible++;
+                        }
+                        int skip = max > 0 ? Math.Max(0, eligible - max) : 0;
+                        removed = valid - eligible + skip;
+                        if (removed == 0 && damaged == 0) return 0;
+
+                        source.Position = 0;
+                        using (var retained = new StreamReader(source, Utf8, true, 1024, true))
+                        using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                        using (var w = new StreamWriter(fs, Utf8))
+                        {
+                            while ((line = retained.ReadLine()) != null)
+                            {
+                                var r = Parse(line);
+                                if (r == null || r.Time < cutoff) continue;
+                                if (skip > 0) { skip--; continue; }
+                                w.Write(line);
+                                w.Write('\n');
+                            }
+                            w.Flush();
+                            fs.Flush(true);
+                        }
                     }
                     File.Replace(tmp, path, null);
                     LastError = null;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is System.Security.SecurityException
+                    || ex is ArgumentException || ex is NotSupportedException)
                 {
                     LastError = ex.Message;
-                    try { File.Delete(tmp); } catch { }
+                    try { File.Delete(tmp); }
+                    catch (Exception cleanup) when (cleanup is IOException || cleanup is UnauthorizedAccessException || cleanup is System.Security.SecurityException)
+                    { LastError += "; " + cleanup.Message; }
                     return 0;
                 }
                 return removed;

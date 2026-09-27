@@ -17,6 +17,11 @@
   <ItemGroup>
 	<Reference Include="System.Runtime.Serialization" />
 	<Reference Include="System.Net.Http" />
+	<Reference Include="UIAutomationClient" />
+	<Reference Include="UIAutomationTypes" />
+	<Reference Include="WindowsBase" />
+	<Reference Include="PresentationCore" />
+	<Reference Include="PresentationFramework" />
   </ItemGroup>
 
   <ItemGroup>

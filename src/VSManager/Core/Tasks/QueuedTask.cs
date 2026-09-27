@@ -49,6 +49,10 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public int QueueOrder;
         [DataMember(EmitDefaultValue = false)] public int[] Replaces;
         [DataMember(EmitDefaultValue = false)] public string CompletionToken;
+        [DataMember(EmitDefaultValue = false)] public WorktreeInfo Worktree;
+        [DataMember(EmitDefaultValue = false)] public bool IsWorktreeMerge;
+        [DataMember(EmitDefaultValue = false)] public bool WorktreeCounted;
+        [DataMember(EmitDefaultValue = false)] public int WorktreeBatch;
         public int Order => Id;
         /// <summary>
         /// 目标解决方案别名（按登记表别名分派时记录，用于显示等待原因）；普通任务为 null，不写入 tasks.json。
@@ -89,6 +93,8 @@ namespace VSManager
         [IgnoreDataMember] public DateTime NextTry;
         /// <summary>运行期：已送达任务跳过失败前序的提示。/ Runtime only: notice that a delivered task skipped failed predecessors.</summary>
         [IgnoreDataMember] public string PredecessorNotice;
+        /// <summary>会话内等待原因，不持久化、不改变业务状态。/ Session wait reason; never persisted and never changes business state.</summary>
+        [IgnoreDataMember] public string ManualChatWaitReason;
 
         public bool FromAgent => Source == "AI";
 
@@ -98,7 +104,8 @@ namespace VSManager
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
-            CompletionToken = CompletionToken,
+            CompletionToken = CompletionToken, Worktree = Worktree?.Clone(), IsWorktreeMerge = IsWorktreeMerge,
+            WorktreeCounted = WorktreeCounted, WorktreeBatch = WorktreeBatch,
             Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote,
             FailureKind = FailureKind, NeedsUser = NeedsUser, PriorFailure = PriorFailure,
             Released = Released, Supplement = Supplement, SupplementCount = SupplementCount

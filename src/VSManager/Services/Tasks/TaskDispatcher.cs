@@ -58,19 +58,38 @@ namespace VSManager
     /// Task dispatcher: tracks running tasks and publishes the oldest waiting task of every idle VS; also handles failure,
     /// completion, cancellation and retry. Status changes go through <see cref="TaskStateMachine"/>. UI thread only.
     /// </summary>
-    public sealed class TaskDispatcher
+    public sealed partial class TaskDispatcher
     {
         private readonly TaskQueue _tasks;
         private readonly ITaskDispatchHost _host;
         private readonly Func<DateTime> _clock;
+        private readonly IWorktreeTaskService _worktrees;
         private bool _pumping;
         private readonly HashSet<QueuedTask> _finishing = new HashSet<QueuedTask>();
+        private readonly HashSet<QueuedTask> _integrating = new HashSet<QueuedTask>();
+        private readonly Dictionary<QueuedTask, (TimeSpan? Duration, string Token)> _pendingCompletions
+            = new Dictionary<QueuedTask, (TimeSpan?, string)>();
 
-        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null)
+        public const string WaitingForStart = "等待手动开始：请点击任务清单「开始流程 / Start」/ Waiting for manual start: click Start in the task list";
+        public bool IsStarted { get; private set; }
+
+        /// <summary>仅本次会话有效；只能由用户开始，不持久化。/ User opt-in for this session only; never persisted.</summary>
+        public void Start()
+        {
+            if (IsStarted) return;
+            IsStarted = true;
+            _host.SetStatus("任务流程已启动 / Task workflow started");
+            _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
+            Pump();
+        }
+
+        public TaskDispatcher(TaskQueue tasks, ITaskDispatchHost host, Func<DateTime> clock = null, IWorktreeTaskService worktrees = null, Func<AppSettings> startSettings = null)
         {
             _tasks = tasks;
             _host = host;
             _clock = clock ?? (() => DateTime.Now);
+            _worktrees = worktrees;
+            _startSettings = startSettings;
         }
 
         /// <summary>触发一轮调度（不等待）；异常只显示在状态栏。/ Starts a round without awaiting; errors only go to the status bar.</summary>
@@ -84,15 +103,41 @@ namespace VSManager
         public async Task PumpAsync()
         {
             if (_pumping) return;
+            ForgetRemovedGrants();
+            GrantSavedMaintenance();
+            PruneManualWaits();
+            if (!HasDispatchActivity)
+            {
+                _host.QueueActivityChanged(false);
+                return;
+            }
             _pumping = true;
             try
             {
                 var now = _clock();
+                if (now >= _host.TrackingReadyAt)
+                {
+                    foreach (var pending in _pendingCompletions.ToArray())
+                    {
+                        var task = pending.Key;
+                        var completion = pending.Value;
+                        if (task.Status != QueueStatus.Running || _tasks.Find(task.Id) != task || task.CompletionToken != completion.Token)
+                        {
+                            _pendingCompletions.Remove(task);
+                            continue;
+                        }
+                        if (!CanRun(task)) continue;
+                        var target = _host.FindVs(task.VsKey);
+                        if (target == null || target.Copilot == CopilotState.Busy || !_host.CanDispatch(target)) continue;
+                        _pendingCompletions.Remove(task);
+                        await FinishAsync(task, target, completion.Duration);
+                    }
+                }
                 PushParked(now);
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
                     if (now < _host.TrackingReadyAt) break;
-                    if (_finishing.Contains(t)) continue;
+                    if (_finishing.Contains(t) || !CanRun(t)) continue;
                     var v = _host.FindVs(t.VsKey);
                     switch (TaskStateMachine.CheckRunning(t, v != null, v?.Copilot ?? CopilotState.Unknown, () => _host.CanDispatch(v), now))
                     {
@@ -105,35 +150,78 @@ namespace VSManager
                 foreach (var t in _tasks.NextToDispatch(now))
                 {
                     if (_host.IsSending) break;
+                    if (!CanRun(t) || (!IsStarted && _tasks.SaveError != null)) continue;
                     var v = _host.FindVs(t.VsKey);
-                    if (v == null || !_host.CanDispatch(v) || t.Status != QueueStatus.Waiting
-                        || _tasks.Find(t.Id) != t || _tasks.BlockingTask(t) != null) continue;
+                    if (t.Worktree != null) v = _host.FindTargetVs(t);
+                    if (v == null || t.Status != QueueStatus.Waiting
+                        || _tasks.Find(t.Id) != t || DispatchBlocker(t) != null) continue;
+                    if (t.Worktree != null && !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath)) continue;
+                    string targetPath = v.SolutionPath, targetIdentity = v.InstanceKey;
+                    if (await WaitForManualAsync(t, v)) continue;
+                    if (!_host.CanDispatch(v) || _host.IsSending || t.Status != QueueStatus.Waiting || !CanRun(t)
+                        || !SameTarget(t, v, targetPath, targetIdentity) || DispatchBlocker(t) != null || (!IsStarted && _tasks.SaveError != null)) continue;
                     var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
                         && ResentTaskMatcher.SameTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
                     TaskStateMachine.BeginSend(t, _host.NameOf(v));
+                    if (t.Worktree != null) t.VsKey = v.Key;
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
                     string r;
                     try
                     {
-                        r = t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
-                            ? await attachmentHost.SendTaskAsync(v, t)
-                            : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
+                        if (_tasks.SaveError != null) throw new InvalidOperationException("任务保存失败，未发送 / Task save failed; not sent");
+                        if (t.IsWorktreeMerge && t.Worktree == null)
+                            throw new InvalidOperationException("缺少工作树元数据 / Missing worktree metadata");
+                        if (t.Worktree != null)
+                        {
+                            if (_tasks.SaveError != null) throw new InvalidOperationException("任务未持久化，工作树操作已暂停 / Task persistence failed");
+                            if (_worktrees == null) throw new InvalidOperationException("Worktree service unavailable");
+                            if (t.IsWorktreeMerge)
+                            {
+                                if (!await _worktrees.IntegrateAsync(t.Worktree))
+                                {
+                                    t.Status = QueueStatus.Running;
+                                    t.Started = _clock();
+                                    t.Result = "已验证主项目本地快进；未推送远程 / Verified local fast-forward; no remote push";
+                                    if (_manualWaits.ContainsKey(t)) { _yielded.Add(t); ClearManualWait(t); }
+                                    TaskStateMachine.Complete(t, _clock());
+                                    CommitCompletion(t);
+                                    _host.NotifyAgent($"工作树合并任务 #{t.Id} 已完成 / Worktree integration completed", t.Result + AutomaticCompletionText(t));
+                                    continue;
+                                }
+                            }
+                            else await _worktrees.CheckDevelopmentAsync(t.Worktree);
+                            if (!SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath) || !_host.CanDispatch(v))
+                                throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
+                        }
+                        if (t.Status != QueueStatus.Sending || !CanRun(t)) continue;
+                        r = _host is IManualChatDispatchHost protectedHost
+                            ? await protectedHost.SendQueuedAsync(v, t, () => t.Status == QueueStatus.Sending && CanRun(t)
+                                && SameTarget(t, v, targetPath, targetIdentity) && DispatchBlocker(t) == null && _tasks.SaveError == null && _host.CanDispatch(v))
+                            : WaitForManualChat ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown)
+                            : t.HasAttachments && _host is ITaskAttachmentDispatchHost attachmentHost
+                                ? await attachmentHost.SendTaskAsync(v, t)
+                                : await _host.SendAsync(v, TaskStateMachine.DispatchText(t));
                     }
                     catch (Exception ex)
                     {
-                        Fail(t, "发送异常，送达状态未知，请检查后重试：" + ex.Message, FailureKind.Delivery);
+                        Fail(t, (t.Worktree == null ? "发送异常，送达状态未知，请检查后重试："
+                            : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message,
+                            t.Worktree == null ? FailureKind.Delivery : null);
                         continue;
                     }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
                     {
                         case SendDecision.Delivered:
+                            ManualDelivery(t);
                             AnnounceDelivery(t, skipped);
                             break;
                         case SendDecision.Fail:
                             AfterFail(t, r);
                             break;
                         default:
+                            if (ManualChatProtection.IsWait(r) && WaitForManualChat && SameTarget(t, v, targetPath))
+                                RecordManualWait(t, v, ManualChatObservation.Unknown);
                             _tasks.Commit();
                             _host.SetStatus(SendRetryPolicy.IsBlocked(r)
                                 ? $"任务清单：#{t.Id} {r}；处理后自动继续，未消耗重试次数"
@@ -143,7 +231,7 @@ namespace VSManager
                 }
             }
             finally { _pumping = false; }
-            _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
+            _host.QueueActivityChanged(HasDispatchActivity);
         }
 
         /// <summary>
@@ -155,6 +243,7 @@ namespace VSManager
         {
             foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.WaitingVs).ToList())
             {
+                if (!CanRun(t) || _tasks.SaveError != null) continue;
                 var v = _host.FindTargetVs(t);
                 if (v == null) continue;
                 string target = t.Target ?? t.VsName;
@@ -178,9 +267,10 @@ namespace VSManager
             AfterFail(t, error);
         }
 
-        private string FailurePolicyText => _tasks.ReleaseLevel == ReleaseLevel.Failed
-            ? "放行等级「失败」：后续排队任务可继续；失败记录保留 / Release level \"Failed\": queued successors may continue and failure history is retained"
-            : $"放行等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：未被取代、未放行的失败会暂停该目标后续任务；失败记录保留 / Release level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": unsuperseded, unreleased failures pause this target's successors; failure history is retained";
+        private string FailurePolicyText => "Worktree 合并失败或取消始终阻塞该工作线，请处理后重试同一任务 / Failed or cancelled worktree integration always blocks its lane; resolve and retry the same task. "
+            + (_tasks.ReleaseLevel == ReleaseLevel.Failed
+                ? "放行等级「失败」：后续排队任务可继续；失败记录保留 / Release level \"Failed\": queued successors may continue and failure history is retained"
+                : $"放行等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：未被取代、未放行的失败会暂停该目标后续任务；失败记录保留 / Release level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": unsuperseded, unreleased failures pause this target's successors; failure history is retained");
 
         /// <summary>当前等级下该任务结果是否正在暂停同一目标的后续任务。/ Whether this outcome currently pauses successors on the same target.</summary>
         private bool HoldsSuccessors(QueuedTask t) =>
@@ -208,6 +298,8 @@ namespace VSManager
 
         private void AfterFail(QueuedTask t, string error)
         {
+            ClearManualWait(t);
+            _yielded.Remove(t);
             _tasks.Commit();
             _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
             if (t.FromAgent)
@@ -252,7 +344,15 @@ namespace VSManager
 
         public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
         {
-            if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t || !_finishing.Add(t)) return;
+            if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+            if (!CanRun(t))
+            {
+                // 忙→闲事件可能仅触发一次；开始后继续核验，不重发。/ Keep one-shot completion events for verification after Start, never resend.
+                _pendingCompletions[t] = (dur, t.CompletionToken);
+                return;
+            }
+            if (!_finishing.Add(t)) return;
+            _pendingCompletions.Remove(t);
             try
             {
                 string answer;
@@ -277,32 +377,59 @@ namespace VSManager
                     Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300), FailureKind.NoReceipt);
                     return;
                 }
+                if (t.Worktree != null)
+                {
+                    try
+                    {
+                        if (v == null || !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath))
+                            throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
+                        if (_worktrees == null) throw new InvalidOperationException("Worktree service unavailable");
+                        if (t.IsWorktreeMerge)
+                        {
+                            if (_tasks.SaveError != null) throw new InvalidOperationException("任务保存失败 / Task persistence failed");
+                            _integrating.Add(t);
+                            if (await _worktrees.IntegrateAsync(t.Worktree))
+                                throw new InvalidOperationException("冲突仍未解决，主项目未更新 / Conflicts remain; main unchanged");
+                            result += "\n已验证本地主项目快进，未推送远程 / Verified local integration; no remote push";
+                        }
+                        else await _worktrees.CheckDevelopmentAsync(t.Worktree);
+                    }
+                    catch (Exception ex)
+                    {
+                        if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t) Fail(t, ex.Message);
+                        return;
+                    }
+                    if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+                }
                 bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
                 TaskStateMachine.Complete(t, _clock(), needsUser);
-                _tasks.Commit();
+                CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成{(needsUser ? "（待用户验证）" : "")} · {t.VsName}（{took}）",
-                        $"[任务完成通知] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）。任务：{TextUtil.Clip(t.Text, 300)}\n" +
-                        "Copilot 回复：" + t.Result +
+                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成{(needsUser ? "（待用户验证）" : "")} · {t.VsName}（{took}）/ Task completed{(needsUser ? " (awaiting verification)" : "")}",
+                        $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
+                        "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
                         (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
                         (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? "\n放行等级为「已完成」：同一 VS 的后续任务已暂停，用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Release level \"Completed\": successors on the same VS are paused; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
-                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。");
+                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
                 }
             }
-            finally { _finishing.Remove(t); }
+            finally { _finishing.Remove(t); _integrating.Remove(t); }
             Pump();
         }
 
         /// <summary>取消排队中或执行中的任务。/ Cancels a waiting or running task.</summary>
         public bool Cancel(QueuedTask t)
         {
+            if (t != null && _integrating.Contains(t)) return false;
             if (!TaskStateMachine.Cancel(t, _clock())) return false;
+            ClearManualWait(t);
+            _yielded.Remove(t);
             _tasks.Commit();
             return true;
         }
@@ -310,6 +437,7 @@ namespace VSManager
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
         public void Retry(QueuedTask t)
         {
+            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
                 || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled))
             {
@@ -349,6 +477,7 @@ namespace VSManager
         /// <summary>立即发布（跳过重试等待）；不能立即发布时说明原因。/ Publishes now (skips the retry delay); explains why when it cannot.</summary>
         public void DispatchNow(QueuedTask t)
         {
+            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
             t.NextTry = DateTime.MinValue;
             if (t.Status == QueueStatus.WaitingVs)
             {
@@ -361,7 +490,7 @@ namespace VSManager
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
-            else if (_tasks.BlockingTask(t) is QueuedTask blocker)
+            else if (DispatchBlocker(t) is QueuedTask blocker)
                 _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id}（{TaskStateMachine.StatusText(blocker, _clock())}）/ Task #{t.Id} is blocked by predecessor #{blocker.Id}");
             Pump();
         }

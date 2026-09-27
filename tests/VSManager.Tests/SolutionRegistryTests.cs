@@ -177,6 +177,7 @@ namespace VSManager.Tests
             _queue = new TaskQueue(new AppSettings(), _store, _archive, _clock.Func);
             _host = new FakeDispatchHost();
             _dispatcher = new TaskDispatcher(_queue, _host, _clock.Func);
+            _dispatcher.Start();
         }
 
         [TestCleanup]

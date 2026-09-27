@@ -92,7 +92,13 @@ namespace VSManager
         /// <summary>整体替换并保存，返回错误信息（null 表示成功）。/ Replaces everything and saves; returns the error (null = success).</summary>
         public string Replace(IEnumerable<SolutionEntry> items)
         {
-            lock (_lock) _items = Sanitize(items);
+            lock (_lock)
+            {
+                var next = Sanitize(items);
+                foreach (var entry in next.Where(e => e.Worktree == null))
+                    entry.Worktree = _items.FirstOrDefault(e => SolutionMatcher.SamePath(e.Path, entry.Path))?.Worktree?.Clone();
+                _items = next;
+            }
             return Save();
         }
 
@@ -102,6 +108,8 @@ namespace VSManager
             lock (_lock)
             {
                 var list = _items.Where(x => !string.Equals(x.Alias, (e?.Alias ?? "").Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+                if (e != null && e.Worktree == null)
+                    e.Worktree = _items.FirstOrDefault(x => SolutionMatcher.SamePath(x.Path, e.Path))?.Worktree?.Clone();
                 list.Add(e);
                 _items = Sanitize(list);
             }

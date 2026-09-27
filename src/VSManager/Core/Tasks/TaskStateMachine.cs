@@ -72,7 +72,7 @@ namespace VSManager
                     t.Error = result;
                     bool blocked = SendRetryPolicy.IsBlocked(result);
                     if (blocked) t.Attempts = Math.Max(0, t.Attempts - 1);
-                    t.NextTry = now + (blocked ? SendRetryPolicy.BlockedRetryDelay : SendRetryPolicy.RetryDelay);
+                    if (!ManualChatProtection.IsWait(result)) t.NextTry = now + (blocked ? SendRetryPolicy.BlockedRetryDelay : SendRetryPolicy.RetryDelay);
                     break;
             }
             return d;
@@ -89,6 +89,7 @@ namespace VSManager
         /// FAILED only means the task itself was not completed; NEEDS_USER covers user testing; unrelated pre-existing issues are not failures.
         /// </summary>
         public static string DispatchText(QueuedTask t) => t.Text + " "
+            + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
             + (string.IsNullOrEmpty(t.PriorFailure) ? ""
                 : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
             + (string.IsNullOrEmpty(t.Supplement) ? ""
@@ -283,14 +284,27 @@ namespace VSManager
         internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, ReleaseLevel level)
         {
             var all = items.ToList();
-            return all.Where(x => x != task && ResentTaskMatcher.SameTarget(x, task)
-                && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
-                    || (x.Id < task.Id && (QueueStatus.Active(x.Status)
-                        || (!x.Released && ReleaseLevels.Blocks(level, x)
-                            && !all.Any(replacement => replacement.Id > x.Id
-                                && ResentTaskMatcher.SameTarget(x, replacement)
-                                && replacement.Replaces != null && replacement.Replaces.Contains(x.Id)))))))
+            return all.Where(x => x != task &&
+                ((x.IsWorktreeMerge || task.IsWorktreeMerge)
+                    && (WorktreeInfo.Same(x.Worktree, task.Worktree) || ResentTaskMatcher.SameTarget(x, task))
+                    ? WorktreeBlocks(x, task)
+                    : (WorktreeInfo.Same(x.Worktree, task.Worktree) || ResentTaskMatcher.SameTarget(x, task))
+                        && (x.Status == QueueStatus.Sending || x.Status == QueueStatus.Running
+                            || (x.Id < task.Id && (QueueStatus.Active(x.Status)
+                                || (!x.Released && ReleaseLevels.Blocks(level, x)
+                                    && !all.Any(replacement => replacement.Id > x.Id
+                                        && ResentTaskMatcher.SameTarget(x, replacement)
+                                        && replacement.Replaces != null && replacement.Replaces.Contains(x.Id))))))))
                 .OrderBy(x => x.Id);
+        }
+
+        private static bool WorktreeBlocks(QueuedTask predecessor, QueuedTask task)
+        {
+            if (predecessor.Status == QueueStatus.Sending || predecessor.Status == QueueStatus.Running) return true;
+            if (predecessor.IsWorktreeMerge && predecessor.Status != QueueStatus.Done)
+                return !task.IsWorktreeMerge || predecessor.Id < task.Id;
+            if (task.IsWorktreeMerge) return false;
+            return predecessor.Id < task.Id && QueueStatus.Active(predecessor.Status);
         }
 
         public static List<QueuedTask> NextToDispatch(IEnumerable<QueuedTask> items, DateTime now, bool skipFailedPredecessors = true) =>
@@ -318,6 +332,8 @@ namespace VSManager
         public static string StatusText(QueuedTask t, DateTime now, IEnumerable<QueuedTask> items, ReleaseLevel level)
         {
             var blocker = t.Status == QueueStatus.Waiting ? BlockingTask(items, t, level) : null;
+            if (blocker != null && blocker.IsWorktreeMerge)
+                return $"等待 Worktree 合并 #{blocker.Id}（{StatusText(blocker, now)}）/ Waiting for worktree integration #{blocker.Id}";
             return PausedText(blocker) ?? StatusText(t, now);
         }
 
@@ -334,6 +350,7 @@ namespace VSManager
         /// <summary>任务状态的简短文字（界面、AI 工具返回共用）。/ Short status text (shared by the UI and AI tool results).</summary>
         public static string StatusText(QueuedTask t, DateTime now)
         {
+            if (t.Status == QueueStatus.Waiting && !string.IsNullOrEmpty(t.ManualChatWaitReason)) return t.ManualChatWaitReason;
             switch (t.Status)
             {
                 case QueueStatus.Waiting: return SendRetryPolicy.IsBlocked(t.Error) ? "等待处理 VS 弹窗" : t.Attempts > 0 ? "等待重试" : "排队中";

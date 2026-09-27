@@ -20,7 +20,16 @@ namespace VSManager
         /// Matches current / launch paths first; uses an unambiguous title or explicit default only when both paths are unknown.
         /// </summary>
         internal VsInstance FindOpenSolution(SolutionEntry e, IList<VsInstance> list = null) =>
-            SolutionMatcher.FindOpenSolution(e, list ?? _instances, _solutions.Items);
+            e?.Worktree != null ? (list ?? _instances).FirstOrDefault(v => SolutionMatcher.SamePath(v.SolutionPath, e.Path))
+                : SolutionMatcher.FindOpenSolution(e, list ?? _instances, _solutions.Items);
+
+        private IEnumerable<string> WorktreeFileRoots()
+        {
+            var roots = new List<string>(_settings.AgentFileRoots ?? new List<string>());
+            if (_settings.AgentIncludeSolutionRoots)
+                roots.AddRange(_solutions.Items.Select(e => System.IO.Path.GetDirectoryName(e.Path)));
+            return roots;
+        }
 
         /// <summary>登记条目当前是否已打开的简短文字。/ Short text telling whether the entry is open.</summary>
         private string SolutionStateText(SolutionEntry e)
@@ -85,6 +94,8 @@ namespace VSManager
 
         VsInstance ITaskDispatchHost.FindTargetVs(QueuedTask t)
         {
+            if (t.Worktree != null)
+                return _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath));
             var v = FindVs(t.VsKey) ?? _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.VsKey));
             if (v != null) return v;
             var e = _solutions.FindByPath(t.VsKey) ??
@@ -99,6 +110,13 @@ namespace VSManager
         /// <summary>暂存 / 推送通知：弹窗或托盘气泡（中英双语），开启语音时按语音语言播报。/ Parked / pushed notice: popup or tray balloon (bilingual), spoken in the voice language when voice is on.</summary>
         private void AnnounceTask(QueuedTask t, string zh, string en)
         {
+            // 自动完成复用原有提示音、弹窗与摘要播报；其他状态继续使用任务提示。/ Automatic completion reuses the existing sound, popup and summary voice; other states use task notices.
+            var v = t.Status == QueueStatus.Done && !t.IsWorktreeMerge ? ((ITaskDispatchHost)this).FindTargetVs(t) : null;
+            if (v != null)
+            {
+                NotifyCopilotCompleted(v, (t.Finished ?? DateTime.Now) - (t.Started ?? t.Created), t, zh, en);
+                return;
+            }
             if (_settings.PendingVsNotify) NotifyTask(t, zh, en);
         }
 
@@ -136,7 +154,14 @@ namespace VSManager
         private string ParkTaskCore(SolutionEntry e, string text, AttachmentRef[] attachments)
         {
             var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), e.Path, text);
-            if (dup != null) return $"「{e.Alias}」的任务清单中已有相同任务 #{dup.Id}（{StatusText(dup)}），未重复添加。";
+            if (dup != null)
+            {
+                string reused = $"已有相同任务 @{dup.Id}，复用原来源、不重复添加 / Existing task @{dup.Id} reused with original source; no duplicate added.\n"
+                    + _dispatcher.AcceptQueued(dup, "AI");
+                _taskPanel.RefreshItems();
+                _dispatcher.Pump();
+                return reused;
+            }
             var q = attachments != null && attachments.Length > 0
                 ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
                 : _tasks.AddParked(e.Path, e.Alias, text, "AI");
@@ -145,8 +170,16 @@ namespace VSManager
             SendLog.Event(e.Alias, $"任务清单：任务 #{q.Id} 已暂存，等待打开「{e.Alias}」/ task #{q.Id} parked, waiting for \"{e.Alias}\" to open");
             SetStatus($"任务清单：#{q.Id} 已暂存，等待打开「{e.Alias}」/ Task #{q.Id} parked, waiting for \"{e.Alias}\"");
             AnnounceTask(q, $"任务已暂存，等待打开{e.Alias}", $"Task parked, waiting for {e.Alias} to open");
-            _taskTimer.Start();
-            return $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度；不会立即发送 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch; not sent immediately" + note;
+            note += "\n" + _dispatcher.AcceptQueued(q, "AI");
+            UpdateTaskTimer();
+            _taskPanel.RefreshItems();
+            if (!_dispatcher.CanRun(q))
+            {
+                _taskPanel.SetCollapsed(false);
+                SetStatus(TaskDispatcher.WaitingForStart);
+            }
+            _dispatcher.Pump();
+            return $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch" + note;
         }
 
         Task<string> IAgentHost.LaunchSolution(string path) => LaunchSolutionAsync(path);

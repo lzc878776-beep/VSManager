@@ -84,7 +84,7 @@ namespace VSManager.Tests
                     Assert.IsFalse(cleanup.Checked);
                     cleanup.Checked = true;
                     Assert.IsTrue(settings.CloseVsDocumentsBeforeSend);
-                    var threshold = controls.OfType<NumericUpDown>().Single();
+                    var threshold = controls.OfType<NumericUpDown>().Single(c => c.Maximum == 1000);
                     Assert.AreEqual(10m, threshold.Value);
                     threshold.Value = 12;
                     Assert.AreEqual(12, settings.CloseVsDocumentsThreshold);

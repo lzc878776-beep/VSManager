@@ -99,6 +99,7 @@ namespace VSManager
         {
             var list = items.ToList();
             if (list.Count == 0) return "[]";
+            if (_queueGuard != null) return "[候选数量 / Candidate count: " + list.Count + "]";
             var s = string.Join("; ", list.Take(max).Select(c => c.ToString()));
             return "[" + s + (list.Count > max ? $"; …共/total {list.Count}" : "") + "]";
         }

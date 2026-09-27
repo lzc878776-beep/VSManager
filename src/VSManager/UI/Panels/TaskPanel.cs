@@ -7,17 +7,24 @@ using System.Windows.Forms;
 namespace VSManager
 {
     /// <summary>主窗口右侧的任务清单：显示排队 / 执行中 / 已完成的任务，可折叠。</summary>
-    public sealed class TaskPanel : Panel
+    public sealed partial class TaskPanel : Panel
     {
         private readonly Panel _top = new Panel();
-        private readonly VsListBox _list = new VsListBox();
+        private readonly TaskDragListBox _list = new TaskDragListBox();
         private readonly FlatButton _btnClear = new FlatButton { Text = "清除已完成", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
+        private readonly FlatButton _btnStart = new FlatButton { Text = "开始流程 / Start" };
+        private bool _workflowStarted;
+        public Func<QueuedTask, bool> CanRunTask { get; set; }
+        public Func<QueuedTask, string> TaskStartText { get; set; }
+        internal bool IsTaskEligible(QueuedTask task) => CanRunTask?.Invoke(task) ?? _workflowStarted;
+        internal string EligibilityText(QueuedTask task) => TaskStartText?.Invoke(task)
+            ?? (IsTaskEligible(task) ? "按编号调度 / Dispatch in ID order" : TaskDispatcher.WaitingForStart);
         private Func<DateTime?> _clearedAt;
         private Func<IList<HiddenTaskMark>> _hiddenMarks;
         private bool _showHistory;
         private int _hiddenCount;
-        private const string DefaultEmptyText = "暂无任务 / No tasks\r\n\r\nAI 与用户文本任务一律在此排队\r\n前序结束后按编号自动推送\r\nAI and manual text tasks always queue here\r\nDispatch in ID order after predecessors finish";
+        private const string DefaultEmptyText = "暂无任务 / No tasks\r\n\r\nAI 与用户文本任务一律在此排队\r\nAI 默认自动，手动任务等待 Start\r\nAI and manual tasks queue in ID order\r\nAI starts automatically by default; manual tasks await Start";
         private readonly FlatButton _btnCollapse = new FlatButton { Text = "»", Ghost = true };
         private readonly FlatButton _btnView = new FlatButton { Text = "▤", Ghost = true };
         private bool _groupByVs = true;
@@ -35,7 +42,7 @@ namespace VSManager
         private bool _loadWarningSeen;
         private string _tip;
 
-        /// <summary>请求对任务执行操作：dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
+        /// <summary>请求对任务执行操作：start / dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
         public event Action<QueuedTask, string> ActionRequested;
         public event Action<bool> CollapsedChanged;
 
@@ -47,7 +54,7 @@ namespace VSManager
             Padding = new Padding(1, 0, 0, 0);
 
             _top.Dock = DockStyle.Top;
-            _top.Height = Dpi.S(52);
+            _top.Height = Dpi.S(88);
             _top.BackColor = Theme.Sidebar;
             _top.Paint += Top_Paint;
             _top.MouseClick += (s, e) =>
@@ -74,6 +81,10 @@ namespace VSManager
             UpdateViewButton();
             _top.Controls.Add(_btnClear);
             _top.Controls.Add(_btnCollapse);
+            _btnStart.Font = Theme.Small;
+            _btnStart.Click += (s, e) => ActionRequested?.Invoke(null, "start");
+            _tips.SetToolTip(_btnStart, TaskDispatcher.WaitingForStart);
+            _top.Controls.Add(_btnStart);
             _top.Resize += (s, e) => LayoutTop();
 
             _list.Dock = DockStyle.Fill;
@@ -86,9 +97,9 @@ namespace VSManager
             _list.InertItemClicked += (i, button) =>
             {
                 if (!(i >= 0 && i < _list.Items.Count && _list.Items[i] is TaskGroupHeader h)) return;
-                if (button == MouseButtons.Left) ToggleGroup(h.Key);
-                else _menuHeader = h;
+                if (button == MouseButtons.Right) _menuHeader = h;
             };
+            ConfigureDrag();
             _list.EmptyText = DefaultEmptyText;
             _list.DrawItem += List_DrawItem;
             _list.MouseDoubleClick += (s, e) =>
@@ -110,8 +121,10 @@ namespace VSManager
             {
                 var hovered = ItemAt(e.Location);
                 string notice = hovered is TaskGroupHeader
-                    ? "点击折叠 / 展开该分组，右键更多分组操作 / Click to collapse / expand; right-click for group options"
-                    : (hovered as QueuedTask)?.PredecessorNotice ?? "";
+                    ? "点击折叠 / 展开，拖拽调整整组显示位置 / Click to collapse / expand; drag to move the whole group"
+                    : "拖拽调整显示位置，右键切换排序 / Drag to reorder display; right-click for sorting";
+                notice += "\r\n" + DisplayOrderNotice + "\r\n" + ((hovered as QueuedTask)?.PredecessorNotice ?? "");
+                if (hovered is QueuedTask task) notice += "\r\n" + TaskStateMachine.StatusText(task, DateTime.Now) + "\r\n" + EligibilityText(task);
                 if (_tips.GetToolTip(_list) != notice) _tips.SetToolTip(_list, notice);
             };
             // 条目较高，滚轮每格滚动 1 条；焦点在其他控件时，指针位于任务清单上的滚轮也转给任务清单
@@ -128,7 +141,14 @@ namespace VSManager
                     || (_externals?.Invoke().Any(c => c.Generating) ?? false)) _list.Invalidate();
             };
             _tick.Start();
-            Disposed += (s, e) => { Application.RemoveMessageFilter(_wheel); _tick.Dispose(); _tips.Dispose(); };
+            Disposed += (s, e) =>
+            {
+                Application.RemoveMessageFilter(_wheel);
+                if (_queue != null) _queue.Changed -= Reload;
+                _tick.Dispose();
+                _tips.Dispose();
+                _list.ContextMenuStrip?.Dispose();
+            };
         }
 
         private readonly WheelForwarder _wheel;
@@ -156,6 +176,16 @@ namespace VSManager
 
         public bool Collapsed => _collapsed;
 
+        public void SetWorkflowStarted(bool started)
+        {
+            _workflowStarted = started;
+            _btnStart.Text = started ? "已启动 / Started" : "开始流程 / Start";
+            _btnStart.Enabled = !started;
+            _tips.SetToolTip(_btnStart, started ? "本次会话已启动；下次启动需重新手动开始 / Started for this session only" : TaskDispatcher.WaitingForStart);
+            _top.Invalidate();
+            _list.Invalidate();
+        }
+
         /// <summary>是否按目标 VS 分组显示。/ Whether the list is grouped by target VS.</summary>
         public bool GroupByVs => _groupByVs;
         /// <summary>分组排序方式。/ Group sort mode.</summary>
@@ -168,10 +198,14 @@ namespace VSManager
         public Func<IReadOnlyList<TaskGroupVs>> VsProvider { get; set; }
 
         /// <summary>应用已保存的显示偏好（不触发 <see cref="ViewOptionsChanged"/>）。/ Applies saved view preferences (does not raise <see cref="ViewOptionsChanged"/>).</summary>
-        public void SetViewOptions(bool groupByVs, string sort, IEnumerable<string> collapsedGroups)
+        public void SetViewOptions(bool groupByVs, string sort, IEnumerable<string> collapsedGroups,
+            bool manualOrder = false, IEnumerable<string> itemOrder = null, IEnumerable<string> groupOrder = null)
         {
             _groupByVs = groupByVs;
             _groupSort = TaskGrouping.NormalizeSort(sort);
+            _manualOrder = manualOrder;
+            _itemOrder = TaskDisplayOrder.Normalize(itemOrder);
+            _groupOrder = TaskDisplayOrder.Normalize(groupOrder, true);
             _collapsedGroups.Clear();
             foreach (var k in TaskGrouping.NormalizeCollapsed(collapsedGroups)) _collapsedGroups.Add(k);
             UpdateViewButton();
@@ -192,6 +226,9 @@ namespace VSManager
             sort = TaskGrouping.NormalizeSort(sort);
             if (_groupSort == sort) return;
             _groupSort = sort;
+            if (sort == TaskGrouping.SortManual && _groupOrder.Count == 0)
+                _groupOrder = new List<string>(_groupKeys);
+            UpdateViewButton();
             Reload();
             ViewOptionsChanged?.Invoke();
         }
@@ -222,9 +259,9 @@ namespace VSManager
         private void UpdateViewButton()
         {
             _btnView.Text = _groupByVs ? "▤" : "≡";
-            _tips.SetToolTip(_btnView, _groupByVs
+            _tips.SetToolTip(_btnView, (_groupByVs
                 ? "当前：按 VS 分组（点击切换为平铺列表）\r\nCurrent: grouped by VS (click for a flat list)"
-                : "当前：平铺列表（点击切换为按 VS 分组）\r\nCurrent: flat list (click to group by VS)");
+                : "当前：平铺列表（点击切换为按 VS 分组）\r\nCurrent: flat list (click to group by VS)") + "\r\n" + DisplayOrderNotice);
         }
 
         /// <summary>对“VS 手动对话”条目执行操作：stop / open / copy / remove。</summary>
@@ -238,6 +275,7 @@ namespace VSManager
         /// </summary>
         public void Bind(TaskQueue queue, Func<IReadOnlyList<ExternalChat>> externals = null, Func<DateTime?> clearedAt = null, Func<IList<HiddenTaskMark>> hiddenMarks = null)
         {
+            if (_queue != null) _queue.Changed -= Reload;
             _queue = queue;
             _externals = externals;
             _clearedAt = clearedAt;
@@ -267,11 +305,12 @@ namespace VSManager
             _list.Visible = !collapsed;
             _btnClear.Visible = !collapsed;
             _btnView.Visible = !collapsed;
+            _btnStart.Visible = !collapsed;
             _btnHistory.Visible = !collapsed && (_hiddenCount > 0 || _showHistory);
             _btnCollapse.Text = collapsed ? "«" : "»";
             _tips.SetToolTip(_btnCollapse, collapsed ? "展开任务清单" : "收起任务清单");
             LayoutTop();
-            _top.Height = collapsed ? Height : Dpi.S(52);
+            _top.Height = collapsed ? Height : Dpi.S(88);
             _top.Invalidate();
             if (raise) CollapsedChanged?.Invoke(collapsed);
         }
@@ -290,23 +329,29 @@ namespace VSManager
 
         private void LayoutTop()
         {
-            int y = Dpi.S(12);
+            int y = Dpi.S(6);
             if (_collapsed) { _btnCollapse.Location = new Point((_top.Width - _btnCollapse.Width) / 2, y); return; }
             _btnCollapse.Location = new Point(_top.Width - _btnCollapse.Width - Dpi.S(10), y);
-            _btnClear.Location = new Point(_btnCollapse.Left - _btnClear.Width - Dpi.S(4), y);
-            _btnView.Location = new Point(_btnClear.Left - _btnView.Width - Dpi.S(4), y);
-            _btnHistory.Location = new Point(_btnView.Left - _btnHistory.Width - Dpi.S(4), y);
+            _btnView.Location = new Point(_btnCollapse.Left - _btnView.Width - Dpi.S(4), y);
+            _btnClear.Location = new Point(_top.Width - _btnClear.Width - Dpi.S(10), Dpi.S(52));
+            _btnHistory.Location = new Point(_btnClear.Left - _btnHistory.Width - Dpi.S(4), Dpi.S(52));
+            _btnStart.SetBounds(Dpi.S(10), Dpi.S(52), Math.Max(0, _btnHistory.Left - Dpi.S(14)), Dpi.S(28));
         }
 
-        /// <summary>标题副文字可用的右边界（避开按钮）。</summary>
-        private int SubRight => _btnHistory.Visible ? _btnHistory.Left : _btnView.Left;
+        /// <summary>标题副文字使用独立一行。/ Subtitle has its own row.</summary>
+        private int SubRight => _top.Width - Dpi.S(10);
+        private string _selectionAnchor;
 
         private void Reload()
         {
             if (_queue == null) return;
-            var selected = _list.SelectedItem;
+            string selectedKey = TaskDisplayOrder.KeyOf(_list.SelectedItem) ?? _selectionAnchor;
+            int top = _list.Items.Count > 0 ? _list.TopIndex : 0;
+            string topKey = _list.Items.Count > 0 ? TaskDisplayOrder.KeyOf(_list.Items[top]) : null;
             var ext = _externals?.Invoke() ?? (IReadOnlyList<ExternalChat>)new ExternalChat[0];
-            // 「清除已完成」只影响显示：按清除时间点过滤，重启后保持；点「历史」可临时显示被隐藏的条目
+            _knownItemKeys = _queue.Items.Cast<object>().Concat(ext).Select(TaskDisplayOrder.KeyOf).Where(k => k != null).ToList();
+            _selectionAnchor = selectedKey != null && _knownItemKeys.Contains(selectedKey) ? selectedKey : null;
+            // 清除与失败隐藏只影响显示，保留排序键。/ Clearing and hiding failures affect display only; retain ordering keys.
             DateTime? cleared = _clearedAt?.Invoke();
             var finishedTasks = _queue.Items.Where(t => !QueueStatus.Active(t.Status)).ToList();
             var finishedChats = ext.Where(c => !c.Generating).ToList();
@@ -333,6 +378,8 @@ namespace VSManager
             _tips.SetToolTip(_btnHistory, _showHistory
                 ? "再次隐藏已清除的 " + _hiddenCount + " 条历史记录"
                 : "显示已清除的 " + _hiddenCount + " 条历史记录（完整保存在 tasks.json 与归档中）");
+            if (_manualOrder) items = TaskDisplayOrder.Apply(items, _itemOrder, TaskDisplayOrder.KeyOf).ToArray();
+            _displayItems = items;
             _list.BeginUpdate();
             // 按 VS 分组只影响显示：组内保持上面的排序规则 / Grouping by VS is display-only: items keep the ordering above within each group
             object[] shown = items;
@@ -340,15 +387,16 @@ namespace VSManager
             {
                 IReadOnlyList<TaskGroupVs> open = null;
                 try { open = VsProvider?.Invoke(); } catch (Exception ex) when (!(ex is OutOfMemoryException)) { open = null; }
-                shown = TaskGrouping.Build(items, open, _groupSort, _collapsedGroups).ToArray();
+                shown = TaskGrouping.Build(items, open, _groupSort, _collapsedGroups, _groupOrder).ToArray();
             }
             _groupKeys = shown.OfType<TaskGroupHeader>().Select(h => h.Key).ToList();
-            int top = _list.Items.Count > 0 ? _list.TopIndex : 0;
             _list.Items.Clear();
             _list.Items.AddRange(shown);
-            if (selected != null && !(selected is TaskGroupHeader) && shown.Contains(selected)) _list.SelectedItem = selected;
-            // 保持滚动位置（折叠 / 展开分组时不跳回顶部）/ Keep the scroll position (collapsing / expanding does not jump to the top)
-            if (top > 0 && shown.Length > 0) _list.TopIndex = Math.Min(top, shown.Length - 1);
+            if (selectedKey != null) _list.SelectedItem = shown.FirstOrDefault(x => !(x is TaskGroupHeader) && TaskDisplayOrder.KeyOf(x) == selectedKey);
+            // 以顶部条目的身份锚定滚动，条目消失时才退回原行号。/ Anchor scrolling by identity; fall back to the row index only if it disappeared.
+            int anchor = topKey == null ? -1 : Array.FindIndex(shown, x => TaskDisplayOrder.KeyOf(x) == topKey);
+            if (shown.Length > 0) _list.TopIndex = anchor >= 0 ? anchor : Math.Min(top, shown.Length - 1);
+            _list.ClearFeedback();
             _list.EndUpdate();
             _btnClear.Enabled = items.Any(x => x is QueuedTask t ? t.Status == QueueStatus.Done && !IsCleared(t, cleared)
                 : x is ExternalChat c && !c.Generating && !c.Stopped && !c.Interrupted && !IsCleared(c, cleared));
@@ -364,6 +412,7 @@ namespace VSManager
         private ContextMenuStrip BuildMenu()
         {
             var m = new GroupedContextMenuStrip();
+            AddDisplayOrderMenu(m);
             m.AddGroup("任务操作与历史 / Tasks and history");
             var dispatch = m.Items.Add("立即尝试发布", null, (s, e) => Do("dispatch"));
             var retry = m.Items.Add("重新排队", null, (s, e) => Do("retry"));
@@ -508,8 +557,12 @@ namespace VSManager
             if (paused > 0) sub += $" · 暂停 {paused}";
             if (parked > 0) sub = (running + waiting == 0 ? "" : sub + " · ") + $"待打开 {parked}";
             if (chatting > 0) sub = (running + waiting + parked == 0 ? "" : sub + " · ") + $"对话 {chatting}";
-            Color subColor = running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
-            string tip = null;
+            int eligible = _queue?.Items.Count(t => QueueStatus.Active(t.Status) && IsTaskEligible(t)) ?? 0;
+            int awaitingStart = _queue?.Items.Count(t => QueueStatus.Active(t.Status) && !IsTaskEligible(t)) ?? 0;
+            bool waitingForStart = !_workflowStarted && eligible == 0;
+            if (!_workflowStarted) sub = $"可调度 {eligible} · 待开始 {awaitingStart} / Eligible · Awaiting Start";
+            Color subColor = waitingForStart ? Theme.Warning : running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
+            string tip = awaitingStart == 0 ? null : TaskDispatcher.WaitingForStart;
             if (_queue?.SaveError != null)
             {
                 // 保存失败：清单仍在内存中，提示用户并自动重试
@@ -524,7 +577,7 @@ namespace VSManager
                 tip = _queue.LoadWarning + "\r\n日志：" + TaskQueue.LogPath + "\r\n（点击此处关闭提示）";
             }
             if (_tip != tip) { _tip = tip; _tips.SetToolTip(_top, tip ?? ""); }
-            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(Dpi.S(16), Dpi.S(31), Math.Max(0, SubRight - Dpi.S(20)), Dpi.S(16)), subColor,
+            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(Dpi.S(16), Dpi.S(34), Math.Max(0, SubRight - Dpi.S(20)), Dpi.S(16)), subColor,
                 TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
             using (var pen = new Pen(Theme.Divider)) g.DrawLine(pen, 0, _top.Height - 1, _top.Width, _top.Height - 1);
         }
@@ -628,6 +681,7 @@ namespace VSManager
             string body = OneLine(t.Text);
             string tail = t.Status == QueueStatus.Done && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
                 : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error)
+                : QueueStatus.Active(t.Status) ? (t.ManualChatWaitReason ?? EligibilityText(t))
                 : t.Status == QueueStatus.WaitingVs ? "⏳ 「" + (t.Target ?? t.VsName) + "」打开后自动推送 / pushed once it opens" : null;
             if (!string.IsNullOrEmpty(t.PredecessorNotice)) tail = t.PredecessorNotice + (tail == null ? "" : " · " + tail);
             if (IsResentHidden(t))
@@ -648,7 +702,9 @@ namespace VSManager
             switch (t.Status)
             {
                 case QueueStatus.Waiting:
-                    text = TaskStateMachine.StatusText(t, DateTime.Now, _queue.Items, _queue.ReleaseLevel); fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
+                    text = t.ManualChatWaitReason == null ? TaskStateMachine.StatusText(t, DateTime.Now, _queue.Items, _queue.ReleaseLevel)
+                        : "等待对话 / Wait chat";
+                    fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; break;
                 case QueueStatus.WaitingVs:
                     text = "待打开 VS"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; break;
                 case QueueStatus.Sending:

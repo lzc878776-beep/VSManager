@@ -14,6 +14,70 @@ namespace VSManager.Tests
     [TestClass]
     public class MenuStyleTests
     {
+        private static readonly string[] DisplayOrderPrefix =
+        {
+            "显示排序（与执行隔离）/ Display ordering (separate from execution)",
+            TaskDisplayOrder.DisplayOnly,
+            "实际执行：编号及前序规则，不随拖拽改变 / Execution: IDs and predecessors; unaffected by dragging",
+            "条目：手动显示顺序 / Entries: manual display order",
+            "条目：默认显示顺序 / Entries: default display order",
+            "分组：手动显示顺序 / Groups: manual display order",
+            "分组：执行中优先、最近活动 / Groups: running first, latest activity",
+            "分组：按 VS 编号 / Groups: by VS number",
+            "清除全部手动显示顺序 / Reset all manual display ordering",
+            "切换为平铺列表 / Switch to flat list"
+        };
+
+        [TestMethod]
+        public void TaskHeader_ManualStartIsVisible_AndButtonsDoNotOverlapHistory()
+        {
+            RunSta(() =>
+            {
+                using (var data = new TempDataFolder())
+                using (var panel = new TaskPanel())
+                {
+                    var queue = NewQueue();
+                    var done = queue.Add("A", "A", "done", "AI");
+                    done.Status = QueueStatus.Done;
+                    done.Finished = DateTime.Now.AddMinutes(-1);
+                    panel.Bind(queue, clearedAt: () => DateTime.Now);
+                    panel.SetCollapsed(false);
+                    panel.PerformLayout();
+                    var top = panel.Controls.OfType<Panel>().Single();
+                    var buttons = top.Controls.OfType<FlatButton>().Where(b => b.Visible).ToArray();
+                    var start = buttons.Single(b => b.Text == "开始流程 / Start");
+                    Assert.IsTrue(start.Enabled);
+                    Assert.IsTrue(buttons.Any(b => b.Text == "历史"));
+                    Assert.IsTrue(start.Width >= Dpi.S(120));
+                    foreach (var button in buttons)
+                    {
+                        Assert.IsTrue(top.ClientRectangle.Contains(button.Bounds), button.Text);
+                        foreach (var other in buttons.Where(b => b != button))
+                            Assert.IsFalse(button.Bounds.IntersectsWith(other.Bounds), button.Text + " / " + other.Text);
+                    }
+                    int clicks = 0;
+                    panel.ActionRequested += (task, action) =>
+                    {
+                        Assert.IsNull(task);
+                        Assert.AreEqual("start", action);
+                        clicks++;
+                        panel.SetWorkflowStarted(true);
+                    };
+                    typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(start, new object[] { EventArgs.Empty });
+                    Assert.AreEqual(1, clicks);
+                    Assert.IsFalse(start.Enabled);
+                    Assert.AreEqual("已启动 / Started", start.Text);
+                    start.PerformClick();
+                    Assert.AreEqual(1, clicks);
+                    panel.SetCollapsed(true);
+                    Assert.IsFalse(start.Visible);
+                    panel.SetCollapsed(false);
+                    Assert.IsTrue(start.Visible);
+                    Assert.IsFalse(start.Enabled);
+                }
+            });
+        }
+
         [TestMethod]
         public void Headings_FollowVisibilityAfterOpeningHandlers_WithoutEmptyGroups()
         {
@@ -164,7 +228,8 @@ namespace VSManager.Tests
                         "任务操作与历史 / Tasks and history", "立即尝试发布", "重新排队", "补充信息后重试… / Retry with info…", "放行后续任务 / Release successors", cancelText,
                         "复制任务内容", "从清单中删除", "清除已完成（仅界面）", "显示已清除的历史",
                         "撤销清除（恢复显示全部历史）", "VS 操作 / Visual Studio", "查看该 VS 的对话"
-                    }, AvailableText(menu));
+                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
+                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs, Find(menu, "立即尝试发布").Enabled);
                     Assert.AreEqual(status == QueueStatus.Failed || status == QueueStatus.Cancelled, Find(menu, "重新排队").Enabled);
                     Assert.AreEqual(status == QueueStatus.Failed, Find(menu, "补充信息后重试… / Retry with info…").Enabled);
@@ -317,7 +382,8 @@ namespace VSManager.Tests
                         "任务操作与历史 / Tasks and history", "复制提问与回答", "从清单中移除", "清除已完成（仅界面）",
                         "显示已清除的历史", "撤销清除（恢复显示全部历史）", "AI 对话 / AI chat", "■ 停止生成",
                         "VS 操作 / Visual Studio", "打开该 VS 并定位对话"
-                    }, AvailableText(menu));
+                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
+                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
                     string requested = null;
                     panel.ExternalActionRequested += (c, action) => { Assert.AreSame(chat, c); requested = action; };
                     Find(menu, "■ 停止生成").PerformClick();
