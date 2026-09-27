@@ -90,87 +90,21 @@ namespace VSManager
         /// </summary>
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
-            + (string.IsNullOrEmpty(t.PriorFailure) ? ""
-                : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
-            + (string.IsNullOrEmpty(t.Supplement) ? ""
-                : "【补充信息】" + t.Supplement + " 请结合补充信息继续完成本任务。 ")
-            + FullRules(t);
+            + "任务队列回执（仅用于确认本次结果）：只有本任务全部成功完成，才在最终回复最后单独一行输出 " + SuccessReceipt(t)
+            + "；遇到错误、未完成、需要用户处理或无法确认成功时，说明原因并在最后单独一行输出 " + FailureReceipt(t)
+            + "。不要在过程消息中输出回执。";
 
-        /// <summary>每个任务最多插入补充信息重试的次数。/ Maximum retries with supplementary info per task.</summary>
-        public const int MaxSupplements = 3;
-
-        private static string FullRules(QueuedTask t) =>
-            "任务队列回执（仅用于确认本次结果，四选一，在最终回复最后单独一行输出）：本任务要求的内容已完成时输出 " + SuccessReceipt(t)
-            + "；功能已实现且构建 / 测试通过、仅尚未在运行中的程序里实际验证时，列出未验证项后输出 " + UnverifiedReceipt(t)
-            + "；改动已完成，但需要用户手动测试、运行或确认（你无法自行验证）时，列出需要用户验证的内容后输出 " + NeedsUserReceipt(t)
-            + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，说明失败原因、已完成的部分与建议的下一步后输出 " + FailureReceipt(t)
-            + "。与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执。";
-
-        public static bool TryReadSuccess(QueuedTask t, string answer, out string result) =>
-            ReadReceipt(t, answer, out result) == TaskReceipt.Success;
-
-        /// <summary>
-        /// 读取本次回执：回执须在最后单独一行且属于当前尝试；<paramref name="result"/> 为去掉回执后的正文（无回执时为原文）。
-        /// Reads this attempt's receipt: it must be alone on the last line and match the current attempt; <paramref name="result"/>
-        /// is the text without the receipt (the original text when there is none).
-        /// </summary>
-        public static TaskReceipt ReadReceipt(QueuedTask t, string answer, out string result)
+        public static bool TryReadSuccess(QueuedTask t, string answer, out string result)
         {
             result = answer?.Trim();
-            if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return TaskReceipt.None;
-            string text = result;
-            bool EndsWith(string receipt, out string body)
-            {
-                body = null;
-                if (!text.EndsWith(receipt, StringComparison.Ordinal)) return false;
-                int start = text.Length - receipt.Length;
-                if (start > 0 && text[start - 1] != '\n') return false;
-                body = text.Substring(0, start).TrimEnd();
-                return true;
-            }
-            if (EndsWith(FailureReceipt(t), out string failed))
-            {
-                // 反馈说明已实现、仅未实际运行验证时按未验证处理 / Treat as unverified when the feedback says only runtime verification is missing
-                result = failed;
-                return TaskReplyVerdict.OnlyRuntimeUnverified(failed) ? TaskReceipt.Unverified : TaskReceipt.Failed;
-            }
-            // 另一种回执也出现在正文中时无法判定 / Ambiguous when another receipt also appears in the text
-            if (text.Contains(FailureReceipt(t))) return TaskReceipt.None;
-            string[] positive = { SuccessReceipt(t), NeedsUserReceipt(t), UnverifiedReceipt(t) };
-            bool Only(string receipt, out string body)
-            {
-                if (!EndsWith(receipt, out body)) return false;
-                string b = body;
-                return !positive.Any(p => p != receipt && b.Contains(p));
-            }
-            if (Only(UnverifiedReceipt(t), out string unverified))
-            {
-                result = unverified.Length == 0 ? "功能已实现，尚未实际验证" : unverified;
-                return TaskReceipt.Unverified;
-            }
-            if (Only(NeedsUserReceipt(t), out string needs))
-            {
-                result = needs.Length == 0 ? "改动已完成，待用户验证" : needs;
-                return TaskReceipt.NeedsUser;
-            }
-            if (Only(SuccessReceipt(t), out string ok))
-            {
-                result = ok.Length == 0 ? "任务已成功完成" : ok;
-                return TaskReceipt.Success;
-            }
-            return TaskReceipt.None;
-        }
-
-        /// <summary>把回执归并为成功 / 未验证 / 失败三类。/ Collapses the receipt into succeeded / unverified / failed.</summary>
-        public static TaskReplyOutcome ReadOutcome(QueuedTask t, string answer, out string result)
-        {
-            switch (ReadReceipt(t, answer, out result))
-            {
-                case TaskReceipt.Success:
-                case TaskReceipt.NeedsUser: return TaskReplyOutcome.Succeeded;
-                case TaskReceipt.Unverified: return TaskReplyOutcome.Unverified;
-                default: return TaskReplyOutcome.Failed;
-            }
+            if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return false;
+            string receipt = SuccessReceipt(t);
+            if (!result.EndsWith(receipt, StringComparison.Ordinal) || result.Contains(FailureReceipt(t))) return false;
+            int receiptStart = result.Length - receipt.Length;
+            if (receiptStart > 0 && result[receiptStart - 1] != '\n') return false;
+            result = result.Substring(0, receiptStart).TrimEnd();
+            if (result.Length == 0) result = "任务已成功完成";
+            return true;
         }
 
         /// <summary>→ 失败。/ → failed.</summary>
@@ -184,18 +118,12 @@ namespace VSManager
             t.Released = false;
         }
 
-        /// <summary>
-        /// 执行中 → 已完成（<paramref name="needsUser"/> 表示待用户验证），或已实现但未实际运行验证时 → 未验证。
-        /// running → done (<paramref name="needsUser"/> marks awaiting user verification), or → unverified when implemented but not verified at runtime.
-        /// </summary>
-        public static bool Complete(QueuedTask t, DateTime now, bool needsUser = false, bool unverified = false)
+        /// <summary>执行中 → 已完成。/ running → done.</summary>
+        public static bool Complete(QueuedTask t, DateTime now)
         {
             if (t == null || t.Status != QueueStatus.Running) return false;
             t.Status = unverified ? QueueStatus.Unverified : QueueStatus.Done;
             t.Finished = now;
-            t.NeedsUser = needsUser && !unverified;
-            t.FailureKind = null;
-            t.Released = false;
             return true;
         }
 
@@ -204,6 +132,7 @@ namespace VSManager
         {
             if (t == null || t.Status != QueueStatus.Unverified) return false;
             t.Status = QueueStatus.Done;
+            t.Finished = now;
             return true;
         }
 
@@ -311,8 +240,8 @@ namespace VSManager
         public static QueuedTask BlockingTask(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors = true) =>
             BlockingTasks(items, task, ReleaseLevels.FromSkipFailed(skipFailedPredecessors)).FirstOrDefault();
 
-/// <summary>
-/// 按放行等级
+        /// <summary>
+        /// 按放行等级找出阻塞者：发送中 / 执行中始终阻塞；更早的活动任务阻塞；更早的失败 / 待验证按等级阻塞，已放行或已被取代的不阻塞。
         /// Finds blockers by release level: sending / running always block; earlier active tasks block; earlier failed /
         /// awaiting-verification tasks block per level, unless released or superseded.
         /// </summary>
@@ -322,16 +251,7 @@ namespace VSManager
         internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors) =>
             BlockingTasks(items, task, ReleaseLevels.FromSkipFailed(skipFailedPredecessors));
 
-        /// <summary>普通任务按解决方案保守阻塞提及任务；两个显式任务按实例区分。/ Legacy solution tasks conservatively block mentions; two explicit tasks distinguish instances.</summary>
-        internal static bool SharesDispatchTarget(QueuedTask a, QueuedTask b)
-        {
-            if (a.HasExplicitTarget == b.HasExplicitTarget) return ResentTaskMatcher.SameTarget(a, b);
-            return !string.IsNullOrEmpty(a.VsKey) && string.Equals(a.VsKey, b.VsKey, StringComparison.OrdinalIgnoreCase)
-                || a.HasExplicitTarget && SolutionMatcher.SamePath(a.ExplicitSolutionPath, b.VsKey)
-                || b.HasExplicitTarget && SolutionMatcher.SamePath(b.ExplicitSolutionPath, a.VsKey);
-        }
-
-        internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, ReleaseLevel level)
+        internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors)
         {
             var all = items.ToList();
             return all.Where(x => x != task &&
@@ -407,9 +327,8 @@ namespace VSManager
                 case QueueStatus.WaitingVs: return "等待目标 VS（等待打开「" + (t.Target ?? t.VsName) + "」）";
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中（" + TextUtil.FormatDuration(now - (t.Started ?? now)) + "）";
-case QueueStatus.Done: return (t.NeedsUser ? "已完成（待用户验证）" : "已完成") + (t.Released ? "·已放行" : "");
-case QueueStatus.Unverified: return "未验证";
-case QueueStatus.Failed: return t.Released ? "失败·已放行" : "失败";
+                case QueueStatus.Done: return "已完成";
+                case QueueStatus.Failed: return "失败";
                 default: return "已取消";
             }
         }
