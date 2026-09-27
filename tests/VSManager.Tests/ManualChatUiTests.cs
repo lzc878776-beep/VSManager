@@ -15,9 +15,45 @@ namespace VSManager.Tests
     [TestClass]
     public class ManualChatUiTests
     {
+        private TempDataFolder _data;
+        [TestInitialize] public void Initialize() => _data = new TempDataFolder();
+        [TestCleanup] public void Cleanup() => _data.Dispose();
         private sealed class QuietForm : Form
         {
             protected override bool ShowWithoutActivation => true;
+        }
+
+        [DataTestMethod]
+        [DataRow(QueueStatus.Waiting, "dispatch")]
+        [DataRow(QueueStatus.WaitingVs, "dispatch")]
+        [DataRow(QueueStatus.Failed, "retry")]
+        [DataRow(QueueStatus.Cancelled, "retry")]
+        [DataRow(QueueStatus.Running, null)]
+        [DataRow(QueueStatus.Sending, null)]
+        [DataRow(QueueStatus.Done, null)]
+        public void TaskMenu_ExplicitRecoveryAvailableWithoutGlobalStart(string status, string expected)
+        {
+            RunSta(() =>
+            {
+                using (var panel = new TaskPanel { CanRunTask = _ => false })
+                {
+                    var task = new QueuedTask { Id = 1, Status = status };
+                    var list = (ListBox)typeof(TaskPanel).GetField("_list", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(panel);
+                    list.Items.Add(task); list.SelectedItem = task;
+                    var menu = list.ContextMenuStrip;
+                    typeof(ToolStripDropDown).GetMethod("OnOpening", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(menu, new object[] { new System.ComponentModel.CancelEventArgs() });
+                    var dispatch = menu.Items.Cast<ToolStripItem>().Single(i => i.Text == "重新检查并推送 / Recheck and send");
+                    var retry = menu.Items.Cast<ToolStripItem>().Single(i => i.Text == "手动重新排队 / Requeue manually");
+                    Assert.AreEqual(expected == "dispatch", dispatch.Enabled);
+                    Assert.AreEqual(expected == "retry", retry.Enabled);
+                    Assert.IsFalse(panel.IsTaskEligible(task));
+                    string action = null;
+                    panel.ActionRequested += (selected, value) => { Assert.AreSame(task, selected); action = value; };
+                    if (expected != null) (expected == "dispatch" ? dispatch : retry).PerformClick();
+                    Assert.AreEqual(expected, action);
+                }
+            });
         }
 
         [TestMethod]
@@ -43,7 +79,11 @@ namespace VSManager.Tests
         [DataTestMethod]
         [DataRow("草稿 / Draft", false, ManualChatObservation.Draft)]
         [DataRow("", false, ManualChatObservation.Idle)]
-        [DataRow(" ", false, ManualChatObservation.Draft)]
+        [DataRow(" ", false, ManualChatObservation.Idle)]
+        [DataRow("\u200B\uFEFF\u2060", false, ManualChatObservation.Idle)]
+        [DataRow("\u00A0\u3000", false, ManualChatObservation.Idle)]
+        [DataRow("，", false, ManualChatObservation.Draft)]
+        [DataRow("\u0301", false, ManualChatObservation.Draft)]
         [DataRow("", true, ManualChatObservation.Generating)]
         public void SyntheticUi_InputAndStopAreReadOnly(string draft, bool stopVisible, ManualChatObservation expected)
         {
@@ -78,6 +118,9 @@ namespace VSManager.Tests
                                 try
                                 {
                                     var result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false });
+                                    Assert.AreEqual(expected != ManualChatObservation.Idle, ManualChatProtection.IsWait(result));
+                                    settings.WaitForManualChat = false;
+                                    result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false });
                                     Assert.AreEqual(expected != ManualChatObservation.Idle, ManualChatProtection.IsWait(result));
                                     callback.SetValue(null, (Func<bool>)(() => false));
                                     Assert.IsTrue(ManualChatProtection.IsWait((string)guard.Invoke(chat, new object[] { target, pane, edit, false })));
@@ -179,6 +222,36 @@ namespace VSManager.Tests
                     Assert.IsNull(guard.Invoke(chat, new object[] { target, pane, edit, "queued prompt", owned }));
                 }
                 finally { callback.SetValue(null, null); touched.SetValue(null, false); }
+            });
+        }
+
+        [TestMethod]
+        public void SyntheticUi_AddReferenceButtonAndActiveDocumentAreNotDrafts()
+        {
+            RunAttachmentUi((window, input, list, target, pane, edit) =>
+            {
+                var read = typeof(CopilotChat).GetMethod("TryAttachmentIds", BindingFlags.Static | BindingFlags.NonPublic);
+                int Count()
+                {
+                    object[] args = { pane, null };
+                    Assert.IsTrue((bool)read.Invoke(null, args));
+                    return ((HashSet<string>)args[1]).Count;
+                }
+                window.Dispatcher.Invoke(() =>
+                {
+                    input.Text = "";
+                    var add = new System.Windows.Controls.Button { Content = "添加引用" };
+                    AutomationProperties.SetAutomationId(add, "PART_AttachmentsButton");
+                    var host = new System.Windows.Controls.StackPanel();
+                    host.Children.Add(add);
+                    list.Items.Add(host);
+                    list.Items.Add("活动文档");
+                    list.Items.Add("Active document");
+                    window.UpdateLayout();
+                });
+                Assert.AreEqual(0, Count());
+                window.Dispatcher.Invoke(() => { list.Items.Add("截图.png"); window.UpdateLayout(); });
+                Assert.AreEqual(1, Count());
             });
         }
 

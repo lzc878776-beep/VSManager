@@ -15,6 +15,8 @@ namespace VSManager
         public Exception FallbackError;
         /// <summary>是否通过「直接覆盖」完成了写入。/ Whether the write succeeded through the direct-overwrite fallback.</summary>
         public bool FallbackSucceeded;
+        /// <summary>提交后的临时文件清理异常，不影响保存成功。/ Post-commit temporary-file cleanup error; does not invalidate the save.</summary>
+        public Exception CleanupError;
 
         public bool Ok => Error == null || FallbackSucceeded;
     }
@@ -59,11 +61,21 @@ namespace VSManager
                     {
                         if (backupBeforeOverwrite && fs.FileExists(path)) fs.Copy(path, bak, true);
                         fs.Copy(tmp, path, true);
-                        fs.Delete(tmp);
+                        // 覆盖返回即已提交；后续清理不能使调用方拒绝已落盘的任务。/ A returned copy is committed; cleanup must not reject a persisted task.
                         result.FallbackSucceeded = true;
                     }
                 }
                 catch (Exception ex2) { result.FallbackError = ex2; }
+            }
+            if (result.FallbackSucceeded)
+            {
+                AppLog.Error(AppLog.TasksFile, Path.GetFileName(path) + " 原子替换失败，回退覆盖已提交 / Atomic replacement failed; fallback overwrite committed", result.Error);
+                try { fs.Delete(tmp); }
+                catch (Exception ex)
+                {
+                    result.CleanupError = ex;
+                    AppLog.Error(AppLog.TasksFile, Path.GetFileName(path) + " 已保存，临时文件清理失败 / Saved; temporary-file cleanup failed", ex);
+                }
             }
             return result;
         }

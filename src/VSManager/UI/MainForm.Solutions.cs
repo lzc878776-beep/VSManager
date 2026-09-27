@@ -94,6 +94,7 @@ namespace VSManager
 
         VsInstance ITaskDispatchHost.FindTargetVs(QueuedTask t)
         {
+            if (t.HasExplicitTarget) return ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t);
             if (t.Worktree != null)
                 return _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath));
             var v = FindVs(t.VsKey) ?? _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.VsKey));
@@ -111,7 +112,7 @@ namespace VSManager
         private void AnnounceTask(QueuedTask t, string zh, string en)
         {
             // 自动完成复用原有提示音、弹窗与摘要播报；其他状态继续使用任务提示。/ Automatic completion reuses the existing sound, popup and summary voice; other states use task notices.
-            var v = t.Status == QueueStatus.Done && !t.IsWorktreeMerge ? ((ITaskDispatchHost)this).FindTargetVs(t) : null;
+            var v = QueueStatus.Delivered(t.Status) && !t.IsWorktreeMerge ? ((ITaskDispatchHost)this).FindTargetVs(t) : null;
             if (v != null)
             {
                 NotifyCopilotCompleted(v, (t.Finished ?? DateTime.Now) - (t.Started ?? t.Created), t, zh, en);

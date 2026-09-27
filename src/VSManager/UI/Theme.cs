@@ -8,29 +8,35 @@ namespace VSManager
 {
     public static class Theme
     {
-        public static readonly Color Background = Color.FromArgb(12, 12, 15);
-        public static readonly Color Sidebar = Color.FromArgb(18, 18, 22);
-        public static readonly Color Surface = Color.FromArgb(23, 23, 28);
-        public static readonly Color SurfaceAlt = Color.FromArgb(29, 29, 35);
-        public static readonly Color Elevated = Color.FromArgb(36, 36, 43);
-        public static readonly Color Border = Color.FromArgb(46, 46, 56);
-        public static readonly Color Divider = Color.FromArgb(32, 32, 39);
+        public static readonly Color Background = Color.FromArgb(34, 35, 40);
+        public static readonly Color Sidebar = Color.FromArgb(40, 41, 47);
+        public static readonly Color Surface = Color.FromArgb(47, 48, 55);
+        public static readonly Color SurfaceAlt = Color.FromArgb(53, 54, 61);
+        public static readonly Color Elevated = Color.FromArgb(60, 61, 69);
+        public static readonly Color Border = Color.FromArgb(72, 73, 83);
+        public static readonly Color Divider = Color.FromArgb(54, 55, 63);
+        /// <summary>对话气泡与输入框：比界面更深，形成对比。/ Chat bubbles and inputs: darker than the UI for contrast.</summary>
+        public static readonly Color Bubble = Color.FromArgb(22, 22, 26);
+        public static readonly Color BubbleUser = Color.FromArgb(28, 24, 40);
         public static readonly Color Text = Color.FromArgb(232, 232, 238);
-        public static readonly Color TextSecondary = Color.FromArgb(163, 163, 177);
-        public static readonly Color TextMuted = Color.FromArgb(110, 110, 125);
+        public static readonly Color TextSecondary = Color.FromArgb(178, 178, 190);
+        public static readonly Color TextMuted = Color.FromArgb(126, 126, 138);
 
         public static readonly Color Accent = Color.FromArgb(139, 92, 246);
         public static readonly Color AccentHover = Color.FromArgb(157, 116, 250);
         public static readonly Color AccentPressed = Color.FromArgb(118, 72, 226);
-        public static readonly Color AccentLight = Color.FromArgb(40, 32, 66);
+        public static readonly Color AccentLight = Color.FromArgb(62, 52, 96);
         public static readonly Color AccentBorder = Color.FromArgb(92, 68, 160);
         public static readonly Color AccentText = Color.FromArgb(198, 180, 255);
 
-        public static readonly Color HeaderStart = Color.FromArgb(15, 15, 19);
-        public static readonly Color HeaderEnd = Color.FromArgb(30, 22, 52);
+        public static readonly Color HeaderStart = Color.FromArgb(38, 39, 45);
+        public static readonly Color HeaderEnd = Color.FromArgb(52, 44, 76);
 
-        public static readonly Color RowHover = Color.FromArgb(28, 28, 35);
-        public static readonly Color RowSelected = Color.FromArgb(37, 31, 60);
+        public static readonly Color SectionHeader = Color.FromArgb(49, 47, 60);
+        public static readonly Color NotesAccent = Color.FromArgb(45, 212, 191);
+
+        public static readonly Color RowHover = Color.FromArgb(52, 53, 61);
+        public static readonly Color RowSelected = Color.FromArgb(62, 54, 90);
 
         public static readonly Color BusyFg = Color.FromArgb(252, 196, 72);
         public static readonly Color BusyBg = Color.FromArgb(56, 42, 12);
@@ -39,7 +45,7 @@ namespace VSManager
         public static readonly Color IdleBg = Color.FromArgb(13, 46, 35);
         public static readonly Color IdleDot = Color.FromArgb(16, 185, 129);
         public static readonly Color NoneFg = Color.FromArgb(150, 150, 164);
-        public static readonly Color NoneBg = Color.FromArgb(36, 36, 44);
+        public static readonly Color NoneBg = Color.FromArgb(58, 59, 68);
         public static readonly Color NoneDot = Color.FromArgb(96, 96, 110);
         public static readonly Color Danger = Color.FromArgb(248, 113, 113);
         public static readonly Color Success = Color.FromArgb(52, 211, 153);
@@ -123,15 +129,49 @@ namespace VSManager
 
             protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
             {
-                Color color = e.Item is MenuGroupHeader ? TextSecondary : e.Item.Enabled ? e.TextColor : TextMuted;
-                TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, e.TextRectangle, color, e.TextFormat);
+                bool shortcut = e.Item is ToolStripMenuItem menuItem && !string.IsNullOrEmpty(e.Text) &&
+                    (e.Text == menuItem.ShortcutKeyDisplayString || (menuItem.ShortcutKeys != Keys.None && e.Text != menuItem.Text));
+                Color color = e.Item is MenuGroupHeader ? TextSecondary : !e.Item.Enabled ? TextMuted : shortcut ? TextSecondary : e.TextColor;
+                var font = shortcut ? Small : e.TextFont;
+                TextRenderer.DrawText(e.Graphics, e.Text, font, e.TextRectangle, color, e.TextFormat);
+            }
+
+            protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+            {
+                if (!e.Item.Selected || !e.Item.Enabled || e.Item is MenuGroupHeader) return;
+                var g = e.Graphics;
+                var old = g.SmoothingMode;
+                g.SmoothingMode = SmoothingMode.AntiAlias;
+                var r = new RectangleF(S(3), 1, e.Item.Width - S(6), e.Item.Height - 2);
+                FillRound(g, MenuHover, r, S(5));
+                g.SmoothingMode = old;
+            }
+
+            protected override void OnRenderLabelBackground(ToolStripItemRenderEventArgs e)
+            {
+                if (!(e.Item is MenuGroupHeader) || e.Item.Owner == null || e.Item.Owner.Items.IndexOf(e.Item) <= 0) return;
+                using (var pen = new Pen(Divider)) e.Graphics.DrawLine(pen, S(8), 0, e.Item.Width - S(8), 0);
+            }
+
+            protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+            {
+                int y = e.Item.Height / 2;
+                using (var pen = new Pen(Divider)) e.Graphics.DrawLine(pen, S(8), y, e.Item.Width - S(8), y);
+            }
+
+            protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+            {
+                e.ArrowColor = e.Item.Enabled ? TextSecondary : TextMuted;
+                base.OnRenderArrow(e);
             }
         }
 
+        private static readonly Color MenuHover = Color.FromArgb(72, 62, 108);
+
         private class MenuColors : ProfessionalColorTable
         {
-            public override Color MenuItemSelected => Color.FromArgb(48, 40, 78);
-            public override Color MenuItemBorder => AccentBorder;
+            public override Color MenuItemSelected => MenuHover;
+            public override Color MenuItemBorder => Color.Transparent;
             public override Color MenuBorder => Border;
             public override Color ToolStripDropDownBackground => Elevated;
             public override Color ImageMarginGradientBegin => Elevated;
@@ -281,6 +321,8 @@ namespace VSManager
         /// <summary>无边框透明背景，仅悬停时显示底色。</summary>
         public bool Ghost { get; set; }
         public Color? Tint { get; set; }
+        /// <summary>禁用时的状态色（如“已启动”），为空则使用弱化色。/ Status color while disabled (e.g. "Started"); muted when null.</summary>
+        public Color? DisabledTint { get; set; }
 
         public FlatButton()
         {
@@ -310,8 +352,9 @@ namespace VSManager
             Color fg;
             if (!Enabled)
             {
-                if (!Ghost) Theme.FillRound(g, Color.FromArgb(26, 26, 32), r, radius);
-                fg = Color.FromArgb(78, 78, 90);
+                if (!Ghost) Theme.FillRound(g, Theme.Surface, r, radius);
+                if (DisabledTint is Color tint) Theme.DrawRound(g, Color.FromArgb(110, tint), r, radius);
+                fg = DisabledTint ?? Theme.TextMuted;
             }
             else if (Primary)
             {
@@ -325,7 +368,7 @@ namespace VSManager
             }
             else
             {
-                Theme.FillRound(g, _down ? Theme.AccentLight : _hover ? Color.FromArgb(44, 44, 53) : Theme.Elevated, r, radius);
+                Theme.FillRound(g, _down ? Theme.AccentLight : _hover ? Color.FromArgb(70, 71, 80) : Theme.Elevated, r, radius);
                 Theme.DrawRound(g, _hover ? Theme.AccentBorder : Theme.Border, r, radius);
                 fg = Tint ?? (_hover ? Color.White : Theme.Text);
             }

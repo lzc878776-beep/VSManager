@@ -13,6 +13,8 @@ namespace VSManager
         Success,
         /// <summary>改动已完成，但需要用户测试或确认（VS 无法自行验证）。/ Changes are done but need user testing or confirmation.</summary>
         NeedsUser,
+        /// <summary>功能已实现且构建 / 测试通过，仅未在运行中的程序里实际验证。/ Implemented with build / tests passing; only not verified in the running app.</summary>
+        Unverified,
         /// <summary>本任务本身未能完成。/ The task itself could not be completed.</summary>
         Failed
     }

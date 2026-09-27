@@ -133,7 +133,6 @@ namespace VSManager.Tests
                 f.Host.AnswerReader = t => { reads++; return Task.FromResult("answer"); };
                 await f.Dispatcher.PumpAsync();
                 await f.Dispatcher.FinishAsync(restored, f.Host.Vs["A"], null);
-                f.Dispatcher.DispatchNow(restored);
                 f.Queue.Commit();
                 Assert.IsFalse(f.Dispatcher.CanRun(restored));
                 Assert.AreEqual(status, restored.Status);
@@ -272,6 +271,27 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task AgentPanelMention_StartsAutomatically_ChatMentionStillAwaitsStart()
+        {
+            using (var f = new Fixture())
+            {
+                f.Host.AddVs("A"); f.Host.AddVs("B");
+                var chat = f.Add("A", "用户", accept: false);
+                f.Dispatcher.AcceptQueued(chat, "用户");
+                Assert.IsFalse(f.Dispatcher.CanRun(chat));
+                var agent = f.Add("B", "用户", accept: false);
+                f.Dispatcher.AcceptQueued(agent, "用户", fromAgentPanel: true);
+                Assert.IsTrue(f.Dispatcher.IsAutomatic(agent));
+                await f.Dispatcher.PumpAsync();
+                Assert.AreEqual(1, f.Host.Sent.Count);
+                f.Settings.AutoStartAiTasks = false;
+                var off = f.Add("B", "用户", accept: false);
+                f.Dispatcher.AcceptQueued(off, "用户", fromAgentPanel: true);
+                Assert.IsFalse(f.Dispatcher.CanRun(off));
+            }
+        }
+
+        [TestMethod]
         public async Task SaveFailureNeverAuthorizes_EvenAfterBackgroundSaveRecovery()
         {
             using (var f = new Fixture())
@@ -376,12 +396,118 @@ namespace VSManager.Tests
                 var ai = f.Add();
                 await f.Dispatcher.PumpAsync();
                 await f.Dispatcher.FinishAsync(old, f.Host.Vs["A"], null);
-                f.Dispatcher.Retry(old);
                 Assert.IsFalse(f.Dispatcher.CanRun(old));
                 Assert.AreEqual(state, old.Status);
                 Assert.AreEqual(QueueStatus.Waiting, ai.Status);
                 Assert.AreEqual(0, f.Git.Integrations);
                 Assert.AreEqual(0, f.Host.Sent.Count);
+            }
+        }
+
+        [DataTestMethod]
+        [DataRow(true, false, false)]
+        [DataRow(true, true, false)]
+        [DataRow(true, false, true)]
+        [DataRow(true, true, true)]
+        [DataRow(false, false, false)]
+        [DataRow(false, true, false)]
+        public async Task ManualRecheck_PreservesOnlyExistingAutomaticMergeInheritance(bool automatic, bool retry, bool all)
+        {
+            using (var f = new Fixture())
+            {
+                f.Lane();
+                var manual = f.Add("B", "用户");
+                var oldMerge = f.Add("C", "用户");
+                oldMerge.IsWorktreeMerge = true;
+                oldMerge.Worktree = new WorktreeInfo { Root = f.Data.File("old-lane"), MainRoot = f.Data.File("old-main") };
+                oldMerge.WorktreeBatch = 1;
+                f.Settings.AutoStartAllTasks = all;
+                var tasks = Enumerable.Range(0, 4).Select(_ => f.Add()).ToArray();
+                var last = f.Add(source: automatic ? "AI" : "用户");
+                await f.Dispatcher.PumpAsync();
+                for (int i = 0; i < tasks.Length; i++)
+                {
+                    if (i == tasks.Length - 1)
+                        f.Host.ManualReader = _ => Task.FromResult(ManualChatObservation.Draft);
+                    await f.Dispatcher.FinishAsync(tasks[i], f.Host.Vs["A"], null);
+                }
+                Assert.AreEqual(QueueStatus.Waiting, last.Status);
+                if (automatic) Assert.IsNotNull(last.ManualChatWaitReason);
+                if (retry)
+                {
+                    TaskStateMachine.Fail(last, "测试失败 / Test failure", f.Clock.Now);
+                    f.Queue.Commit();
+                    f.Dispatcher.Retry(last);
+                }
+                else f.Dispatcher.DispatchNow(last);
+                f.Dispatcher.DispatchNow(last);
+                await f.Dispatcher.PumpAsync();
+                Assert.IsFalse(f.Dispatcher.IsStarted);
+                Assert.AreEqual(automatic, f.Dispatcher.IsAutomatic(last));
+                Assert.IsTrue(f.Dispatcher.CanRun(last));
+                Assert.AreEqual(QueueStatus.Waiting, last.Status);
+                Assert.AreEqual(4, f.Host.Sent.Count);
+                Assert.AreEqual(automatic ? 1 : 0, f.Host.Announced.Count(s => s.StartsWith($"任务 {last.Id} 已启用")));
+                f.Host.ManualReader = _ => Task.FromResult(ManualChatObservation.Idle);
+                await f.Dispatcher.PumpAsync();
+                Assert.AreEqual(QueueStatus.Running, last.Status);
+                f.Host.Busy.Add("A");
+                await f.Dispatcher.FinishAsync(last, f.Host.Vs["A"], null);
+                await f.Dispatcher.FinishAsync(last, f.Host.Vs["A"], null);
+                var merge = f.Queue.Items.Single(t => t.IsWorktreeMerge && t != oldMerge);
+                Assert.AreEqual(QueueStatus.Done, last.Status);
+                Assert.AreEqual(automatic, f.Dispatcher.CanRun(merge));
+                Assert.AreEqual(automatic, f.Dispatcher.IsAutomatic(merge));
+                Assert.IsFalse(f.Dispatcher.CanRun(oldMerge));
+                Assert.IsFalse(f.Dispatcher.CanRun(manual));
+                Assert.IsFalse(f.Dispatcher.IsStarted);
+                Assert.AreEqual(1, f.Host.Announced.Count(s => s.StartsWith($"任务 {last.Id} 已完成")));
+                if (automatic)
+                {
+                    var notice = f.Host.NoticeBodies.Single(s => s.StartsWith($"[任务完成通知 / Task completed] 任务 #{last.Id} "));
+                    StringAssert.Contains(notice, all ? "All-tasks automatic start" : "AI automatic start");
+                    StringAssert.Contains(notice, "yielding to manual chat");
+                }
+                f.Host.Busy.Remove("A");
+                await f.Dispatcher.PumpAsync();
+                Assert.AreEqual(automatic ? QueueStatus.Done : QueueStatus.Waiting, merge.Status);
+                Assert.AreEqual(automatic ? 1 : 0, f.Git.Integrations);
+                Assert.AreEqual(5, f.Host.Sent.Count);
+            }
+        }
+
+        [DataTestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public async Task ManualOnlyRecheckCannotAuthorizeOrBypassRestoredMerge(bool retry)
+        {
+            using (var f = new Fixture())
+            {
+                var info = f.Lane();
+                f.Store.Initial.Add(new QueuedTask { Id = 1, VsKey = "A", VsName = "A", Source = "AI",
+                    Text = "旧合并 / Old integration", Status = QueueStatus.Waiting, Worktree = info,
+                    IsWorktreeMerge = true, WorktreeBatch = 1 });
+                f.Reload();
+                f.Queue.ResolveWorktree = _ => info;
+                var oldMerge = f.Queue.Find(1);
+                var selected = f.Add(source: "用户");
+                if (retry)
+                {
+                    TaskStateMachine.Fail(selected, "测试失败 / Test failure", f.Clock.Now);
+                    f.Queue.Commit();
+                    f.Dispatcher.Retry(selected);
+                }
+                else f.Dispatcher.DispatchNow(selected);
+                await f.Dispatcher.PumpAsync();
+                Assert.IsTrue(f.Dispatcher.CanRun(selected));
+                Assert.IsFalse(f.Dispatcher.IsAutomatic(selected));
+                Assert.IsFalse(f.Dispatcher.CanRun(oldMerge));
+                Assert.IsFalse(f.Dispatcher.IsStarted);
+                Assert.AreEqual(QueueStatus.Waiting, selected.Status);
+                Assert.AreEqual(QueueStatus.Waiting, oldMerge.Status);
+                Assert.AreEqual(0, f.Host.Sent.Count);
+                Assert.AreEqual(0, f.Git.Integrations);
+                StringAssert.Contains(f.Dispatcher.StartStateText(selected), "predecessor @" + oldMerge.Id);
             }
         }
 
@@ -526,7 +652,7 @@ namespace VSManager.Tests
                         StringAssert.Contains(panel.EligibilityText(manual), "manual start");
                         var button = (Control)typeof(TaskPanel).GetField("_btnStart", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(panel);
                         Assert.IsTrue(button.Enabled);
-                        Assert.AreEqual("开始流程 / Start", button.Text);
+                        Assert.AreEqual("▶ 开始流程 / Start", button.Text);
                         panel.SetWorkflowStarted(true);
                         Assert.IsFalse(button.Enabled);
                     }
@@ -669,7 +795,7 @@ namespace VSManager.Tests
             StringAssert.Contains(main, "_taskTimer.Enabled = _dispatcher.HasDispatchActivity");
             StringAssert.Contains(main, "_taskPanel.CanRunTask = _dispatcher.CanRun");
             StringAssert.Contains(main, "_taskPanel.TaskStartText = _dispatcher.StartStateText");
-            StringAssert.Contains(main, "if (queued.Status != QueueStatus.Done || automatic) return;");
+            StringAssert.Contains(main, "if (!QueueStatus.Delivered(queued.Status) || automatic) return;");
             StringAssert.Contains(main, "AnnounceCompletion(v, automaticZh, automaticEn)");
             StringAssert.Contains(parked, "NotifyCopilotCompleted(v, (t.Finished ?? DateTime.Now) - (t.Started ?? t.Created), t, zh, en)");
             StringAssert.Contains(parked, "_dispatcher.AcceptQueued(q, \"AI\")");

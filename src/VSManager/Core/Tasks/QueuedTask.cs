@@ -22,7 +22,16 @@ namespace VSManager
         /// <summary>未结束（排队 / 等待目标 VS / 发送中 / 执行中）。/ Not finished yet (waiting / waiting for VS / sending / running).</summary>
         public static bool Active(string s) => s == Waiting || s == WaitingVs || s == Sending || s == Running;
 
-        public static bool Known(string s) => Active(s) || s == Done || s == Failed || s == Cancelled;
+        /// <summary>
+        /// 未验证：功能已实现（构建 / 测试通过），仅尚未在运行中的程序里实际验证；与「已完成」「失败」并列的结束状态。
+        /// Unverified: implemented (build / tests pass) but not yet verified in the running app; a terminal status alongside done and failed.
+        /// </summary>
+        public const string Unverified = "unverified";
+
+        /// <summary>已产出结果（已完成或未验证），不阻塞后续任务。/ Produced a result (done or unverified); never blocks successors.</summary>
+        public static bool Delivered(string s) => s == Done || s == Unverified;
+
+        public static bool Known(string s) => Active(s) || s == Done || s == Unverified || s == Failed || s == Cancelled;
     }
 
     /// <summary>
@@ -36,6 +45,13 @@ namespace VSManager
         [DataMember] public int Id;
         [DataMember] public string VsKey;
         [DataMember] public string VsName;
+        // 显式提及固定进程会话与解决方案，不回退到同名实例。/ Explicit mentions pin process session and solution, never a namesake.
+        [DataMember(EmitDefaultValue = false)] public string ExplicitInstanceKey;
+        [DataMember(EmitDefaultValue = false)] public string ExplicitSolutionPath;
+        public bool HasExplicitTarget => ExplicitInstanceKey != null || ExplicitSolutionPath != null;
+        public bool MatchesExplicitTarget(VsInstance v) => v != null && !string.IsNullOrEmpty(ExplicitInstanceKey)
+            && v.InstanceKey == ExplicitInstanceKey && ExplicitSolutionPath != null
+            && string.Equals(v.SolutionPath ?? "", ExplicitSolutionPath, StringComparison.OrdinalIgnoreCase);
         [DataMember] public string Text;
         [DataMember] public string Source;
         [DataMember] public string Status;
@@ -87,6 +103,9 @@ namespace VSManager
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
+        /// <summary>本次完成的完整回复（仅内存，不写入 tasks.json）。/ Full reply of this completion (memory only, not written to tasks.json).</summary>
+        public string FullResult;
+
         /// <summary>运行期：执行中是否观察到 Copilot 忙碌。/ Runtime only: whether Copilot was seen busy while running.</summary>
         [IgnoreDataMember] public bool SawBusy;
         /// <summary>运行期：下次重试时间。/ Runtime only: next retry time.</summary>
@@ -102,6 +121,7 @@ namespace VSManager
         public QueuedTask Clone() => new QueuedTask
         {
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
+            ExplicitInstanceKey = ExplicitInstanceKey, ExplicitSolutionPath = ExplicitSolutionPath,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
             CompletionToken = CompletionToken, Worktree = Worktree?.Clone(), IsWorktreeMerge = IsWorktreeMerge,

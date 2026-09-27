@@ -68,6 +68,16 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void SaveThenLoad_KeepsUnverifiedStatus()
+        {
+            var store = new JsonTaskStore(_path);
+            Assert.IsNull(store.Save(new[] { T(3, QueueStatus.Unverified) }));
+            var loaded = store.Load(new List<string>()).Single();
+            Assert.AreEqual(QueueStatus.Unverified, loaded.Status);
+            Assert.IsNull(loaded.Error, "未验证是已知状态 / Unverified is a known status");
+        }
+
+        [TestMethod]
         public void Save_KeepsFieldNames_AndBackup()
         {
             var store = new JsonTaskStore(_path);

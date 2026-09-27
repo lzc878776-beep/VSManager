@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
@@ -75,30 +75,31 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task SendFailure_RetriesAfterDelay_ThenFailsOnThirdAttempt()
+        public async Task SendFailure_StopsOnFirstAttempt_AndNotifiesOnce()
         {
             _host.AddVs("A");
             var t = _queue.Add("A", "A", "a", "AI");
             for (int i = 0; i < 3; i++) _host.SendResults.Enqueue("发送失败：找不到输入框");
 
             await _dispatcher.PumpAsync();
-            Assert.AreEqual(QueueStatus.Waiting, t.Status);
+            Assert.AreEqual(QueueStatus.Failed, t.Status);
             Assert.AreEqual(1, t.Attempts);
-            Assert.IsTrue(_host.Status.Last().EndsWith("30 秒后重试"));
+            StringAssert.Contains(_host.Status.Last(), "Automatic retry stopped");
+            var failedAt = t.Finished;
 
             await _dispatcher.PumpAsync();
             Assert.AreEqual(1, _host.Sent.Count, "未到重试时间不发送 / not before the retry time");
 
             _clock.Advance(TimeSpan.FromSeconds(31));
             await _dispatcher.PumpAsync();
-            Assert.AreEqual(2, t.Attempts);
+            Assert.AreEqual(1, t.Attempts);
             _clock.Advance(TimeSpan.FromSeconds(31));
             await _dispatcher.PumpAsync();
 
-            Assert.AreEqual(3, _host.Sent.Count);
+            Assert.AreEqual(1, _host.Sent.Count);
             Assert.AreEqual(QueueStatus.Failed, t.Status);
             Assert.AreEqual("发送失败：找不到输入框", t.Error);
-            Assert.AreEqual(_clock.Now, t.Finished);
+            Assert.AreEqual(failedAt, t.Finished);
             Assert.AreEqual(1, _host.Notices.Count);
             StringAssert.Contains(_host.Notices[0], "任务 #1 失败");
             Assert.AreEqual(false, _host.LastActivity);
@@ -225,6 +226,98 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task Finish_TidiesTargetAfterSuccess_BeforeDispatchingNext()
+        {
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            var tidy = new TaskCompletionSource<bool>();
+            var tidied = new System.Collections.Generic.List<int>();
+            _host.AfterCompleted = (t, target) => { Assert.AreSame(v, target); tidied.Add(t.Id); return tidy.Task; };
+            var finishing = _dispatcher.FinishAsync(first, v, null);
+            Assert.AreEqual(QueueStatus.Done, first.Status);
+            CollectionAssert.AreEqual(new[] { first.Id }, tidied);
+            Assert.AreEqual(QueueStatus.Waiting, next.Status, "整理完成前不发布下一个 / next waits for tidy");
+            tidy.SetResult(true);
+            await finishing;
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status);
+        }
+
+        [TestMethod]
+        public async Task Finish_FailedReceiptStillTidies_AndExplainsReportedFailure()
+        {
+            var v = _host.AddVs("A");
+            var first = _queue.Add("A", "A", "first", "AI");
+            await _dispatcher.PumpAsync();
+            int calls = 0;
+            _host.AfterCompleted = (t, target) => { calls++; return Task.CompletedTask; };
+            _host.AnswerReader = t => Task.FromResult("需要重启后验证\r\n" + TaskStateMachine.FailureReceipt(t));
+            await _dispatcher.FinishAsync(first, v, null);
+            Assert.AreEqual(QueueStatus.Failed, first.Status);
+            Assert.AreEqual(1, calls, "Copilot 已结束回复，仍保存文件 / Copilot finished replying; files are still saved");
+            StringAssert.Contains(first.Error, "Copilot reported the task as not completed");
+            StringAssert.Contains(first.Error, "需要重启后验证");
+            Assert.IsFalse(first.Error.Contains(":FAILED]"));
+        }
+
+        [TestMethod]
+        public async Task Finish_FailedReceiptButOnlyUnverified_CompletesAsUnverified()
+        {
+            var v = _host.AddVs("A");
+            var task = _queue.Add("A", "A", "feature", "AI");
+            await _dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult("功能已实现，全部测试通过；尚未在运行中的程序里实际验证。\r\n" + TaskStateMachine.FailureReceipt(t));
+            await _dispatcher.FinishAsync(task, v, null);
+            Assert.AreEqual(QueueStatus.Unverified, task.Status);
+            var next = _queue.Add("A", "A", "next", "AI");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, next.Status, "未验证不阻塞后续 / Unverified never blocks successors");
+            Assert.IsTrue(_dispatcher.MarkVerified(task));
+            Assert.AreEqual(QueueStatus.Done, task.Status);
+            Assert.IsFalse(task.Result.Contains(":FAILED]"));
+            StringAssert.Contains(_host.Notices[0], "未验证");
+        }
+
+        [TestMethod]
+        public async Task Finish_SuccessRaisesTaskCompletedWithFullReply_FailureDoesNot()
+        {
+            var v = _host.AddVs("A");
+            var completed = new System.Collections.Generic.List<QueuedTask>();
+            string reply = null;
+            _dispatcher.TaskCompleted += t => { completed.Add(t); reply = t.FullResult; };
+            var ok = _queue.Add("A", "A", "ok", "AI");
+            await _dispatcher.PumpAsync();
+            string longText = new string('x', 3000);
+            _host.AnswerReader = t => Task.FromResult(longText + "\r\n" + TaskStateMachine.SuccessReceipt(t));
+            await _dispatcher.FinishAsync(ok, v, null);
+            Assert.AreEqual(QueueStatus.Done, ok.Status);
+            CollectionAssert.AreEqual(new[] { ok }, completed);
+            StringAssert.Contains(reply, longText, "笔记记录完整回复 / Notebook gets the full reply");
+            var bad = _queue.Add("A", "A", "bad", "AI");
+            await _dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult("no\r\n" + TaskStateMachine.FailureReceipt(t));
+            await _dispatcher.FinishAsync(bad, v, null);
+            Assert.AreEqual(QueueStatus.Failed, bad.Status);
+            Assert.AreEqual(1, completed.Count);
+        }
+
+        [TestMethod]
+        public async Task Finish_TidyErrorsDoNotFailTask()
+        {
+            var v = _host.AddVs("A");
+            int calls = 0;
+            _host.AfterCompleted = (t, target) => { calls++; throw new InvalidOperationException("boom"); };
+            var second = _queue.Add("A", "A", "second", "AI");
+            await _dispatcher.PumpAsync();
+            await _dispatcher.FinishAsync(second, v, null);
+            Assert.AreEqual(QueueStatus.Done, second.Status);
+            Assert.AreEqual(1, calls);
+            Assert.IsTrue(_host.Events.Any(e => e.Contains("boom")));
+        }
+
+        [TestMethod]
         public async Task StrictFailure_BlocksTargetUntilSuperseded_ResendRemainsAtTail()
         {
             _queue.SkipFailedPredecessors = false;
@@ -346,6 +439,8 @@ namespace VSManager.Tests
             _clock.Advance(TimeSpan.FromMinutes(2));
             await _dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Failed, first.Status);
+            StringAssert.StartsWith(first.Error, ManualChatProtection.UncertainPrefix);
+            StringAssert.Contains(System.IO.File.ReadAllText(TaskQueue.LogPath), "Uncertain=True");
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
             Assert.AreEqual(1, _host.Sent.Count);
         }
@@ -396,6 +491,8 @@ namespace VSManager.Tests
             string uiNotice = null;
             _queue.Changed += () => { if (next.Status == QueueStatus.Running) uiNotice = next.PredecessorNotice; };
             _clock.Advance(SendRetryPolicy.RetryDelay);
+            Assert.AreEqual(QueueStatus.Failed, next.Status);
+            _dispatcher.Retry(next);
             await _dispatcher.PumpAsync();
             const string notice = "前序 @1 失败，已跳过继续 / Predecessor @1 failed; skipped and continued";
             Assert.AreEqual(QueueStatus.Running, next.Status);
@@ -601,16 +698,16 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task DispatchNow_SkipsRetryDelay()
+        public async Task DispatchNow_SkipsOnlyProtectionDelay()
         {
             _host.AddVs("A");
             var t = _queue.Add("A", "A", "a", "AI");
-            _host.SendResults.Enqueue("失败");
+            _host.SendResults.Enqueue(SendRetryPolicy.BlockedPrefix + "dialog");
             await _dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Waiting, t.Status);
             _dispatcher.DispatchNow(t);
             Assert.AreEqual(QueueStatus.Running, t.Status);
-            Assert.AreEqual(2, t.Attempts);
+            Assert.AreEqual(1, t.Attempts);
         }
     }
 }

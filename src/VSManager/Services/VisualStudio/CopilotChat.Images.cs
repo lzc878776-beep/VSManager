@@ -19,7 +19,7 @@ namespace VSManager
         {
             string existing = GetEditText(edit);
             if (existing == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : "无法读取 VS 输入框，未发送图片";
-            if (!string.IsNullOrWhiteSpace(existing)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Draft) : "VS 输入框已有草稿，请先发送或清空后再发送图片（平台草稿已保留）";
+            if (ManualChatProtection.HasDraft(existing)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Draft) : "VS 输入框已有草稿，请先发送或清空后再发送图片（平台草稿已保留）";
 
             uint clipboardVersion = GetClipboardSequenceNumber();
             ClipboardBackup backup;
@@ -80,7 +80,7 @@ namespace VSManager
                 edit.SetFocus();
                 if (!WaitFocus(edit, 1000) || !ForegroundIs(vs)) return "无法聚焦 Copilot 输入框，未发送图片";
                 string currentText = GetEditText(edit);
-                if (currentText == null || !string.IsNullOrWhiteSpace(currentText)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : "VS 输入框出现新草稿或无法读取，已取消图片发送";
+                if (!ManualChatProtection.IsEmptyInput(currentText)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(currentText == null ? ManualChatObservation.Unknown : ManualChatObservation.Draft) : "VS 输入框出现新草稿或无法读取，已取消图片发送";
                 if (GetClipboardSequenceNumber() != clipboardVersion) return "剪贴板已被其他操作更改，已取消图片发送";
 
                 string blocked = GuardQueueInput(vs, pane, edit);
@@ -150,7 +150,7 @@ namespace VSManager
                 {
                     bool cancel = HasCancel(pane);
                     string remaining = GetEditText(edit);
-                    if (cancel || (remaining != null && remaining.Trim().Length == 0 &&
+                    if (cancel || (ManualChatProtection.IsEmptyInput(remaining) &&
                         !AttachmentIds(pane).Overlaps(addedIds)))
                         return "已发送文字和图片（已短暂切换到 VS）";
                     Thread.Sleep(100);
@@ -162,13 +162,25 @@ namespace VSManager
         private static HashSet<string> AttachmentIds(AutomationElement pane)
         {
             var result = new HashSet<string>();
-            var list = pane.FindFirst(TreeScope.Descendants, IdCond("PART_AttachmentsList"));
+            var list = PaneChild(pane, "PART_AttachmentsList");
             if (list == null) return result;
             foreach (AutomationElement item in list.FindAll(TreeScope.Children,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem)))
-                result.Add(string.Join(".", item.GetRuntimeId()));
+            {
+                bool addButton = item.FindFirst(TreeScope.Descendants, IdCond("PART_AttachmentsButton")) != null;
+                if (IsUserAttachment(item.Current.Name, addButton)) result.Add(string.Join(".", item.GetRuntimeId()));
+            }
             return result;
         }
+
+        private static readonly HashSet<string> ImplicitAttachmentNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "活动文档", "活动文件", "当前文档", "当前文件", "Active document", "Active file", "Current document", "Current file"
+        };
+
+        /// <summary>“添加引用”按钮与 VS 自动附带的活动文档不是用户附件。/ The add-reference button and VS's implicit active-document chip are not user attachments.</summary>
+        internal static bool IsUserAttachment(string name, bool containsAddButton) =>
+            !containsAddButton && !ImplicitAttachmentNames.Contains((name ?? "").Trim());
 
         private sealed class ClipboardBackup : IDisposable
         {

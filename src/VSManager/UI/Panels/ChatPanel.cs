@@ -41,6 +41,13 @@ namespace VSManager
         private bool _sending;
 
         public event Action<string> SendRequested;
+        private VsMentionInput _mentions;
+        public void BindMentions(VsMentionSession session, Func<VsMentionTarget[]> targets)
+        {
+            _mentions?.Dispose();
+            _mentions = new VsMentionInput(_input, session, targets);
+        }
+        public void RefreshMentions() { if (_mentions?.IsOpen == true) _mentions.Refresh(); }
         public event Action StopRequested;
         public event Action NewThreadRequested;
         public event Action OpenInVsRequested;
@@ -61,7 +68,7 @@ namespace VSManager
         private Color _voiceColor;
         private float _voiceLevel;
 
-        private static readonly Color InputBg = Color.FromArgb(24, 24, 30);
+        private static readonly Color InputBg = Theme.Bubble;
 
         public ChatPanel()
         {
@@ -302,7 +309,7 @@ namespace VSManager
 
         private void UpdateButtons()
         {
-            _btnSend.Enabled = HasTarget && !Busy && !_sending && (!string.IsNullOrWhiteSpace(_input.Text) || _images.Count > 0);
+            _btnSend.Enabled = (VsMentionSession.HasIntent(_input.Text) || (HasTarget && !Busy)) && !_sending && (!string.IsNullOrWhiteSpace(_input.Text) || _images.Count > 0);
             _btnStop.Enabled = HasTarget && Busy;
             _btnNew.Enabled = HasTarget && !Busy && !_sending;
             _btnOpen.Enabled = HasTarget;
@@ -501,6 +508,7 @@ namespace VSManager
 
         private void Input_KeyDown(object sender, KeyEventArgs e)
         {
+            if (_mentions?.HandleKeyDown(e) == true) return;
             if (_voiceEnabled && e.KeyCode == Keys.Space && e.Modifiers == Keys.None && !_input.ReadOnly)
             {
                 // 短按输入空格，按住超过 350ms 开始语音；自动重复的 KeyDown 全部吞掉
@@ -607,7 +615,7 @@ namespace VSManager
         private void DoSend()
         {
             var text = _input.Text.Trim();
-            if ((text.Length == 0 && _images.Count == 0) || !HasTarget || Busy || _sending) return;
+            if ((text.Length == 0 && _images.Count == 0) || (!VsMentionSession.HasIntent(text) && (!HasTarget || Busy)) || _sending) return;
             SendRequested?.Invoke(text);
         }
 

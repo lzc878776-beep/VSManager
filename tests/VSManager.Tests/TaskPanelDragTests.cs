@@ -316,10 +316,10 @@ namespace VSManager.Tests
                 CollectionAssert.AreEqual(new[] { 1, 4 }, f.Ids);
                 Gesture(f, "t:4", data => Drop(f, data, f.At(0)));
                 CollectionAssert.AreEqual(new[] { "t:4", "t:2", "t:3", "t:1" }, f.Panel.ItemOrder);
-                var history = f.List.ContextMenuStrip.Items.OfType<ToolStripMenuItem>().Single(m => m.Text == "显示已清除的历史");
-                history.PerformClick();
+                var history = (FlatButton)typeof(TaskPanel).GetField("_btnHistory", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).GetValue(f.Panel);
+                typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(history, new object[] { EventArgs.Empty });
                 CollectionAssert.AreEqual(new[] { 4, 2, 3, 1 }, f.Ids);
-                history.PerformClick();
+                typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(history, new object[] { EventArgs.Empty });
                 f.Cleared = null;
                 f.Hidden.Clear();
                 TaskStateMachine.Requeue(f.Queue.Find(3));

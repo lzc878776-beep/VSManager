@@ -22,7 +22,7 @@ namespace VSManager
         private readonly MemList _list = new MemList();
         private readonly Panel _summary, _columns;
         private readonly ToggleSwitch _autoRefresh = new ToggleSwitch();
-        private readonly FlatButton _btnRefresh, _btnSelf, _btnAllVs;
+        private readonly FlatButton _btnSelf, _btnAllVs;
         private readonly Label _time = new Label();
         private readonly TextBox _log = new TextBox();
         private readonly ToggleSwitch _policy = new ToggleSwitch();
@@ -74,25 +74,19 @@ namespace VSManager
             _time.AutoEllipsis = true;
             _time.UseMnemonic = false;
             _time.Text = "正在测量… / Measuring…";
-            _autoRefresh.Text = "自动刷新 5 秒 / Auto 5 s";
+            _autoRefresh.Text = "任务完成后刷新 / Refresh after tasks";
             _autoRefresh.Dock = DockStyle.Right;
-            _autoRefresh.Width = Dpi.S(210);
+            _autoRefresh.Width = Dpi.S(260);
             _autoRefresh.Checked = true;
-            _autoRefresh.CheckedChanged += (s, e) => _timer.Enabled = _autoRefresh.Checked;
-            _btnRefresh = new FlatButton { Text = "↻ 刷新 / Refresh", Ghost = true, Dock = DockStyle.Right, Width = Dpi.S(130) };
-            _btnRefresh.Click += async (s, e) => await RefreshAsync();
             _btnSelf = new FlatButton { Text = "🧹 清理 VSManager", Dock = DockStyle.Right, Width = Dpi.S(160) };
             _btnSelf.Click += async (s, e) => await CleanAsync(MemGroupKind.Self.ToString());
             _btnAllVs = new FlatButton { Text = "🧹 温和清理全部 VS / Clean all VS", Primary = true, Dock = DockStyle.Right, Width = Dpi.S(250) };
             _btnAllVs.Click += async (s, e) => await CleanAllVsAsync();
-            _tips.SetToolTip(_autoRefresh, "每 5 秒重新测量一次 / Re-measure every 5 seconds");
-            _tips.SetToolTip(_btnRefresh, "立即重新测量（F5）/ Measure now (F5)");
+            _tips.SetToolTip(_autoRefresh, "每完成一个任务重新测量一次；F5 可立即测量 / Re-measure after each finished task; press F5 to measure now");
             _tips.SetToolTip(_btnSelf, "对 VSManager 本体做完整 GC 并修剪工作集（含其 WebView2 进程）\nFull GC of VSManager and trim its working set (including its WebView2 processes)");
             _tips.SetToolTip(_btnAllVs, "依次对每个 VS 实例温和清理：尝试 VS 内部 GC + 修剪可安全清理进程的工作集；不结束任何进程、不影响未保存内容\nGently clean every VS: try an in-VS GC + trim safe processes; nothing is terminated and unsaved work is untouched");
             bar.Controls.Add(_time);
             bar.Controls.Add(_autoRefresh);
-            bar.Controls.Add(Gap(bar.BackColor));
-            bar.Controls.Add(_btnRefresh);
             bar.Controls.Add(Gap(bar.BackColor));
             bar.Controls.Add(_btnSelf);
             bar.Controls.Add(Gap(bar.BackColor));
@@ -190,8 +184,16 @@ namespace VSManager
             }
             Controls.Add(bar);
 
-            _timer.Tick += async (s, e) => { UpdateTrimStatus(); if (WindowState != FormWindowState.Minimized) await RefreshAsync(); };
+            // 计时器只更新自动清理状态；内存测量改为任务完成后触发。/ The timer only updates auto-clean status; measurement now runs after tasks finish.
+            _timer.Tick += (s, e) => UpdateTrimStatus();
             _timer.Start();
+        }
+
+        /// <summary>任务完成后由主窗口调用；开关关闭或最小化时跳过。/ Called by the main window after a task finishes; skipped when disabled or minimized.</summary>
+        public async void RefreshAfterTask()
+        {
+            if (IsDisposed || !_autoRefresh.Checked || WindowState == FormWindowState.Minimized) return;
+            try { await RefreshAsync(); } catch (ObjectDisposedException) { }
         }
 
         private static Control Gap(Color back) => new Panel { Dock = DockStyle.Right, Width = Dpi.S(8), BackColor = back };

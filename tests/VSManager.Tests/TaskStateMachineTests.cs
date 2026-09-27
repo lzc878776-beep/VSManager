@@ -87,12 +87,12 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void SendRetryPolicy_RetriesUntilThirdAttempt()
+        public void SendRetryPolicy_FailsImmediately()
         {
-            Assert.AreEqual(3, SendRetryPolicy.MaxAttempts);
+            Assert.AreEqual(1, SendRetryPolicy.MaxAttempts);
             Assert.AreEqual(TimeSpan.FromSeconds(30), SendRetryPolicy.RetryDelay);
-            Assert.AreEqual(SendDecision.Retry, SendRetryPolicy.Decide(1, "失败"));
-            Assert.AreEqual(SendDecision.Retry, SendRetryPolicy.Decide(2, "失败"));
+            Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(1, "失败"));
+            Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(2, "失败"));
             Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(3, "失败"));
             Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(4, "失败"));
             Assert.AreEqual(SendDecision.Delivered, SendRetryPolicy.Decide(3, "已发送"));
@@ -111,7 +111,7 @@ namespace VSManager.Tests
                 TaskStateMachine.BeginSend(t, "A");
                 Assert.AreEqual(SendDecision.Retry, TaskStateMachine.ApplySendResult(t, blocked, T0));
                 Assert.AreEqual(QueueStatus.Waiting, t.Status);
-                Assert.AreEqual(2, t.Attempts);
+                Assert.AreEqual(0, t.Attempts);
                 Assert.AreEqual(T0 + SendRetryPolicy.BlockedRetryDelay, t.NextTry);
                 Assert.AreEqual(blocked, t.Error);
                 Assert.IsNull(t.Finished);
@@ -162,22 +162,15 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void ApplySendResult_Failure_RetriesThenFails()
+        public void ApplySendResult_Failure_StopsWithoutScheduling()
         {
             var t = Waiting();
-            for (int i = 1; i <= 2; i++)
-            {
-                TaskStateMachine.BeginSend(t, "A");
-                Assert.AreEqual(SendDecision.Retry, TaskStateMachine.ApplySendResult(t, "找不到输入框", T0));
-                Assert.AreEqual(QueueStatus.Waiting, t.Status);
-                Assert.AreEqual("找不到输入框", t.Error);
-                Assert.AreEqual(T0.AddSeconds(30), t.NextTry);
-                Assert.IsNull(t.Finished);
-            }
             TaskStateMachine.BeginSend(t, "A");
             Assert.AreEqual(SendDecision.Fail, TaskStateMachine.ApplySendResult(t, "找不到输入框", T0));
             Assert.AreEqual(QueueStatus.Failed, t.Status);
-            Assert.AreEqual(3, t.Attempts);
+            Assert.AreEqual(1, t.Attempts);
+            Assert.AreEqual(DateTime.MinValue, t.NextTry);
+            Assert.IsFalse(TaskStateMachine.BeginSend(t, "A"));
             Assert.AreEqual(T0, t.Finished);
         }
 

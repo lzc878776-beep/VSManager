@@ -126,6 +126,7 @@ namespace VSManager
             var t = new QueuedTask
             {
                 Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Source = S("Source"),
+                ExplicitInstanceKey = S("ExplicitInstanceKey"), ExplicitSolutionPath = S("ExplicitSolutionPath"),
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
                 Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
                 QueueOrder = Math.Max(0, I("QueueOrder")), CompletionToken = S("CompletionToken"),
@@ -138,6 +139,19 @@ namespace VSManager
                     .Where(id => id > 0).Distinct().ToArray()
             };
             var worktree = e.Element("Worktree");
+            var attachments = e.Element("Attachments");
+            if (attachments != null && attachments.Attribute("type")?.Value != "null")
+            {
+                t.Attachments = attachments.Elements("item").Select(a => new AttachmentRef
+                {
+                    Id = a.Element("Id")?.Value, Name = a.Element("Name")?.Value,
+                    Kind = a.Element("Kind")?.Value, Ext = a.Element("Ext")?.Value,
+                    Sha256 = a.Element("Sha256")?.Value, RelPath = a.Element("RelPath")?.Value,
+                    Size = long.TryParse(a.Element("Size")?.Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out long size) ? size : 0,
+                    Created = ParseDate(a.Element("Created")?.Value) ?? DateTime.MinValue
+                }).ToArray();
+                t.AttachmentNote = S("AttachmentNote");
+            }
             if (worktree != null && worktree.Attribute("type")?.Value != "null")
             {
                 t.Worktree = new WorktreeInfo

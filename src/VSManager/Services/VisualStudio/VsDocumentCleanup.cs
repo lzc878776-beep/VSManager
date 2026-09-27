@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Automation;
@@ -23,6 +24,8 @@ namespace VSManager
         public List<string> ClosedNames { get; } = new List<string>();
         public List<string> UnsavedNames { get; } = new List<string>();
         public List<string> Diagnostics { get; } = new List<string>();
+        public int SavedCount { get; internal set; }
+        public List<string> SaveFailedNames { get; } = new List<string>();
         public string SummaryZh => $"文档清理：初始标签 {InitialTabCount}，已关闭 {Closed}，未保存跳过 {SkippedUnsaved}，失败 {Failed}，未知 {Unknown}";
         public string SummaryEn => $"Document cleanup: initial tabs {InitialTabCount}, closed {Closed}, unsaved skipped {SkippedUnsaved}, failed {Failed}, unknown {Unknown}";
     }
@@ -53,6 +56,59 @@ namespace VSManager
 
         public static VsDocumentCleanupResult Run(VsInstance vs, int threshold, Action<string> log) =>
             Run(vs, threshold, log, new DocumentTabUiaFallback(), DocumentTabUiaFallback.OwnerReady);
+
+        /// <summary>
+        /// 任务完成后：先保存有磁盘路径、非只读的已修改文档（不弹另存为），再关闭全部已保存的文档标签。
+        /// After a task: save modified documents that have an on-disk, writable path (never Save As), then close every saved document tab.
+        /// </summary>
+        public static VsDocumentCleanupResult RunAfterTask(VsInstance vs, Action<string> log)
+        {
+            int saved = 0;
+            var failed = new List<string>();
+            if (vs?.Dte != null && DocumentTabUiaFallback.OwnerReady(vs))
+            {
+                var clock = Stopwatch.StartNew();
+                try
+                {
+                    int inspected = 0;
+                    foreach (object document in (IEnumerable)((dynamic)vs.Dte).Documents)
+                    {
+                        if (++inspected > MaximumTabs || clock.Elapsed >= Budget) break;
+                        if (Saved(document) != false) continue;
+                        string path = null;
+                        try
+                        {
+                            path = (string)((dynamic)document).FullName;
+                            if (!Path.IsPathRooted(path) || !File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+                            {
+                                failed.Add(Path.GetFileName(path ?? ""));
+                                continue;
+                            }
+                            ((dynamic)document).Save();
+                            if (Saved(document) == true) saved++;
+                            else failed.Add(Path.GetFileName(path));
+                        }
+                        catch (Exception ex) when (Expected(ex) || ex is IOException)
+                        {
+                            failed.Add(Path.GetFileName(path ?? ""));
+                            try { log?.Invoke("保存失败 / Save failed: " + path + "; " + Failure(ex)); }
+                            catch (Exception logError) when (Expected(logError)) { }
+                        }
+                    }
+                }
+                catch (Exception ex) when (Expected(ex))
+                {
+                    try { log?.Invoke("枚举文档失败 / Cannot enumerate documents: " + Failure(ex)); }
+                    catch (Exception logError) when (Expected(logError)) { }
+                }
+                try { log?.Invoke($"任务后自动保存 / Auto-save after task: saved={saved}, not saved={failed.Count}"); }
+                catch (Exception logError) when (Expected(logError)) { }
+            }
+            var result = Run(vs, 0, log);
+            result.SavedCount = saved;
+            result.SaveFailedNames.AddRange(failed.Where(n => n.Length > 0));
+            return result;
+        }
 
         internal static VsDocumentCleanupResult Run(VsInstance vs, int threshold, Action<string> log,
             IDocumentTabFallback fallback, Func<VsInstance, bool> ownerReady)

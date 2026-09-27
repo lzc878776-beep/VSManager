@@ -178,6 +178,7 @@ namespace VSManager
                 PruneInstances(_panes, alive);
                 PruneInstances(_hosts, alive);
                 PruneInstances(_missUntil, alive);
+                PruneInstances(_deepBusyCheck, alive);
                 PruneInstances(_tailSig, alive);
                 PruneInstances(_handledDialogs, alive);
                 foreach (var key in _msgCache.Keys.ToArray())
@@ -343,7 +344,7 @@ namespace VSManager
             {
                 _lastPaneCandidates = candidates;
                 if (best != null) { _panes[vs.Pid] = best; _hosts[vs.Pid] = bestHost; _missUntil.Remove(vs.Pid); }
-                else _missUntil[vs.Pid] = DateTime.Now.AddSeconds(10);
+                else _missUntil[vs.Pid] = DateTime.Now.AddSeconds(_missUntil.ContainsKey(vs.Pid) ? 30 : 10);
             }
             if (_trace != null)
                 T(best == null ? "完整搜索：未找到对话窗格（关键字「" + kw + "」）"
@@ -354,6 +355,61 @@ namespace VSManager
         private static bool SafeOffscreen(AutomationElement e)
         {
             try { return e.Current.IsOffscreen; } catch { return true; }
+        }
+
+        /// <summary>
+        /// 按 AutomationId 查找窗格控件：先查原始视图的直接子元素（约数十毫秒），找不到才遍历后代。
+        /// 后代遍历会走完整个对话记录，在 VS 界面线程上耗时数秒。
+        /// Finds a pane control by AutomationId: direct raw-view children first (tens of ms), descendants only as a fallback.
+        /// A descendant walk traverses the whole transcript and costs seconds on the VS UI thread.
+        /// </summary>
+        internal static AutomationElement PaneChild(AutomationElement pane, string automationId, bool descendantFallback = true)
+        {
+            var found = RawFindAll(pane, TreeScope.Children, IdCond(automationId), 1).FirstOrDefault();
+            return found ?? (descendantFallback ? pane.FindFirst(TreeScope.Descendants, IdCond(automationId)) : null);
+        }
+
+        private readonly Dictionary<int, DateTime> _deepBusyCheck = new Dictionary<int, DateTime>();
+
+        /// <summary>
+        /// 轻量忙碌探测：复用缓存窗格，只在子元素中找停止按钮；子级完全没有该按钮时才每 30 秒深度搜索一次。
+        /// Lightweight busy probe: reuses the cached pane and looks for the stop button among children only; a deep search runs at most every 30 s when no child button exists.
+        /// </summary>
+        public CopilotState ProbeBusy(VsInstance vs, bool throttleMiss, IEnumerable<string> busyIds)
+        {
+            var pane = FindPane(vs, throttleMiss);
+            if (pane == null) return CopilotState.Unknown;
+            bool anyChild = false;
+            foreach (string id in busyIds)
+            {
+                AutomationElement button;
+                try { button = PaneChild(pane, id, false); }
+                catch (Exception ex) when (ex is ElementNotAvailableException || ex is COMException || ex is InvalidOperationException)
+                {
+                    lock (_lock) _panes.Remove(vs.Pid);
+                    return CopilotState.Unknown;
+                }
+                if (button == null) continue;
+                anyChild = true;
+                if (!SafeOffscreen(button)) return CopilotState.Busy;
+            }
+            if (anyChild) return CopilotState.Idle;
+            lock (_lock)
+            {
+                if (_deepBusyCheck.TryGetValue(vs.Pid, out var next) && DateTime.Now < next) return CopilotState.Idle;
+                _deepBusyCheck[vs.Pid] = DateTime.Now.AddSeconds(30);
+            }
+            foreach (string id in busyIds)
+            {
+                try
+                {
+                    var button = pane.FindFirst(TreeScope.Descendants, new AndCondition(IdCond(id),
+                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button)));
+                    if (button != null && !SafeOffscreen(button)) return CopilotState.Busy;
+                }
+                catch (Exception ex) when (ex is ElementNotAvailableException || ex is COMException || ex is InvalidOperationException) { }
+            }
+            return CopilotState.Idle;
         }
 
         #endregion
@@ -548,7 +604,7 @@ namespace VSManager
             if (pane == null) return "未找到 Copilot 对话窗格，请先在该 VS 中打开一次对话窗口";
             try
             {
-                var btn = pane.FindFirst(TreeScope.Descendants, IdCond(automationId));
+                var btn = PaneChild(pane, automationId);
                 if (btn == null) return $"当前无法{actionName}";
                 ((InvokePattern)btn.GetCurrentPattern(InvokePattern.Pattern)).Invoke();
                 Poke();
@@ -615,6 +671,7 @@ namespace VSManager
             try { r = SendCore(vs, text, returnTo, background, images); }
             catch (Exception ex) { T("异常：" + ex); r = "发送失败：" + ex.Message; }
             finally { _trace = null; }
+            if (_queueGuard != null) r = ManualChatProtection.DeliveryResult(_queueTouched, r);
             trace.Done(r);
             return r;
         }
@@ -769,6 +826,7 @@ namespace VSManager
                 {
                     try { r = SendBackground(vs, pane, edit, text); }
                     finally { Poke(); }
+                    if (r == null && _queueTouched) r = ManualChatProtection.UncertainPrefix + "后台已触及输入，停止切换重发 / Background input touched; fallback stopped";
                     if (r == null) T("后台发送不可用，改为前台发送");
                 }
                 else if (background) T("消息包含换行，使用前台发送");
@@ -907,8 +965,11 @@ namespace VSManager
                 T("后台：输入框已聚焦，焦点窗口=0x" + target.ToString("X"));
                 blocked = GuardQueueInput(vs, pane, edit);
                 if (blocked != null) return blocked;
-                var cur = GetEditText(edit) ?? "";
-                if (cur.Length > 0)
+                var cur = GetEditText(edit);
+                if (_queueGuard != null && !ManualChatProtection.IsEmptyInput(cur))
+                    return ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(cur == null ? ManualChatObservation.Unknown : ManualChatObservation.Draft);
+                // 队列允许保留可忽略空白，绝不发送清空草稿的按键。/ Queue sends leave ignorable whitespace in place and never emit draft-clearing keys.
+                if (_queueGuard == null && !string.IsNullOrEmpty(cur))
                 {
                     T("后台：清除原有草稿 " + cur.Length + " 字");
                     for (int i = 0; i < cur.Length + 2; i++)
@@ -928,7 +989,8 @@ namespace VSManager
                 {
                     blocked = BlockingDialogMessage(vs);
                     if (blocked != null) return blocked;
-                    T("后台：写入后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
+                    T(_queueGuard != null ? "后台：写入后内容不匹配，保留输入 / Background input mismatch; preserved"
+                        : "后台：写入后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
                     return "未能把消息完整写入 Copilot 输入框，已取消发送（内容保留在 VS 输入框中）";
                 }
                 blocked = BlockingDialogMessage(vs);
@@ -962,7 +1024,7 @@ namespace VSManager
             while (true)
             {
                 var t = GetEditText(edit);
-                if (t != null && t.Trim().Length == 0) { T("输入框已清空"); return true; }
+                if (ManualChatProtection.IsEmptyInput(t)) { T("输入框已清空"); return true; }
                 if (HasCancel(pane)) { T("出现停止按钮"); return true; }
                 if (DateTime.Now >= until) return false;
                 Thread.Sleep(100);
@@ -1116,6 +1178,16 @@ namespace VSManager
 
         private static bool TryInvokeSend(AutomationElement pane)
         {
+            try
+            {
+                var direct = PaneChild(pane, "SendButton", false);
+                if (direct != null && direct.Current.IsEnabled && direct.TryGetCurrentPattern(InvokePattern.Pattern, out object invoke))
+                {
+                    ((InvokePattern)invoke).Invoke();
+                    return true;
+                }
+            }
+            catch { }
             try
             {
                 foreach (AutomationElement b in pane.FindAll(TreeScope.Descendants,

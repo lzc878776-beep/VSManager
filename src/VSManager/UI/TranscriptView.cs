@@ -236,7 +236,7 @@ namespace VSManager
         private static System.Threading.Tasks.Task<CoreWebView2Environment> _sharedEnvironment;
 
         /// <summary>所有对话视图共用同一个 WebView2 环境（同一组浏览器进程）。/ One environment for all views.</summary>
-        private static System.Threading.Tasks.Task<CoreWebView2Environment> SharedEnvironment()
+        internal static System.Threading.Tasks.Task<CoreWebView2Environment> SharedEnvironment()
         {
             var task = _sharedEnvironment;
             if (task == null || task.IsFaulted || task.IsCanceled)
@@ -389,6 +389,8 @@ namespace VSManager
                         .Replace("{{nonce}}", Guid.NewGuid().ToString("N"))
                         .Replace("{{background}}", ColorTranslator.ToHtml(Theme.Background))
                         .Replace("{{surface}}", ColorTranslator.ToHtml(Theme.Surface))
+                        .Replace("{{bubble}}", ColorTranslator.ToHtml(Theme.Bubble))
+                        .Replace("{{bubbleUser}}", ColorTranslator.ToHtml(Theme.BubbleUser))
                         .Replace("{{border}}", ColorTranslator.ToHtml(Theme.Border))
                         .Replace("{{text}}", ColorTranslator.ToHtml(Theme.Text))
                         .Replace("{{secondary}}", ColorTranslator.ToHtml(Theme.TextSecondary))

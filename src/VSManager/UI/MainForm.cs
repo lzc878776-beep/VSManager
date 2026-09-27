@@ -134,6 +134,7 @@ namespace VSManager
 					"Was being sent when VSManager exited abnormally and may have been delivered; paused to avoid a duplicate, requeue manually if needed");
 			AppDomain.CurrentDomain.UnhandledException += (s, e) => EmergencySave();
 			_dispatcher = new TaskDispatcher(_tasks, this, worktrees: new WorktreeService(WorktreeFileRoots), startSettings: () => _settings);
+			_dispatcher.TaskCompleted += RecordTaskInNotebook;
 
 			_chatSvc = new CopilotChat(() => _settings);
 			_chatSvc.Updated += (vs, t) => SafeInvoke(() => OnChatUpdated(vs, t));
@@ -153,6 +154,8 @@ namespace VSManager
 			_monitor.StateChanged += vs => SafeInvoke(() => UpdateRow(vs));
 			_monitor.Completed += (vs, dur) => SafeInvoke(() => OnCopilotCompleted(vs, dur));
 			_monitor.ReadTail = (vs, skip) => _chatSvc.ReadTail(vs, 2, skip);
+			_monitor.ProbeState = (vs, s, fresh) => _chatSvc.ProbeBusy(vs, !fresh, (s.BusyButtonIds ?? "CancelButton")
+				.Split(new[] { ',', ';', '，' }, StringSplitOptions.RemoveEmptyEntries).Select(x => x.Trim()).Where(x => x.Length > 0).DefaultIfEmpty("CancelButton").ToArray());
 			_monitor.Conversation += (vs, t, busy) => SafeInvoke(() => OnConversation(vs, t, busy));
 			_monitor.PaneRestored += (vs, ok) =>
 			{
@@ -236,28 +239,25 @@ namespace VSManager
 			_sidebar.Paint += (s, e) => { using (var pen = new Pen(Theme.Border)) e.Graphics.DrawLine(pen, _sidebar.Width - 1, 0, _sidebar.Width - 1, _sidebar.Height); };
 			_sidebar.Padding = new Padding(0, 0, 1, 0);
 
-			var sideTop = new Panel { Dock = DockStyle.Top, Height = Dpi.S(52), BackColor = Theme.Sidebar };
-			var sideTitle = new Label
-			{
-				Text = "VS 实例", Font = Theme.SemiBold, ForeColor = Theme.Text, AutoSize = true, BackColor = Theme.Sidebar,
-				Location = new Point(Dpi.S(20), Dpi.S(17))
-			};
-			_sideCount.AutoSize = true;
 			_sideCount.Font = Theme.Small;
 			_sideCount.ForeColor = Theme.TextMuted;
 			_sideCount.BackColor = Theme.Sidebar;
-			_sideCount.Location = new Point(Dpi.S(84), Dpi.S(19));
-			var btnRefresh = new FlatButton { Text = "↻", Ghost = true, Size = new Size(Dpi.S(34), Dpi.S(30)), Anchor = AnchorStyles.Top | AnchorStyles.Right };
+			var btnRefresh = new FlatButton { Text = "↻", Ghost = true, Size = new Size(Dpi.S(34), Dpi.S(30)) };
 			btnRefresh.Font = new Font(Theme.FontName, 11F);
 			btnRefresh.Click += (s, e) => { SetStatus("正在刷新 VS 实例…"); RefreshInstances(); UpdateProfiles(true); };
 			_tips.SetToolTip(btnRefresh, "刷新列表");
-			sideTop.Controls.Add(sideTitle);
-			sideTop.Controls.Add(_sideCount);
-			sideTop.Controls.Add(btnRefresh);
-			sideTop.Resize += (s, e) => btnRefresh.Location = new Point(sideTop.Width - btnRefresh.Width - Dpi.S(12), Dpi.S(11));
 
 			_list.Dock = DockStyle.Fill;
-			_list.ItemHeight = Dpi.S(88);
+			_list.ItemHeight = Dpi.S(38);
+			int tipIndex = -1;
+			_list.MouseMove += (s, e) =>
+			{
+				int index = _list.IndexFromPoint(e.Location);
+				if (index == tipIndex) return;
+				tipIndex = index;
+				_tips.SetToolTip(_list, ListTip(index));
+			};
+			_list.MouseLeave += (s, e) => { tipIndex = -1; _tips.SetToolTip(_list, null); };
 			_list.EmptyText = "未发现正在运行的 Visual Studio\r\n启动 VS 后会自动出现在这里";
 			_list.DrawItem += List_DrawItem;
 			_list.SelectedIndexChanged += (s, e) => BeginInvoke(new Action(OnSelectionChanged));
@@ -291,10 +291,10 @@ namespace VSManager
 			_agentPanel.SettingsRequested += OpenSettings;
 			_agentPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 
-			_sidebar.Controls.Add(_list);
-			_sidebar.Controls.Add(sideHint);
-			_sidebar.Controls.Add(sideTop);
-			_sidebar.Controls.Add(_agentCard);
+			var vsBody = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar };
+			vsBody.Controls.Add(_list);
+			vsBody.Controls.Add(sideHint);
+			BuildWorkspaceSidebar(vsBody, btnRefresh);
 			UpdateAgentVisibility();
 
 			var splitter = new Splitter { Dock = DockStyle.Left, Width = Dpi.S(4), BackColor = Theme.Background, MinSize = Dpi.S(240), MinExtra = Dpi.S(560) };
@@ -303,6 +303,9 @@ namespace VSManager
 			// ---- 主区域：对话 ----
 			_chat.Dock = DockStyle.Fill;
 			_chat.SendRequested += OnChatSend;
+			_chat.BindMentions(_mentionSession, MentionCandidates);
+			_agentPanel.BindMentions(_mentionSession, MentionCandidates);
+			_agentPanel.MentionRequested = (text, files) => SubmitMention(text, files, true);
 			_chat.VoiceBegin += OnVoiceBegin;
 			_chat.VoiceEnd += () => OnVoiceEnd(false);
 			_chat.VoiceCancel += () => OnVoiceEnd(true);
@@ -364,11 +367,13 @@ namespace VSManager
 
 			Controls.Add(_chat);
 			Controls.Add(_agentPanel);
+			Controls.Add(_notebookHost);
 			Controls.Add(_taskPanel);
 			Controls.Add(splitter);
 			Controls.Add(_sidebar);
 			Controls.Add(_header);
 			Controls.Add(statusBar);
+			_workspaceNavigation = new WorkspaceNavigation(_chat, _agentPanel, _notebookHost, SaveNotebook);
 
 			// ---- 托盘 ----
 			_tray.Icon = Icon ?? SystemIcons.Application;
@@ -709,6 +714,8 @@ namespace VSManager
 			return i >= 0 && _list.GetItemRectangle(i).Contains(p) ? _list.Items[i] : null;
 		}
 
+		/// <summary>紧凑行：只显示名称；左侧圆点颜色表示 Copilot 状态，右侧圆点表示调试 / 生成状态，详情见悬停提示。
+		/// / Compact row: name only; the left dot colour shows the Copilot state, the right dot the debug / build state, details in the tooltip.</summary>
 		private void List_DrawItem(object sender, DrawItemEventArgs e)
 		{
 			var g = e.Graphics;
@@ -718,56 +725,58 @@ namespace VSManager
 			bool selected = (e.State & DrawItemState.Selected) != 0;
 			bool hover = e.Index == _list.HoverIndex;
 
-			var card = new RectangleF(e.Bounds.X + Dpi.S(10), e.Bounds.Y + Dpi.S(3), e.Bounds.Width - Dpi.S(20), e.Bounds.Height - Dpi.S(6));
+			var card = new RectangleF(e.Bounds.X + Dpi.S(10), e.Bounds.Y + Dpi.S(2), e.Bounds.Width - Dpi.S(20), e.Bounds.Height - Dpi.S(4));
 			g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 			if (selected)
 			{
-				Theme.FillRound(g, Theme.RowSelected, card, Dpi.S(10));
-				Theme.DrawRound(g, Color.FromArgb(70, 139, 92, 246), card, Dpi.S(10));
-				Theme.FillRound(g, Theme.Accent, new RectangleF(card.X + Dpi.S(1), card.Y + Dpi.S(14), Dpi.S(3), card.Height - Dpi.S(28)), Dpi.S(2));
+				Theme.FillRound(g, Theme.RowSelected, card, Dpi.S(7));
+				Theme.FillRound(g, Theme.Accent, new RectangleF(card.X + Dpi.S(1), card.Y + Dpi.S(8), Dpi.S(3), card.Height - Dpi.S(16)), Dpi.S(1));
 			}
-			else if (hover) Theme.FillRound(g, Theme.RowHover, card, Dpi.S(10));
+			else if (hover) Theme.FillRound(g, Theme.RowHover, card, Dpi.S(7));
 			if (v.CompletionUnseen && !selected)
-				Theme.DrawRound(g, Color.FromArgb(170, Theme.IdleDot), card, Dpi.S(10));
+				Theme.DrawRound(g, Color.FromArgb(170, Theme.IdleDot), card, Dpi.S(7));
 
-			GetStateColors(v, out var fg, out var pill, out var dot);
-			int x0 = (int)card.X + Dpi.S(16), y0 = (int)card.Y + Dpi.S(10);
-			int right = (int)card.Right - Dpi.S(12);
+			GetStateColors(v, out _, out _, out var dot);
+			float cx = card.X + Dpi.S(16), cy = card.Y + card.Height / 2f;
 			if (IsCompleted(v))
 			{
-				float cx = x0 + Dpi.S(4), cy = y0 + Dpi.S(10), r = Dpi.S(7);
-				Theme.FillCircle(g, dot, (int)cx, (int)cy, (int)r);
+				float r = Dpi.S(6);
+				Theme.FillCircle(g, dot, cx, cy, r);
 				using (var pen = new Pen(Color.FromArgb(20, 24, 28), Dpi.S(2)) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round, LineJoin = System.Drawing.Drawing2D.LineJoin.Round })
 					g.DrawLines(pen, new[] { new PointF(cx - r * 0.45f, cy + r * 0.02f), new PointF(cx - r * 0.1f, cy + r * 0.38f), new PointF(cx + r * 0.48f, cy - r * 0.35f) });
 			}
-			else
-				Theme.FillCircle(g, dot, x0 + Dpi.S(4), y0 + Dpi.S(10), Dpi.S(4));
+			else Theme.FillCircle(g, dot, cx, cy, Dpi.S(4));
 			if (v.Copilot == CopilotState.Busy && _settings.MonitorCopilot)
-				using (var pen = new Pen(Color.FromArgb(90, dot), Dpi.S(2))) g.DrawEllipse(pen, x0 + Dpi.S(4) - Dpi.S(7), y0 + Dpi.S(10) - Dpi.S(7), Dpi.S(14), Dpi.S(14));
+				using (var pen = new Pen(Color.FromArgb(90, dot), Dpi.S(2))) g.DrawEllipse(pen, cx - Dpi.S(7), cy - Dpi.S(7), Dpi.S(14), Dpi.S(14));
+
+			int right = (int)card.Right - Dpi.S(12);
+			bool debugActive = v.Dte != null && (v.Building || v.DebugMode == 2 || v.DebugMode == 3);
+			if (debugActive)
+			{
+				GetDebugColors(v, out _, out var dbg, out var ddot);
+				float dx = right - Dpi.S(5);
+				Theme.FillCircle(g, dbg, dx, cy, Dpi.S(7));
+				Theme.FillCircle(g, ddot, dx, cy, Dpi.S(3));
+				right -= Dpi.S(20);
+			}
 			g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
 
+			int nameX = (int)cx + Dpi.S(14);
 			var flags = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
-			string hot = e.Index < 9 ? $"Ctrl+Alt+{e.Index + 1}" : "";
-			int hotW = hot.Length > 0 ? TextRenderer.MeasureText(g, hot, Theme.Small, Size.Empty, TextFormatFlags.NoPadding).Width : 0;
-			int nameX = x0 + Dpi.S(18);
-			TextRenderer.DrawText(g, NameOf(v), Theme.SemiBold, new Rectangle(nameX, y0, Math.Max(0, right - nameX - hotW - Dpi.S(8)), Dpi.S(20)),
+			TextRenderer.DrawText(g, NameOf(v), selected ? Theme.SemiBold : Theme.Regular, new Rectangle(nameX, (int)card.Y, Math.Max(0, right - nameX), (int)card.Height),
 				selected ? Color.White : Theme.Text, flags);
-			if (hot.Length > 0)
-				TextRenderer.DrawText(g, hot, Theme.Small, new Rectangle(right - hotW, y0, hotW + 2, Dpi.S(20)), Theme.TextMuted, flags);
-
-			string path = string.IsNullOrEmpty(v.SolutionPath) ? "未获取到解决方案路径" : v.SolutionPath;
-			TextRenderer.DrawText(g, path, Theme.Small, new Rectangle(nameX, y0 + Dpi.S(22), Math.Max(0, right - nameX), Dpi.S(18)), Theme.TextMuted,
-				(flags & ~TextFormatFlags.EndEllipsis) | TextFormatFlags.PathEllipsis);
-
-			int px = nameX, py = y0 + Dpi.S(46);
-			int w = Theme.DrawPill(g, px, py, right - px, StateText(v), pill, fg, null);
-			if (v.Dte != null && w > 0 && px + w + Dpi.S(6) < right)
-			{
-				GetDebugColors(v, out var dfg, out var dbg, out var ddot);
-				Theme.DrawPill(g, px + w + Dpi.S(6), py, right - px - w - Dpi.S(6), DebugText(v), dbg, dfg, ddot);
-			}
 		}
 
+		/// <summary>VS 行悬停提示：路径、状态与快捷键。/ VS row tooltip: path, state and hotkey.</summary>
+		private string ListTip(int index)
+		{
+			if (index < 0 || index >= _list.Items.Count || !(_list.Items[index] is VsInstance v)) return null;
+			string tip = NameOf(v) + "\r\n" + (string.IsNullOrEmpty(v.SolutionPath) ? "未获取到解决方案路径" : v.SolutionPath) +
+				"\r\nCopilot：" + StateText(v);
+			if (v.Dte != null) tip += " · " + DebugText(v);
+			if (index < 9) tip += "\r\nCtrl+Alt+" + (index + 1);
+			return tip;
+		}
 		private void GetStateColors(VsInstance v, out Color fg, out Color bg, out Color dot)
 		{
 			if (v != null && _settings.MonitorCopilot && v.Copilot == CopilotState.Busy) { fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; }
@@ -981,22 +990,34 @@ namespace VSManager
 		#region Copilot 对话
 
 		/// <summary>在主区域显示 AI 总控助手（true）或 VS 对话（false）。</summary>
-		private void ShowAgent(bool on)
+		private bool ShowAgent(bool on)
 		{
 			on &= _settings.AgentEnabled;
+			if (_workspaceNavigation != null && !_workspaceNavigation.Select(on ? WorkspacePage.Agent : WorkspacePage.VisualStudio))
+			{
+				SetStatus("笔记未保存，无法切换。请先另存草稿。 / Save a copy of the note before switching.");
+				return false;
+			}
 			_agentMode = on;
 			_agentCard.Selected = on;
 			if (on && _list.SelectedIndex >= 0) { _list.ClearSelected(); OnSelectionChanged(); }
-			_agentPanel.Visible = on;
-			_chat.Visible = !on;
-			if (on) { _agentPanel.BringToFront(); _agentPanel.FocusInput(); }
-			else if (_list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
+			if (on) _agentPanel.FocusInput();
+			else
+			{
+				_workspaceSidebar?.SetVsCollapsed(false);
+				if (_list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
+			}
+			return true;
 		}
 
 		private void OnSelectionChanged()
 		{
 			var v = Selected;
-			if (v != null && _agentMode) ShowAgent(false);
+			if (v != null && (_agentMode || _notebookMode) && !ShowAgent(false))
+			{
+				_list.ClearSelected();
+				return;
+			}
 			var old = _chatSvc.Target;
 			if (old != v)
 			{
@@ -1217,6 +1238,18 @@ namespace VSManager
 
 		private async void OnChatSend(string text)
 		{
+			if (VsMentionSession.HasIntent(text))
+			{
+				var draftOwner = Selected;
+				var result = SubmitChatMention(text);
+				if (result.Accepted)
+				{
+					if (draftOwner != null) { _drafts.Remove(draftOwner.Pid); _imageDrafts.Remove(draftOwner.Pid); }
+					_chat.ClearInput();
+				}
+				SetStatus(result.Message);
+				return;
+			}
 			var v = Selected;
 			if (v == null) return;
 			if (_chat.Images.Count == 0)
@@ -1382,7 +1415,7 @@ namespace VSManager
 					+ $"Not queued: task #{same.Id} already failed with the same text; a verbatim resend would likely fail again. Analyze its Copilot reply first: "
 					+ $"report pre-existing issues or needed user tests to the user; if a retry is needed, publish a revised task prefixed 'resend @{same.Id}:' that addresses the cause, or let the user requeue it.";
 			string name = NameOf(v);
-			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
+			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => !i.HasExplicitTarget && TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
 			var q = duplicate ?? (attachments != null && attachments.Length > 0
 				? _tasks.Add(v.Key, name, text.Trim(), source, attachments)
 				: _tasks.Add(v.Key, name, text.Trim(), source));
@@ -1413,7 +1446,7 @@ namespace VSManager
 			int recent = Math.Max(8, AppSettings.ClampQuota(nameof(AppSettings.AgentMaxReadCount), _settings.AgentMaxReadCount) * 2 / 5);
 			int taskText = AppSettings.ClampQuota(nameof(AppSettings.AgentMaxTaskText), _settings.AgentMaxTaskText);
 			var items = _tasks.Items.Where(t => QueueStatus.Active(t.Status))
-				.Concat(_tasks.Items.Where(t => t.IsWorktreeMerge && t.Status != QueueStatus.Done))
+				.Concat(_tasks.Items.Where(t => t.IsWorktreeMerge && !QueueStatus.Delivered(t.Status)))
 				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).Distinct().ToList();
 			if (items.Count == 0) return "任务清单为空。";
 			var sb = new System.Text.StringBuilder();
@@ -1422,12 +1455,12 @@ namespace VSManager
 			foreach (var lane in _tasks.Items.Where(t => t.Worktree != null).GroupBy(t => t.Worktree.Root, StringComparer.OrdinalIgnoreCase))
 				sb.Append("Worktree ").Append(lane.Key).Append(" | 成功开发任务 / Successful development tasks: ")
 					.Append(lane.Count(t => t.WorktreeCounted && !t.IsWorktreeMerge)).Append(" | 已合并批次 / Integrated batches: ")
-					.Append(lane.Count(t => t.IsWorktreeMerge && t.Status == QueueStatus.Done)).AppendLine();
+					.Append(lane.Count(t => t.IsWorktreeMerge && QueueStatus.Delivered(t.Status))).AppendLine();
 			foreach (var t in items)
 			{
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(_dispatcher.StartStateText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
-				if (!string.IsNullOrEmpty(t.Result) && t.Status == QueueStatus.Done) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
-				if (!string.IsNullOrEmpty(t.Error) && t.Status != QueueStatus.Done) sb.Append(" | 错误：").Append(t.Error);
+				if (!string.IsNullOrEmpty(t.Result) && QueueStatus.Delivered(t.Status)) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
+				if (!string.IsNullOrEmpty(t.Error) && !QueueStatus.Delivered(t.Status)) sb.Append(" | 错误：").Append(t.Error);
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureKind)) sb.Append(" | 类别：").Append(FailureKind.Label(t.FailureKind));
 				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append('/').Append(TaskStateMachine.MaxSupplements).Append(" 次：").Append(Clip(t.Supplement, 200));
 				if (!string.IsNullOrEmpty(t.PredecessorNotice)) sb.Append(" | ").Append(t.PredecessorNotice);
@@ -1492,6 +1525,7 @@ namespace VSManager
 		{
 			bool on = _settings.AgentEnabled;
 			_agentCard.Visible = on;
+			_workspaceSidebar?.SetAgentVisible(on);
 			if (!on) { _agent.Stop(); if (_agentMode) ShowAgent(false); }
 		}
 
@@ -1769,6 +1803,8 @@ namespace VSManager
 		private void ApplyInstances(List<VsInstance> list)
 		{
 			_instances = list;
+			_chat.RefreshMentions();
+			_agentPanel.RefreshMentions();
 			// 已打开的 VS 或其名称变化时，刷新任务清单的分组标题 / Refresh task group titles when open VS instances or their names change
 			string groupSignature = string.Join("\n", TaskGroupTargets().Select(g => g.Number + "|" + g.Key + "|" + g.Name));
 			if (groupSignature != _taskGroupSignature) { _taskGroupSignature = groupSignature; _taskPanel.RefreshItems(); }
@@ -1792,7 +1828,7 @@ namespace VSManager
 				RegisterHotkeys();
 				PruneInstanceAliases(list);
 			}
-			if (!_agentMode && _list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
+			if (!_agentMode && !_notebookMode && _list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
 			if (_list.Items.Count == 0 && _chatSvc.Target != null) OnSelectionChanged();
 			_sideCount.Text = list.Count.ToString();
 			_list.Invalidate();
@@ -1928,6 +1964,21 @@ namespace VSManager
 
 		private void UpdateTaskTimer() => _taskTimer.Enabled = _dispatcher.HasDispatchActivity;
 
+		private HashSet<int> _finishedTaskIds = new HashSet<int>();
+
+		private IEnumerable<int> FinishedTaskIds() =>
+			_tasks.Items.Where(t => QueueStatus.Delivered(t.Status) || t.Status == QueueStatus.Failed).Select(t => t.Id);
+
+		/// <summary>有新任务结束时刷新已打开的内存窗口（替代原 5 秒轮询）。/ Refreshes the open memory window when a task newly finishes (replaces the old 5-second polling).</summary>
+		private void RefreshMemoryAfterTask()
+		{
+			if (InvokeRequired) { BeginInvoke(new Action(RefreshMemoryAfterTask)); return; }
+			var finished = new HashSet<int>(FinishedTaskIds());
+			bool newlyFinished = finished.Any(id => !_finishedTaskIds.Contains(id));
+			_finishedTaskIds = finished;
+			if (newlyFinished && _memoryForm != null && !_memoryForm.IsDisposed) _memoryForm.RefreshAfterTask();
+		}
+
 		/// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task and notifies the AI assistant.</summary>
 		private Task FinishTask(QueuedTask t, VsInstance v, TimeSpan? dur) => _dispatcher.FinishAsync(t, v, dur);
 
@@ -1968,13 +2019,14 @@ namespace VSManager
 					}
 					return;
 				case "open":
-					var v = t.Worktree == null ? FindVs(t.VsKey) : ((ITaskDispatchHost)this).FindTargetVs(t);
-					if (v == null && t.Worktree != null)
+					var v = t.HasExplicitTarget ? ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t)
+						: t.Worktree == null ? FindVs(t.VsKey) : ((ITaskDispatchHost)this).FindTargetVs(t);
+					if (v == null && t.Worktree != null && !t.HasExplicitTarget)
 					{
 						var lane = _solutions.FindByPath(t.Worktree.SolutionPath);
 						if (lane != null) { OpenSolutionFromUi(lane); return; }
 					}
-					if (v == null && t.Status == QueueStatus.WaitingVs)
+					if (v == null && t.Status == QueueStatus.WaitingVs && !t.HasExplicitTarget)
 					{
 						// 暂存任务：打开登记的解决方案，打开后自动推送 / Parked task: open the registered solution; the task is pushed once it opens
 						var entry = _solutions.FindByPath(t.VsKey);
@@ -1993,11 +2045,13 @@ namespace VSManager
 					if (_tasks.Remove(t.Id) && TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					return;
 				case "retry":
-					if (!_dispatcher.CanRun(t)) { SetStatus(TaskDispatcher.WaitingForStart); return; }
+					if (MessageBox.Show(this, "请先检查目标 Copilot 的历史消息和草稿，确认需要重新发送。本操作只重新排队当前任务，不会覆盖已有草稿。\nVerify prior delivery and the target draft before resending. Only this task is requeued; existing drafts are never overwritten.",
+						"手动重新排队 / Requeue manually", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
 					// 手动重新排队复用原条目，不再隐藏 / A manual requeue reuses the entry, which is no longer hidden
 					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					_dispatcher.Retry(t);
 					return;
+				case "verify": _dispatcher.MarkVerified(t); return;
 				case "dispatch": _dispatcher.DispatchNow(t); return;
 				case "attachments": ShowTaskAttachments(t); return;
 				case "release":
@@ -2071,7 +2125,8 @@ namespace VSManager
 		/// <summary>该提问是否由 VSManager 发送（文本前缀互相包含即视为同一条）。</summary>
 		private bool SentByUs(int pid, string key)
 		{
-			if (_tasks.Items.Any(t => t.Status == QueueStatus.Sending && FindVs(t.VsKey)?.Pid == pid
+			if (_tasks.Items.Any(t => t.Status == QueueStatus.Sending
+				&& (t.HasExplicitTarget ? ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t) : FindVs(t.VsKey))?.Pid == pid
 				&& !string.IsNullOrEmpty(t.CompletionToken) && key.Contains("[VSManager:" + t.CompletionToken + ":"))) return true;
 			foreach (var s in _recentSends)
 			{
@@ -2227,14 +2282,15 @@ namespace VSManager
 		private async void OnCopilotCompleted(VsInstance v, TimeSpan dur)
 		{
 			SettleExternals(v);
-			var queued = _tasks.Items.FirstOrDefault(x => x.Status == QueueStatus.Running && x.VsKey == v.Key);
+			var queued = _tasks.Items.FirstOrDefault(x => x.Status == QueueStatus.Running
+				&& (x.HasExplicitTarget ? x.MatchesExplicitTarget(v) : x.VsKey == v.Key));
 			if (queued != null)
 			{
 				bool automatic = _dispatcher.IsAutomatic(queued) || _dispatcher.HasYieldedToManualChat(queued);
 				try { await FinishTask(queued, v, dur); }
 				catch (Exception ex) { SetStatus("任务结果处理出错：" + ex.Message); return; }
 				// 自动任务及曾礼让的任务在完成提交时统一通知，避免重复播报。/ Automatic and yielded tasks announce at commit, not again on the busy/idle event.
-				if (queued.Status != QueueStatus.Done || automatic) return;
+				if (!QueueStatus.Delivered(queued.Status) || automatic) return;
 			}
 			else PumpTasks();
 			NotifyCopilotCompleted(v, dur, queued);
@@ -2469,6 +2525,8 @@ namespace VSManager
 				AppLog.Write(ProcessWatchdog.LogFile, "重启后恢复 / Recovered after restart：" + _tasks.Items.Count + " 条任务 / tasks，暂停 / paused " + _pausedAfterCrash);
 			}
 			_tasks.Changed += UpdateTaskTimer;
+			_finishedTaskIds = new HashSet<int>(FinishedTaskIds());
+			_tasks.Changed += RefreshMemoryAfterTask;
 			_taskPanel.CanRunTask = _dispatcher.CanRun;
 			_taskPanel.TaskStartText = _dispatcher.StartStateText;
 			_dispatcher.ApplyAutomaticStart();
@@ -2506,6 +2564,14 @@ namespace VSManager
 				e.Cancel = true;
 				Hide();
 				_tray.ShowBalloonTip(2000, "多 VS 管理工具", "已最小化到托盘，继续监听 Copilot。右键托盘图标可退出。", ToolTipIcon.Info);
+				return;
+			}
+			if (e.Cancel || !SaveNotebook())
+			{
+				e.Cancel = true;
+				_exiting = false;
+				OpenNotebooks();
+				SetStatus("笔记未保存，已取消退出。请在笔记本中另存草稿。 / Exit cancelled: save a copy of the unsaved note.");
 				return;
 			}
 			// 真正退出：告诉看门狗这是正常退出 / Real exit: tell the watchdog this is a clean exit

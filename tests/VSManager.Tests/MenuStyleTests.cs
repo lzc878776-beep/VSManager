@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Drawing;
@@ -14,20 +14,6 @@ namespace VSManager.Tests
     [TestClass]
     public class MenuStyleTests
     {
-        private static readonly string[] DisplayOrderPrefix =
-        {
-            "显示排序（与执行隔离）/ Display ordering (separate from execution)",
-            TaskDisplayOrder.DisplayOnly,
-            "实际执行：编号及前序规则，不随拖拽改变 / Execution: IDs and predecessors; unaffected by dragging",
-            "条目：手动显示顺序 / Entries: manual display order",
-            "条目：默认显示顺序 / Entries: default display order",
-            "分组：手动显示顺序 / Groups: manual display order",
-            "分组：执行中优先、最近活动 / Groups: running first, latest activity",
-            "分组：按 VS 编号 / Groups: by VS number",
-            "清除全部手动显示顺序 / Reset all manual display ordering",
-            "切换为平铺列表 / Switch to flat list"
-        };
-
         [TestMethod]
         public void TaskHeader_ManualStartIsVisible_AndButtonsDoNotOverlapHistory()
         {
@@ -45,7 +31,8 @@ namespace VSManager.Tests
                     panel.PerformLayout();
                     var top = panel.Controls.OfType<Panel>().Single();
                     var buttons = top.Controls.OfType<FlatButton>().Where(b => b.Visible).ToArray();
-                    var start = buttons.Single(b => b.Text == "开始流程 / Start");
+                    var start = buttons.Single(b => b.Text == "▶ 开始流程 / Start");
+                    Assert.IsTrue(start.Primary);
                     Assert.IsTrue(start.Enabled);
                     Assert.IsTrue(buttons.Any(b => b.Text == "历史"));
                     Assert.IsTrue(start.Width >= Dpi.S(120));
@@ -66,7 +53,7 @@ namespace VSManager.Tests
                     typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(start, new object[] { EventArgs.Empty });
                     Assert.AreEqual(1, clicks);
                     Assert.IsFalse(start.Enabled);
-                    Assert.AreEqual("已启动 / Started", start.Text);
+                    Assert.AreEqual("✓ 已启动 / Started", start.Text);
                     start.PerformClick();
                     Assert.AreEqual(1, clicks);
                     panel.SetCollapsed(true);
@@ -207,6 +194,7 @@ namespace VSManager.Tests
         [DataRow(QueueStatus.Done)]
         [DataRow(QueueStatus.Failed)]
         [DataRow(QueueStatus.Cancelled)]
+        [DataRow(QueueStatus.Unverified)]
         public void TaskMenu_PreservesActionsAndEnabledRules_ForEveryStatus(string status)
         {
             RunSta(() =>
@@ -223,22 +211,25 @@ namespace VSManager.Tests
                     var menu = (GroupedContextMenuStrip)list.ContextMenuStrip;
                     Prepare(menu);
                     string cancelText = status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
-                    CollectionAssert.AreEqual(new[]
-                    {
-                        "任务操作与历史 / Tasks and history", "立即尝试发布", "重新排队", "补充信息后重试… / Retry with info…", "放行后续任务 / Release successors", cancelText,
-                        "复制任务内容", "从清单中删除", "清除已完成（仅界面）", "显示已清除的历史",
-                        "撤销清除（恢复显示全部历史）", "VS 操作 / Visual Studio", "查看该 VS 的对话"
-                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
-                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
-                    Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs, Find(menu, "立即尝试发布").Enabled);
-                    Assert.AreEqual(status == QueueStatus.Failed || status == QueueStatus.Cancelled, Find(menu, "重新排队").Enabled);
-                    Assert.AreEqual(status == QueueStatus.Failed, Find(menu, "补充信息后重试… / Retry with info…").Enabled);
-                    Assert.IsFalse(Find(menu, "放行后续任务 / Release successors").Enabled, "默认「失败」级无需放行 / nothing to release at the default level");
+                    bool waiting = status == QueueStatus.Waiting || status == QueueStatus.WaitingVs;
+                    bool ended = status == QueueStatus.Failed || status == QueueStatus.Cancelled || status == QueueStatus.Unverified;
+                    var expected = new List<string>();
+                    if (waiting) expected.Add("重新检查并推送 / Recheck and send");
+                    if (ended) expected.Add("手动重新排队 / Requeue manually");
+                    if (status == QueueStatus.Failed) expected.Add("补充信息后重试… / Retry with info…");
+                    if (status == QueueStatus.Unverified) expected.Add("标记为已验证 / Mark as verified");
+                    if (waiting || status == QueueStatus.Running) expected.Add(cancelText);
+                    expected.AddRange(new[] { "查看该 VS 的对话", "复制任务内容", "从清单中删除" });
+                    CollectionAssert.AreEqual(expected, AvailableText(menu));
+                    foreach (var removed in new[] { "清除已完成（仅界面）", "显示已清除的历史", "撤销清除（恢复显示全部历史）", "清除全部手动显示顺序 / Reset all manual display ordering" })
+                        Assert.IsFalse(menu.Items.Cast<ToolStripItem>().Any(i => i.Text == removed), removed);
+                    Assert.AreEqual(waiting, Find(menu, "重新检查并推送 / Recheck and send").Enabled);
+                    Assert.AreEqual(ended, Find(menu, "手动重新排队 / Requeue manually").Enabled);
                     Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs || status == QueueStatus.Running, Find(menu, cancelText).Enabled);
                     Assert.AreEqual(status != QueueStatus.Sending, Find(menu, "从清单中删除").Enabled);
                     var actions = new List<string>();
                     panel.ActionRequested += (t, action) => { Assert.AreSame(task, t); actions.Add(action); };
-                    var pairs = new[] { Tuple.Create("立即尝试发布", "dispatch"), Tuple.Create("重新排队", "retry"), Tuple.Create(cancelText, "cancel"), Tuple.Create("从清单中删除", "remove"), Tuple.Create("查看该 VS 的对话", "open") };
+                    var pairs = new[] { Tuple.Create("重新检查并推送 / Recheck and send", "dispatch"), Tuple.Create("手动重新排队 / Requeue manually", "retry"), Tuple.Create("标记为已验证 / Mark as verified", "verify"), Tuple.Create(cancelText, "cancel"), Tuple.Create("从清单中删除", "remove"), Tuple.Create("查看该 VS 的对话", "open") };
                     foreach (var pair in pairs)
                     {
                         var item = Find(menu, pair.Item1);
@@ -346,7 +337,7 @@ namespace VSManager.Tests
                     var shown = AvailableText(menu);
                     CollectionAssert.Contains(shown, "折叠该分组 / Collapse group");
                     CollectionAssert.Contains(shown, "切换为平铺列表 / Switch to flat list");
-                    CollectionAssert.DoesNotContain(shown, "立即尝试发布");
+                    CollectionAssert.DoesNotContain(shown, "重新检查并推送 / Recheck and send");
                     CollectionAssert.DoesNotContain(shown, "查看该 VS 的对话");
                     Find(menu, "折叠该分组 / Collapse group").PerformClick();
                     Assert.IsTrue(((TaskGroupHeader)list.Items[0]).Collapsed);
@@ -377,13 +368,9 @@ namespace VSManager.Tests
                     list.SelectedItem = chat;
                     var menu = (GroupedContextMenuStrip)list.ContextMenuStrip;
                     Prepare(menu);
-                    CollectionAssert.AreEqual(new[]
-                    {
-                        "任务操作与历史 / Tasks and history", "复制提问与回答", "从清单中移除", "清除已完成（仅界面）",
-                        "显示已清除的历史", "撤销清除（恢复显示全部历史）", "AI 对话 / AI chat", "■ 停止生成",
-                        "VS 操作 / Visual Studio", "打开该 VS 并定位对话"
-                    }, AvailableText(menu).Skip(DisplayOrderPrefix.Length).ToArray());
-                    CollectionAssert.AreEqual(DisplayOrderPrefix, AvailableText(menu).Take(DisplayOrderPrefix.Length).ToArray());
+                    CollectionAssert.AreEqual(generating
+                        ? new[] { "■ 停止生成", "打开该 VS 并定位对话", "复制提问与回答", "从清单中移除" }
+                        : new[] { "打开该 VS 并定位对话", "复制提问与回答", "从清单中移除" }, AvailableText(menu));
                     string requested = null;
                     panel.ExternalActionRequested += (c, action) => { Assert.AreSame(chat, c); requested = action; };
                     Find(menu, "■ 停止生成").PerformClick();
@@ -392,7 +379,7 @@ namespace VSManager.Tests
                     Assert.AreEqual("open", requested);
                     list.SelectedItem = task;
                     Prepare(menu);
-                    Assert.IsFalse(menu.Items.OfType<MenuGroupHeader>().Single(h => h.Text == "AI 对话 / AI chat").Available);
+                    Assert.IsFalse(Find(menu, "■ 停止生成").Available);
                     Assert.IsTrue(Find(menu, "查看该 VS 的对话").Available);
                 }
             });
@@ -417,10 +404,11 @@ namespace VSManager.Tests
                     Prepare(menu);
                     Assert.AreEqual(0, list.Items.Count);
                     Assert.IsFalse(Find(menu, "恢复显示该失败条目 / Show this failed entry again").Available);
-                    Find(menu, "显示已清除的历史").PerformClick();
+                    var historyButton = (FlatButton)typeof(TaskPanel).GetField("_btnHistory", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(panel);
+                    typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(historyButton, new object[] { EventArgs.Empty });
                     list.SelectedItem = task;
                     Prepare(menu);
-                    Assert.IsTrue(((ToolStripMenuItem)Find(menu, "显示已清除的历史")).Checked);
+                    Assert.AreEqual("收起", historyButton.Text);
                     Assert.IsTrue(Find(menu, "恢复显示该失败条目 / Show this failed entry again").Available);
                     string action = null;
                     panel.ActionRequested += (t, a) => { Assert.AreSame(task, t); action = a; };
@@ -459,7 +447,7 @@ namespace VSManager.Tests
         }
 
         private static TaskQueue NewQueue() => new TaskQueue(new AppSettings(), new MemoryTaskStore(), new RecordingArchive(), () => DateTime.Now);
-        private static string[] AvailableText(ToolStrip menu) => menu.Items.Cast<ToolStripItem>().Where(i => i.Available).Select(i => i.Text).ToArray();
+        private static string[] AvailableText(ToolStrip menu) => menu.Items.Cast<ToolStripItem>().Where(i => i.Available && !(i is ToolStripSeparator)).Select(i => i.Text).ToArray();
         private static ToolStripItem Find(ToolStrip menu, string text) => menu.Items.Cast<ToolStripItem>().Single(i => i.Text == text);
         private static void Prepare(GroupedContextMenuStrip menu) => typeof(GroupedContextMenuStrip)
             .GetMethod("OnOpening", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(menu, new object[] { new CancelEventArgs() });

@@ -115,7 +115,7 @@ namespace VSManager
                 Toggle("在任务清单中显示 VS 手动对话", "可停止、打开、复制；启用「归档」时会保存并在重启后恢复，关闭归档则仅保存在内存中",
                     _s.WatchConversations, v => _s.WatchConversations = v),
                 Toggle("等待手动对话结束 / Wait for manual chat",
-                    "生成中或存在草稿时队列等待；超时仅提醒，不强制发送；不依赖监听及归档 / Queues wait for generation or drafts; timeout only warns, never forces sending; independent of monitoring and archives",
+                    "提前探测生成和草稿并让行；超时仅提醒；关闭后写入边界仍保护草稿和附件 / Probe generation and drafts before sending; timeout only warns; write-boundary draft and attachment protection stays active when disabled",
                     _s.WaitForManualChat, v => _s.WaitForManualChat = v),
                 Toggle("AI 任务自动启动 / Auto-start AI tasks",
                     "默认开启：仅新发布 AI 任务自动，手动及恢复任务仍需 Start；不越过前序 / On by default: newly submitted AI tasks only; manual and restored tasks await Start; no queue jumping",
@@ -1089,6 +1089,12 @@ namespace VSManager
                 return row;
             }
 
+            Row(null, Toggle("任务完成后保存并关闭文档 / Save and close documents after tasks",
+                "默认开启；只保存已有路径且可写的文件，保存失败的保持打开；调试中不关闭 / On by default; saves only existing writable files, keeps failures open; no closing while debugging",
+                _s.SaveAndCloseDocumentsAfterTask, v => _s.SaveAndCloseDocumentsAfterTask = v), Dpi.S(72), true);
+            Row(null, Toggle("已完成任务写入笔记本 / Record completed tasks in notebooks",
+                "默认开启；按天建立「任务记录」目录，清单页含简述与时间，点击进入详情 / On by default; daily folder with a list of summaries and times linking to details",
+                _s.RecordCompletedTasksInNotebook, v => _s.RecordCompletedTasksInNotebook = v), Dpi.S(72), true);
             Row(null, Toggle("发送前关闭已保存文档 / Close saved documents before sending",
                 "默认关闭；跳过未保存、状态未知和调试中的文档，不关闭工具窗口 / Off by default; skip unsaved, unknown and debugging states; never close tool windows",
                 _s.CloseVsDocumentsBeforeSend, v => _s.CloseVsDocumentsBeforeSend = v), Dpi.S(72), true);
@@ -1120,7 +1126,7 @@ namespace VSManager
                 "秒（2–120，默认 " + AppSettings.DefaultSendConfirmTimeoutSeconds + "）/ seconds (2–120, default " + AppSettings.DefaultSendConfirmTimeoutSeconds + ")"), Dpi.S(42));
 
             Row(null, Toggle("粘贴未确认 / 输入框未找到时自动重试 / Auto-retry an unconfirmed paste or a missing input box",
-                "重新定位输入框并再试一次；不影响任务清单每 30 秒的发布重试 / Locates the input again and tries once more; the task list's 30-second publish retry is unchanged",
+                "直接对话可重新定位后重试粘贴；队列任务发送失败立即终止，写入后不自动重发 / Direct chat may retry pasting after relocation; queued send failures stop immediately and never resend after writing",
                 _s.SendAutoRetry, v => _s.SendAutoRetry = v), Dpi.S(56), true);
 
             (retriesHost, _sendRetries) = NewTextBox(_s.SendRetryCount.ToString(), false);

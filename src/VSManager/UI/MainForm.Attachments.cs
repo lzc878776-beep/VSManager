@@ -136,6 +136,7 @@ namespace VSManager
         /// </summary>
         internal static bool IsPreSubmitImageFailure(string r) =>
             r != null && r.IndexOf("草稿", StringComparison.Ordinal) < 0 && !SendRetryPolicy.IsBlocked(r)
+            && !r.StartsWith(ManualChatProtection.UncertainPrefix, StringComparison.Ordinal)
             && (r.EndsWith("未发送图片", StringComparison.Ordinal) || r.EndsWith("已取消图片发送", StringComparison.Ordinal)
                 || r.StartsWith("无法备份剪贴板，未发送图片", StringComparison.Ordinal) || r == "图片附件无效");
 

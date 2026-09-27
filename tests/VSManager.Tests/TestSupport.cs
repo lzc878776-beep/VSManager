@@ -71,8 +71,12 @@ namespace VSManager.Tests
     }
 
     /// <summary>任务调度器的模拟宿主。/ Fake host for the task dispatcher.</summary>
-    internal sealed class FakeDispatchHost : ITaskDispatchHost, IManualChatDispatchHost
+    internal sealed class FakeDispatchHost : ITaskDispatchHost, IManualChatDispatchHost, IManualChatRefreshHost, ITaskCompletionHost
     {
+        public Func<QueuedTask, VsInstance, Task> AfterCompleted;
+        public Task AfterTaskCompletedAsync(QueuedTask t, VsInstance v) => AfterCompleted?.Invoke(t, v) ?? Task.CompletedTask;
+        public readonly List<VsInstance> Refreshed = new List<VsInstance>();
+        public void RefreshManualChat(VsInstance target) => Refreshed.Add(target);
         public Func<VsInstance, Task<ManualChatObservation>> ManualReader;
         public Func<VsInstance, QueuedTask, Func<bool>, Task<string>> GuardedSender;
         public int ManualReads;

@@ -195,6 +195,9 @@ namespace VSManager.Tests
         [DataRow("未能确认图片附件已加入，未发送。请确认该 VS / 模型支持图片，并检查 VS 草稿后重试", false)]
         [DataRow("已点击发送，但尚未确认成功。请在 VS 中查看，确认前不要重复发送", false)]
         [DataRow("图片附件无效", true)]
+        [DataRow(ManualChatProtection.UncertainPrefix + "无法激活该 VS，未发送图片", false)]
+        [DataRow(ManualChatProtection.UncertainPrefix + "已取消图片发送", false)]
+        [DataRow(ManualChatProtection.WaitPrefix + "未发送图片", false)]
         public void PreSubmitImageFailure_OnlyWhenDraftUntouched(string result, bool expected) =>
             Assert.AreEqual(expected, MainForm.IsPreSubmitImageFailure(result));
 

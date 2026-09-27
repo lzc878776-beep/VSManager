@@ -281,6 +281,7 @@ namespace VSManager
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中";
                 case QueueStatus.Done: return "已完成";
+                case QueueStatus.Unverified: return "未验证";
                 case QueueStatus.Failed: return "失败";
                 case QueueStatus.Cancelled: return "已取消";
                 default: return s;

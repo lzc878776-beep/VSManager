@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 using System.Windows.Automation;
 
 namespace VSManager
@@ -10,41 +12,69 @@ namespace VSManager
     {
         [ThreadStatic] private static Func<bool> _queueGuard;
         [ThreadStatic] private static bool _queueTouched;
+        private static readonly Dictionary<string, string> _inputDiagnostics = new Dictionary<string, string>();
+
+        private static ManualChatObservation InputDiagnostic(VsInstance target, ManualChatObservation observation, string detail)
+        {
+            string key = target?.InstanceKey ?? "unknown";
+            string summary = $"探测 / Probe: {observation}; {detail}";
+            T(summary);
+            lock (_inputDiagnostics)
+            {
+                if (_inputDiagnostics.TryGetValue(key, out var previous) && previous == summary) return observation;
+                if (_inputDiagnostics.Count >= 128) _inputDiagnostics.Clear();
+                _inputDiagnostics[key] = summary;
+                using (var hash = SHA256.Create())
+                {
+                    string identity = BitConverter.ToString(hash.ComputeHash(Encoding.UTF8.GetBytes(key)), 0, 6).Replace("-", "");
+                    AppLog.Write("send-diagnostics.log", $"目标标识 / Target hash={identity}; {summary}");
+                }
+            }
+            return observation;
+        }
 
         /// <summary>只读活动探测，独立于监听及归档开关；不得写入日志中的草稿。/ Read-only activity probe independent of monitoring and archives; never logs drafts.</summary>
         public ManualChatObservation ObserveManualChat(VsInstance target)
         {
             try
             {
-                if (target == null || !Native.IsWindow(target.MainHwnd)) return ManualChatObservation.Unknown;
+                if (target == null || !Native.IsWindow(target.MainHwnd)) return InputDiagnostic(target, ManualChatObservation.Unknown, "窗口无效 / Invalid window");
                 var pane = FindPane(target, strict: true);
-                if (pane == null) return ManualChatObservation.PaneMissing;
+                if (pane == null) return InputDiagnostic(target, ManualChatObservation.PaneMissing, "窗格未找到 / Pane missing");
                 return ObserveManualInput(target, pane, null);
             }
-            catch { return ManualChatObservation.Unknown; }
+            catch (Exception ex) { return InputDiagnostic(target, ManualChatObservation.Unknown, "探测异常类别 / Probe error type=" + ex.GetType().Name); }
         }
 
         private ManualChatObservation ObserveManualInput(VsInstance target, AutomationElement pane, AutomationElement edit)
         {
             try
             {
-                if (pane == null || pane.Current.ProcessId != target.Pid) return ManualChatObservation.Unknown;
+                if (pane == null || pane.Current.ProcessId != target.Pid) return InputDiagnostic(target, ManualChatObservation.Unknown, "窗格身份不符 / Pane identity mismatch");
                 var ids = (_getSettings()?.BusyButtonIds ?? "CancelButton").Split(new[] { ',', ';', '，' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (string id in ids.Concat(new[] { "CancelButton" }).Distinct())
-                    foreach (var button in RawFindAll(pane, TreeScope.Descendants, new AndCondition(IdCond(id.Trim()),
-                        new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button))))
-                        if (!button.Current.IsOffscreen) return ManualChatObservation.Generating;
+                foreach (string id in ids.Concat(new[] { "CancelButton" }).Select(x => x.Trim()).Distinct())
+                {
+                    var buttonCond = new AndCondition(IdCond(id), new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.Button));
+                    var buttons = RawFindAll(pane, TreeScope.Children, buttonCond);
+                    if (buttons.Count == 0) buttons = RawFindAll(pane, TreeScope.Descendants, buttonCond);
+                    foreach (var button in buttons)
+                        if (!button.Current.IsOffscreen) return InputDiagnostic(target, ManualChatObservation.Generating, "停止按钮可见 / Stop button visible");
+                }
                 edit = edit ?? LocateEdit(pane, target.Pid).Edit;
-                if (edit == null || edit.Current.ProcessId != target.Pid) return ManualChatObservation.Unknown;
+                if (edit == null || edit.Current.ProcessId != target.Pid) return InputDiagnostic(target, ManualChatObservation.Unknown, "输入不可定位 / Input unavailable");
                 string text = GetEditText(edit);
                 bool focused = HasFocus(edit);
-                if (focused && InputComposition(target) != false) return ManualChatObservation.Unknown;
-                bool draft = text != null && text.Trim('\r', '\n').Length > 0;
+                bool? composing = focused ? InputComposition(target) : false;
+                bool draft = ManualChatProtection.HasDraft(text);
                 bool attachmentsReadable = TryAttachmentIds(pane, out var attachments);
-                return ManualChatProtection.Classify(false, text != null && attachmentsReadable,
-                    draft || (attachmentsReadable && attachments.Count > 0), focused);
+                var observation = composing != false ? ManualChatObservation.Unknown
+                    : ManualChatProtection.Classify(false, text != null && attachmentsReadable,
+                        draft || (attachmentsReadable && attachments.Count > 0), focused);
+                return InputDiagnostic(target, observation,
+                    $"原始长度 / RawLength={text?.Length ?? -1}; 规范化长度 / NormalizedLength={(text == null ? -1 : ManualChatProtection.NormalizeInput(text).Length)}; " +
+                    $"可读取 / Readable={text != null}; 附件数 / Attachments={(attachmentsReadable ? attachments.Count : -1)}; 合成 / IME={composing?.ToString() ?? "Unknown"}; 焦点 / Focus={focused}");
             }
-            catch { return ManualChatObservation.Unknown; }
+            catch (Exception ex) { return InputDiagnostic(target, ManualChatObservation.Unknown, "输入探测异常类别 / Input probe error type=" + ex.GetType().Name); }
         }
 
         [DllImport("imm32.dll")] private static extern IntPtr ImmGetContext(IntPtr window);
@@ -75,7 +105,7 @@ namespace VSManager
             try
             {
                 string result = Send(target, text, returnTo, background, images);
-                return _queueTouched && !SendRetryPolicy.IsDelivered(result) ? ManualChatProtection.UncertainPrefix + result : result;
+                return ManualChatProtection.DeliveryResult(_queueTouched, result);
             }
             finally { _queueGuard = null; _queueTouched = false; }
         }
@@ -112,11 +142,9 @@ namespace VSManager
             if (_queueGuard == null) return null;
             if (!_queueGuard()) return ManualChatProtection.WaitPrefix + "目标或任务已变化 / Target or task changed";
             if (_queueTouched) return ManualChatProtection.UncertainPrefix + "输入已写入，请核实 / Input already written; verify before retry";
-            if (_getSettings()?.WaitForManualChat != false)
-            {
-                var observation = ObserveManualInput(target, pane, edit);
-                if (observation != ManualChatObservation.Idle) return ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(observation);
-            }
+            // 即使关闭提前让行，写入边界仍不能覆盖真实草稿。/ Disabling advance yielding never permits overwriting drafts at the write boundary.
+            var observation = ObserveManualInput(target, pane, edit);
+            if (observation != ManualChatObservation.Idle) return ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(observation);
             if (writing) _queueTouched = true;
             return null;
         }

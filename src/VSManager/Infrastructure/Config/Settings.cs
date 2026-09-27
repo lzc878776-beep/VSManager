@@ -400,6 +400,10 @@ namespace VSManager
         /// <summary>文档标签页数量严格超过此值才清理，默认 10，范围 0–1000。/ Clean only when document tabs strictly exceed this threshold; default 10, range 0–1000.</summary>
         [DataMember] public int CloseVsDocumentsThreshold;
         public const int DefaultCloseVsDocumentsThreshold = 10;
+        /// <summary>任务完成后自动保存并关闭目标 VS 打开的文档，默认开启；调试中不关闭。/ Auto-save and close the target VS's open documents after a task completes; on by default, no closing while debugging.</summary>
+        [DataMember] public bool SaveAndCloseDocumentsAfterTask;
+        /// <summary>任务成功完成后写入笔记本「yyyy.M.d 任务记录」，默认开启。/ Record successfully completed tasks in the notebook "yyyy.M.d 任务记录" folder; on by default.</summary>
+        [DataMember] public bool RecordCompletedTasksInNotebook;
 
         public const int DefaultSendConfirmTimeoutSeconds = PasteVerifier.DefaultTimeoutSeconds, DefaultSendRetryCount = 1;
         public const int DefaultSendLocateTimeoutSeconds = InputLocator.DefaultTimeoutSeconds, DefaultSendLocateRetryCount = InputLocator.DefaultRetryCount;
@@ -464,6 +468,22 @@ namespace VSManager
 
         /// <summary>实际使用的 GitHub Token：设置优先，否则读取环境变量。/ Effective token: settings first, then the environment variable.</summary>
         public string EffectiveGitHubToken { get { string k = GitHubToken; return string.IsNullOrWhiteSpace(k) ? Env(GitHubTokenEnvVar) : k; } }
+
+        /// <summary>Notion 集成 Token（DPAPI 加密）。/ Notion integration token (DPAPI-encrypted).</summary>
+        [DataMember] public string NotionTokenProtected;
+        /// <summary>Notion 计划中专用于回写的状态字段名，为空时用「VSManager 状态」。/ Dedicated Notion status property for write-back; empty = "VSManager 状态".</summary>
+        [DataMember] public string NotionStatusProperty;
+
+        public const string NotionTokenEnvVar = "VSMANAGER_NOTION_TOKEN";
+
+        public string NotionToken
+        {
+            get => Unprotect(NotionTokenProtected);
+            set => NotionTokenProtected = Protect(value);
+        }
+
+        /// <summary>实际使用的 Notion Token：设置优先，否则读取环境变量。/ Effective Notion token: settings first, then the environment variable.</summary>
+        public string EffectiveNotionToken { get { string k = NotionToken; return string.IsNullOrWhiteSpace(k) ? Env(NotionTokenEnvVar) : k; } }
 
         public string AgentApiKey
         {
@@ -584,6 +604,8 @@ namespace VSManager
             SendLocateRetryCount = DefaultSendLocateRetryCount;
             CloseVsDocumentsBeforeSend = false;
             CloseVsDocumentsThreshold = DefaultCloseVsDocumentsThreshold;
+            SaveAndCloseDocumentsAfterTask = true;
+            RecordCompletedTasksInNotebook = true;
             SolutionCloseConfirm = true;
             SolutionOpenWaitSeconds = DefaultSolutionOpenWaitSeconds;
             PendingVsSettleSeconds = DefaultPendingVsSettleSeconds;

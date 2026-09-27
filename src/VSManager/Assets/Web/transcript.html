@@ -16,8 +16,9 @@ body { margin: 0; padding: 4px 8px 20px 0; line-height: 1.6; overflow-wrap: anyw
 article { margin: 0 0 24px; }
 .role { margin-bottom: 7px; font-size: 9.5pt; font-weight: bold; color: {{assistant}}; }
 .user .role { color: {{user}}; }
-.body { margin-left: 20px; }
-.user .body { color: {{userText}}; }
+.body { margin-left: 20px; padding: 10px 14px; background: {{bubble}}; border: 1px solid {{border}}; border-radius: 10px; }
+.user .body { color: {{userText}}; background: {{bubbleUser}}; }
+.body > :last-child, .markdown > :last-child { margin-bottom: 0; }
 .plain, .step { white-space: pre-wrap; }
 .plain { margin-bottom: 8px; }
 .step { font-size: 8.5pt; color: {{muted}}; margin: 2px 0; }

@@ -5,6 +5,13 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ## [未发布 / Unreleased]
 
+### 变更 / Changed
+
+- 任务结果阅读目标 VS 的最终反馈：新增回执 `UNVERIFIED`；即使回执为 `FAILED`，只要反馈说明功能已实现（构建 / 测试通过）、仅尚未在运行中的程序里实际验证，且没有构建失败、未实现或需要用户决定等问题，任务即进入新的「未验证」状态（`unverified`，与「已完成」「失败」并列，黄色 ◐ 标记），不再判为失败，也不阻塞后续任务；右键「标记为已验证」转为已完成，也可手动重新排队；状态写入 tasks.json，重启后保留；AI 助手按未验证汇报。缺少回执仍判失败。
+  Task results now read the target VS's final feedback: a new `UNVERIFIED` receipt, and even with a `FAILED` receipt, feedback saying the work is implemented (build / tests pass) with only runtime verification pending, and no build errors, missing implementation or required user decisions, puts the task in a new "unverified" status (`unverified`, alongside done and failed, shown with a yellow ◐) instead of failed, without blocking successors. "Mark as verified" turns it into done, and it can be requeued manually; the status is saved in tasks.json and survives restarts; the AI assistant reports it as unverified. Missing receipts still fail.
+- 笔记本改用本地 SQLite 数据库（`%APPDATA%\VSManager\Notebooks\notebook.db`），文件夹与笔记合并为「页面」：每个页面都有正文，也可包含子页面（右键「新建子页面 / 新建同级页面」）。首次启动时一次性导入原有 `.md` 文件、目录与图片（同名目录与笔记合并为一页），原文件保留作备份、不再读取；删除为数据库内软删除（含子页面）；侧边栏「导出 Markdown」可随时导出为文件夹结构。页面链接使用 `page:<id>`，重命名后仍然有效。
+  The notebook now uses a local SQLite database (`%APPDATA%\VSManager\Notebooks\notebook.db`) and merges folders and notes into pages: every page has content and can contain subpages (context menu "New subpage / New sibling page"). Existing `.md` files, folders and images are imported once on first start (a folder and a note with the same name become one page); the original files are kept as a backup and no longer read. Deleting is a soft delete in the database (including subpages). Use "Export Markdown" in the sidebar to export a folder tree at any time. Page links use `page:<id>` and survive renames.
+
 ### 新增 / Added
 
 - 任务队列放行等级：AI 总控助手顶栏新增三刻度滑块（已完成 / 待验证 / 失败），决定同一 VS 的前序以什么结果结束时自动执行下一项，设置持久化并兼容旧版「跳过失败前序」开关；被暂停时可「补充信息后重试」（每个任务最多 3 次）或「放行后续任务」；新增 AI 工具 `set_release_level`、`retry_task_with_info`、`release_task`，失败通知会提示 AI 在自行补充重试与转交用户之间判断。
@@ -15,6 +22,14 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 - 一键布局 Copilot 对话：把各 VS 的 Copilot 对话窗格浮动并在第二屏幕（可指定）横向均布或网格排列并置顶显示，可最小化 VS 主窗口；最小宽度限制下自动换行；记录原布局并可一键还原（同时取消置顶）。新增 AI 工具 `arrange_copilot_panes`、`restore_copilot_layout` 与实例列表右键菜单入口。
   One-click Copilot chat layout: floats the Copilot chat pane of each VS and spreads the panes side by side (or in a grid) on the second screen (configurable), kept on top, optionally minimizing the VS main windows; wraps to more rows under a minimum width; the previous layout is recorded and can be restored (which also clears always-on-top). New AI tools `arrange_copilot_panes` and `restore_copilot_layout`, plus instance list context menu entries.
+- 已完成任务自动写入笔记本：按天建立「yyyy.M.d 任务记录」页面，其子页面「已完成任务」列出时间与简述，点击进入任务详情子页面；笔记中的页面链接可在阅读视图中直接打开。设置项 `RecordCompletedTasksInNotebook`，默认开启。
+  Completed tasks are recorded in the notebook: a daily "yyyy.M.d 任务记录" page with a "已完成任务" subpage listing times and summaries that link to detail pages; page links open inside the notebook preview. Setting `RecordCompletedTasksInNotebook`, on by default.
+- 笔记本嵌入主界面：左侧按 VS 线程、AI 总控助手、Notion 树形目录分区，VS 和 Notion 可独立折叠；点击 VS、AI 或笔记，在同一主内容区切换对话与笔记，不再弹出独立窗口。切换前自动保存，保存失败时保留笔记页和草稿；VS 定时刷新不会打断笔记编辑，原有 Markdown 存储路径不变。
+  Embedded notebooks in the main window: the sidebar has VS threads, the existing AI assistant, and a Notion notebook tree. VS and Notion sections collapse independently; selecting a VS, AI or note switches the shared content area without opening another window. Notes save before switching; failed saves keep the notebook and draft active. VS refresh does not interrupt editing, and the Markdown storage location is unchanged.
+
+- 本地 Markdown 笔记本：主界面侧边栏「笔记本」入口，浅色树形目录与居中阅读布局，支持嵌套目录、新建 / 重命名、名称与正文搜索、编辑 / 阅读 / 分栏、停止输入后自动保存、插入本地图片及手动复制带来源的 AI 参考资料。文件保存在 `%APPDATA%\VSManager\Notebooks`；可通过「打开本地目录」导入 `.md` 文件后刷新。保存保留上一版 `.bak`，删除移入 `.trash`；外部修改冲突时保留编辑草稿并阻止覆盖，可「另存草稿」后重载。单篇笔记和图片上限 4 MB；禁用原始 HTML、远程图片和自动上传，外部链接需确认打开。AI 参考资料目前为手动复制，不会自动检索或写入笔记。
+  Local Markdown notebooks: open from the main sidebar, with a light tree sidebar and centered reading layout, nested folders, create / rename, title and content search, edit / read / split modes, debounced autosave, local images and explicit AI-context copying with source names. Files live in `%APPDATA%\VSManager\Notebooks`; use Open folder to import `.md` files and then refresh. Saves retain a previous-version `.bak`; deleted items move to `.trash`. External edits block overwrites and preserve the draft; use Save copy before reloading. Notes and images are limited to 4 MB each. Raw HTML, remote images and automatic uploads are disabled; opening external links requires confirmation. AI context is manually copied, not automatically retrieved or written back.
+
 
 - AI 助手自动重启：内部异常、请求连续失败或长时间无响应时自动重建，状态栏提示；可选进程看门狗（默认关闭）在异常退出后自动拉起；防重启风暴（默认 5 分钟最多 3 次）；「⟳ 重启」菜单与托盘菜单提供手动重启。
   AI assistant auto-restart after internal errors, repeated request failures or hangs, with a status-bar notice; an optional process watchdog (off by default) relaunches the app after an abnormal exit; restart-storm guard (default 3 per 5 minutes); manual restart from the "⟳" menu and the tray menu.
@@ -39,6 +54,11 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- 任务结果阅读目标 VS 的最终反馈：新增回执 `UNVERIFIED`；即使回执为 `FAILED`，只要反馈说明功能已实现（构建 / 测试通过）、仅尚未在运行中的程序里实际验证，且没有构建失败、未实现或需要用户决定等问题，任务即进入新的「未验证」状态（`unverified`，与「已完成」「失败」并列，黄色 ◐ 标记），不再判为失败，也不阻塞后续任务；右键「标记为已验证」转为已完成，也可手动重新排队；状态写入 tasks.json，重启后保留；AI 助手按未验证汇报。缺少回执仍判失败。
+  Task results now read the target VS's final feedback: a new `UNVERIFIED` receipt, and even with a `FAILED` receipt, feedback saying the work is implemented (build / tests pass) with only runtime verification pending, and no build errors, missing implementation or required user decisions, puts the task in a new "unverified" status (`unverified`, alongside done and failed, shown with a yellow ◐) instead of failed, without blocking successors. "Mark as verified" turns it into done, and it can be requeued manually; the status is saved in tasks.json and survives restarts; the AI assistant reports it as unverified. Missing receipts still fail.
+- AI 助手快捷按钮精简为「同步 git」（本地主分支与远程主分支一致）与「worktree 并入主分支」，由 AI 派给对应仓库的 VS 执行，不做强推或丢弃修改。
+  AI assistant quick buttons reduced to "Sync git" (local main matches remote main) and "Merge worktrees into main", dispatched by the AI to the VS owning the repository, without force pushes or discarding changes.
+
 - 目录结构整理为 `src/VSManager`（Assets / Core / Infrastructure / Services / UI）与 `tests/`，根目录只保留解决方案与说明文件。
   Source reorganized into `src/VSManager` (Assets / Core / Infrastructure / Services / UI) and `tests/`; the root only keeps the solution and documentation.
 - 分层架构：任务状态机、任务调度器、外部依赖接口（VS 操作、Copilot 通道、语音、AI 客户端、文件系统）与统一日志入口，行为保持不变。
@@ -47,6 +67,12 @@ All notable changes to VSManager are documented here. The format is based on [Ke
   The default branch is now `main`, with `develop` as the integration branch.
 
 ### 修复 / Fixed
+
+- 输入框 @ 候选弹层不再频闪：定时刷新时候选未变化则不重建列表、不重设选中项与位置，且弹层首次显示即定位到光标处。
+  The @ mention popup no longer flickers: periodic refreshes skip rebuilding unchanged candidates, selection and bounds, and the popup opens at the caret on first show.
+
+- 打开 VSManager 后 Visual Studio 明显卡顿：Copilot 忙碌探测每 1.5 秒对每个 VS 的整棵 UI Automation 树做后代搜索（实测每个 VS 每轮 3–6 秒，由 VS 界面线程响应）。现在复用已缓存的对话窗格，只在窗格直接子元素中查找停止 / 发送按钮与附件列表（约 30–40 毫秒）；仅在子级找不到时才每 30 秒深度搜索一次，未找到窗格时的完整搜索冷却由 10 秒逐步延长到 30 秒。
+  Visual Studio lagged noticeably while VSManager was running: the Copilot busy probe ran a descendant search over each VS's entire UI Automation tree every 1.5 s (measured at 3–6 s per VS per round, served by the VS UI thread). The probe now reuses the cached chat pane and looks for the stop / send buttons and the attachment list among the pane's direct children only (about 30–40 ms); a deep search runs at most every 30 s when no child match exists, and the full search cooldown for a missing pane grows from 10 s to 30 s.
 
 - 向 Copilot 发送任务时误报「未能确认消息已粘贴到 Copilot 输入框」：对话中含代码块时，代码块（同为 WpfTextView）被当成输入框，导致无法聚焦、粘贴落空并连续失败。现在只在输入框宿主 WpfTextViewHost 下查找；粘贴确认改为规范化比对（换行、空白、全角半角、零宽字符）、带退避的轮询与可配置超时，失败时区分「没写进去 / 仍在粘贴 / 内容不一致 / 无法读取」，自动重试一次并在发送日志中记录诊断信息。
   False "could not confirm the message was pasted into the Copilot input box" errors: when the conversation contained a code block, the code block (also a WpfTextView) was taken for the input box, so focusing and pasting failed repeatedly. The input is now looked up only under its WpfTextViewHost; paste confirmation uses normalized comparison (line breaks, whitespace, full/half width, zero-width characters), back-off polling with a configurable timeout, distinguishes "not written / still pasting / different content / unreadable", retries once automatically and writes diagnostics to the send log.
@@ -59,5 +85,7 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 新增 / Added
 
+- 已完成任务自动写入笔记本：按天建立「yyyy.M.d 任务记录」目录，清单页列出时间与简述，点击进入任务详情；笔记中的相对 .md 链接可在阅读视图中直接打开。设置项 `RecordCompletedTasksInNotebook`，默认开启。
+  Completed tasks are recorded in the notebook: a daily "yyyy.M.d 任务记录" folder with a list page of times and summaries linking to detail notes; relative .md links now open inside the notebook preview. Setting `RecordCompletedTasksInNotebook`, on by default.
 - 首个公开版本：多 VS 实例总览与多屏布局、应用内 Copilot 对话、调试控制、AI 总控助手与任务清单、豆包语音播报与语音输入、Web 远程控制与 AI Skill、历史归档、一键发布到 GitHub（含敏感信息自检）。
   First public release: multi-instance overview and multi-monitor layout, in-app Copilot chat, debug control, AI assistant with task list, Doubao voice announcements and voice input, web remote and AI skill, history archive, one-click publish to GitHub with a sensitive-content scan.

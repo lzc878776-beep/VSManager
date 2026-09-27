@@ -149,6 +149,49 @@ namespace VSManager
 
         public QueuedTask Find(int id) => _items.FirstOrDefault(t => t.Id == id);
 
+        /// <summary>提及任务先持久化再接纳；保存失败不留下可调度副本。/ Persist mentioned tasks before admission; failed saves leave no dispatchable copy.</summary>
+        public MentionSubmission AddMention(VsInstance target, VsMentionTarget snapshot, string text, AttachmentRef[] attachments = null)
+        {
+            if (snapshot == null || !snapshot.Matches(target)) return new MentionSubmission(null, VsMentionSession.MissingError);
+            if (string.IsNullOrWhiteSpace(text)) return new MentionSubmission(null, "任务内容为空 / Task text is empty");
+            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(t => t.HasExplicitTarget
+                && t.MatchesExplicitTarget(target) && t.Source == "用户" && SameAttachments(t.Attachments, attachments)), target.Key, text);
+            if (duplicate != null)
+            {
+                Save();
+                if (SaveError != null) _dirty = true;
+                return SaveError == null ? new MentionSubmission(duplicate, "已有相同任务，未重复添加 / Existing task reused")
+                    : new MentionSubmission(null, "任务保存失败；草稿已保留 / Task save failed; draft retained: " + SaveError);
+            }
+            var task = new QueuedTask
+            {
+                Id = _nextId, VsKey = target.Key, VsName = "#" + snapshot.Number + " " + snapshot.Name, Text = text.Trim(), Source = "用户",
+                Status = QueueStatus.Waiting, Created = _clock(), Attachments = attachments?.Select(a => a.Clone()).ToArray(),
+                ExplicitInstanceKey = snapshot.InstanceKey, ExplicitSolutionPath = snapshot.SolutionPath,
+                Worktree = ResolveWorktree?.Invoke(target.Key)?.Clone()
+            };
+            ReplaceFailed(task);
+            lock (_saveLock)
+            {
+                _lastSaveAttempt = _clock();
+                try { SaveError = _store.Save(_items.Concat(new[] { task }).ToList()); }
+                catch (Exception ex) { SaveError = ex.Message; }
+            }
+            if (SaveError != null)
+            {
+                _dirty = true;
+                Changed?.Invoke();
+                return new MentionSubmission(null, "任务保存失败；草稿和附件已保留 / Task save failed; draft and attachments retained: " + SaveError);
+            }
+            _dirty = false;
+            _items.Add(task);
+            _settings.TaskNextId = ++_nextId;
+            _settings.Save();
+            ArchiveChanges();
+            Changed?.Invoke();
+            return new MentionSubmission(task, $"已加入任务清单 #{task.Id} → {task.VsName} / Added to task list #{task.Id}");
+        }
+
         public QueuedTask Add(string vsKey, string vsName, string text, string source) =>
             Add(vsKey, vsName, text, source, QueueStatus.Waiting, null);
 
@@ -178,7 +221,7 @@ namespace VSManager
         private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target, AttachmentRef[] attachments = null)
         {
             if (attachments != null && attachments.Length == 0) attachments = null;
-            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(i => SameAttachments(i.Attachments, attachments)), vsKey, text);
+            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(i => !i.HasExplicitTarget && SameAttachments(i.Attachments, attachments)), vsKey, text);
             if (duplicate != null) return duplicate;
             var t = new QueuedTask
             {
@@ -232,7 +275,7 @@ namespace VSManager
             {
                 // 保留重发关系，防止裁剪后严格模式再次被旧失败阻塞。/ Preserve resend links so trimming cannot resurrect a strict-mode failure barrier.
                 var failures = _items.Where(t => t.Status == QueueStatus.Failed).ToList();
-                var old = _items.Where(t => t.Worktree == null && (t.Status == QueueStatus.Done || t.Status == QueueStatus.Cancelled)
+                var old = _items.Where(t => t.Worktree == null && (QueueStatus.Delivered(t.Status) || t.Status == QueueStatus.Cancelled)
                         && !(t.Replaces != null && failures.Any(f => t.Replaces.Contains(f.Id) && ResentTaskMatcher.SameTarget(f, t))))
                     .OrderByDescending(t => t.Finished ?? t.Created).Skip(limit).ToList();
                 foreach (var t in old) _items.Remove(t);
@@ -313,7 +356,7 @@ namespace VSManager
         private bool ReconcileWorktreeBatches()
         {
             bool changed = false;
-            foreach (var t in _items.Where(t => t.Worktree != null && !t.IsWorktreeMerge && t.Status == QueueStatus.Done && !t.WorktreeCounted))
+            foreach (var t in _items.Where(t => t.Worktree != null && !t.IsWorktreeMerge && QueueStatus.Delivered(t.Status) && !t.WorktreeCounted))
             {
                 t.WorktreeCounted = true;
                 changed = true;
