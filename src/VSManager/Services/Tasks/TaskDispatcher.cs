@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
@@ -225,8 +225,9 @@ namespace VSManager
                     }
                     catch (Exception ex)
                     {
-                        Fail(t, (t.Worktree == null ? "发送异常，送达状态未知，请检查后重试："
-                            : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message);
+Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异常 / Send exception: "
+    : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message,
+    t.Worktree == null ? FailureKind.Delivery : null);
                         continue;
                     }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
@@ -387,18 +388,24 @@ namespace VSManager
                     return;
                 }
                 if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
-                if (!TaskStateMachine.TryReadSuccess(t, answer, out string result))
-                {
-                    Fail(t, VsMentionSession.MissingError);
-                    return;
-                }
-                var outcome = TaskStateMachine.ReadOutcome(t, answer, out string result);
-                if (outcome == TaskReplyOutcome.Failed)
-                {
-                    t.Result = TextUtil.Clip(answer, 1500);
-                    Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300));
-                    return;
-                }
+if (t.HasExplicitTarget && (!t.MatchesExplicitTarget(v) || ResolveTarget(t) != v))
+{
+    Fail(t, VsMentionSession.MissingError);
+    return;
+}
+var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
+if (receipt == TaskReceipt.Failed || receipt == TaskReceipt.None)
+{
+    bool reported = receipt == TaskReceipt.Failed;
+    t.Result = TextUtil.Clip(reported ? result : answer, 1500);
+    Fail(t, (reported
+        ? "Copilot 回报本任务未完成 / Copilot reported the task as not completed: " + TextUtil.Clip(result, 300)
+        : "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(StripReceipt(t, answer), 300)),
+        reported ? FailureKind.Reported : FailureKind.NoReceipt);
+    // Copilot 已结束本轮回复，文件同样需要保存。/ Copilot finished this turn, so its edits still need saving.
+    await TidyAsync(t, v);
+    return;
+}
                 if (t.Worktree != null)
                 {
                     try
@@ -425,15 +432,25 @@ namespace VSManager
                 }
                 bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
-                TaskStateMachine.Complete(t, _clock());
+t.FullResult = result;
+bool unverified = receipt == TaskReceipt.Unverified;
+if (unverified) _host.LogEvent(t.VsName, $"任务 #{t.Id} 已实现但未实际验证 / Task implemented but not verified at runtime");
+TaskStateMachine.Complete(t, _clock(), needsUser, unverified);
+                if (needsUser || unverified) t.TestItems = TaskTestChecklist.Parse(result);
                 CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成 · {t.VsName}（{took}）/ Task completed",
-                        $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
-                        "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
+string label = unverified ? "未验证" : needsUser ? "已完成（待用户验证）" : "已完成";
+string labelEn = unverified ? "unverified" : needsUser ? "completed (awaiting verification)" : "completed";
+_host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
+    $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
+    "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
+    (unverified ? "\n结论：未验证（不是失败）。Copilot 说明功能已实现，只是尚未在运行中的程序里实际验证；请按「未验证」汇报并列出未验证项，不要判为失败，也不要说成已实测成功。/ Verdict: unverified, not failed. The work is implemented but not yet verified in the running app; report it as unverified with the pending checks, neither as a failure nor as a verified success." : "") +
+                        (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
+                        (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
+                            ? "\n放行等级为「已完成」：同一 VS 的后续任务已暂停，用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Release level \"Completed\": successors on the same VS are paused; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
                 }
@@ -459,11 +476,25 @@ namespace VSManager
             return text;
         }
 
-        /// <summary>用户确认未验证任务已实际验证：转为已完成。/ The user confirms an unverified task was verified: it becomes done.</summary>
+        /// <summary>用户确认待测试任务已实际验证：转为已完成，并继续发布被它暂停的后续任务。/ The user confirms a task awaiting tests was verified: it becomes done and paused successors continue.</summary>
         public bool MarkVerified(QueuedTask t)
         {
             if (t == null || _tasks.Find(t.Id) != t || !TaskStateMachine.MarkVerified(t)) return false;
             _host.LogEvent(t.VsName, $"任务 #{t.Id} 已由用户确认验证 / Task verified by the user");
+            _tasks.Commit();
+            Pump();
+            return true;
+        }
+
+        /// <summary>
+        /// 勾选 / 取消勾选测试项；全部勾选后任务自动标记为已完成。任务不在待测试状态时返回 false。
+        /// Checks / unchecks a test item; the task is marked done once every item is checked. Returns false when the task no longer awaits tests.
+        /// </summary>
+        public bool SetTestItem(QueuedTask t, int index, bool done)
+        {
+            if (t == null || _tasks.Find(t.Id) != t || !TaskTestChecklist.Pending(t)) return false;
+            if (!TaskStateMachine.SetTestItem(t, index, done, out bool allChecked)) return false;
+            if (allChecked && MarkVerified(t)) return true;
             _tasks.Commit();
             return true;
         }
