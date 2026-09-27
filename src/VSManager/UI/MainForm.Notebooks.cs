@@ -31,6 +31,7 @@ namespace VSManager
             if (_notebook != null) return true;
             try
             {
+                EnsureAgentPromptPage();
                 _notebook = new NotebookWorkspace { Dock = DockStyle.Fill };
                 _notebook.ContentRequested += OpenNotebooks;
                 _notebook.SidebarRequested += () => _workspaceSidebar.SetNotionCollapsed(false);
@@ -52,6 +53,16 @@ namespace VSManager
                 _notebookSidebarHost.Controls.Add(error);
                 _notebookSidebarHost.Controls.Add(retry);
                 return false;
+            }
+        }
+
+        /// <summary>预先建立「AI 助手补充提示词」页面，方便用户在笔记本中找到并编辑。/ Creates the AI-assistant instructions page up front so users can find and edit it.</summary>
+        private void EnsureAgentPromptPage()
+        {
+            try { NotebookAgentPrompt.Ensure(new NotebookStore()); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is Microsoft.Data.Sqlite.SqliteException)
+            {
+                SetStatus("无法建立 AI 补充提示词页面 / Cannot create the AI instructions page: " + ex.Message);
             }
         }
 

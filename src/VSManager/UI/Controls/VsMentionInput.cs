@@ -43,6 +43,7 @@ namespace VSManager
             internal PaintHook(VsMentionInput owner) { _owner = owner; }
             protected override void WndProc(ref Message m)
             {
+                if (m.Msg == 0x000F && _owner.PaintBuffered(m.HWnd)) return;
                 base.WndProc(ref m);
                 if (m.Msg == 0x000F) _owner.PaintChips();
                 else if (m.Msg == 0x0115 || m.Msg == 0x020A) _owner._input.Invalidate();
@@ -54,7 +55,7 @@ namespace VSManager
         private readonly Popup _popup;
         private readonly ListBox _list;
         private readonly Timer _refresh = new Timer { Interval = 500 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
         private readonly PaintHook _hook;
         private Form _owner;
         private readonly List<Control> _ancestors = new List<Control>();
@@ -106,9 +107,51 @@ namespace VSManager
             if (_disposed || !_input.IsHandleCreated) return;
             var chips = CurrentChips();
             if (chips.Length == 0) return;
+            using (var g = Graphics.FromHwnd(_input.Handle)) DrawChips(g, chips);
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct PAINTSTRUCT
+        {
+            public IntPtr hdc; public bool fErase; public int left, top, right, bottom; public bool fRestore, fIncUpdate;
+            [System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.ByValArray, SizeConst = 32)] public byte[] rgbReserved;
+        }
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr BeginPaint(IntPtr hwnd, out PAINTSTRUCT ps);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool EndPaint(IntPtr hwnd, ref PAINTSTRUCT ps);
+        [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        /// <summary>
+        /// 有气泡时在内存位图中先让原生编辑框绘制（WM_PRINTCLIENT），再叠加气泡，最后一次性贴到屏幕，避免原文与气泡交替出现造成频闪。
+        /// When chips exist, let the native edit paint into an off-screen bitmap (WM_PRINTCLIENT), overlay the chips, then blit once, so raw text and chips never alternate on screen.
+        /// </summary>
+        private bool PaintBuffered(IntPtr hwnd)
+        {
+            if (_disposed || !_input.IsHandleCreated) return false;
+            var chips = CurrentChips();
+            var size = _input.ClientSize;
+            if (chips.Length == 0 || size.Width <= 0 || size.Height <= 0) return false;
+            BeginPaint(hwnd, out var ps);
+            try
+            {
+                using (var bmp = new Bitmap(size.Width, size.Height))
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.Clear(_input.BackColor);
+                    IntPtr mem = g.GetHdc();
+                    try { SendMessage(hwnd, 0x0318, mem, (IntPtr)(0x04 | 0x08)); }
+                    finally { g.ReleaseHdc(mem); }
+                    DrawChips(g, chips);
+                    using (var screen = Graphics.FromHdc(ps.hdc)) screen.DrawImageUnscaled(bmp, 0, 0);
+                }
+            }
+            finally { EndPaint(hwnd, ref ps); }
+            return true;
+        }
+
+        private void DrawChips(Graphics g, (int Start, int Length, string Label)[] chips)
+        {
             string text = _input.Text;
             int selStart = _input.SelectionStart, selEnd = selStart + _input.SelectionLength;
-            using (var g = Graphics.FromHwnd(_input.Handle))
             {
                 int lineH = _input.Font.Height;
                 foreach (var chip in chips)
@@ -141,7 +184,7 @@ namespace VSManager
         /// <summary>光标不停在气泡内部；向左移动时贴到起点，其余贴到末尾。/ Keeps the caret out of chips: snaps to the start when moving left, otherwise to the end.</summary>
         private void SnapCaret(bool toStart)
         {
-            if (_input.SelectionLength != 0) { _input.Invalidate(); return; }
+            if (_input.SelectionLength != 0) { RepaintChips(); return; }
             int caret = _input.SelectionStart;
             foreach (var chip in CurrentChips())
                 if (caret > chip.Start && caret < chip.Start + chip.Length)
@@ -149,11 +192,24 @@ namespace VSManager
                     _input.Select(toStart ? chip.Start : chip.Start + chip.Length, 0);
                     break;
                 }
-            _input.Invalidate();
+            RepaintChips();
+        }
+
+        private int _chipCount;
+
+        /// <summary>
+        /// 原生编辑框已自行重绘改动的区域，这里只在其上覆盖气泡，不使整个输入框失效，避免输入时频闪。
+        /// The native edit control has already redrawn what changed; only overlay the chips instead of invalidating the whole box, so typing does not flicker.
+        /// </summary>
+        private void RepaintChips()
+        {
+            int count = CurrentChips().Length;
+            if (count > 0 || _chipCount > 0) PaintChips();
+            _chipCount = count;
         }
 
         private void OnInputDisposed(object sender, EventArgs e) => Dispose();
-        private void OnTextChanged(object sender, EventArgs e) { _input.Invalidate(); if (!_selecting) Refresh(); }
+        private void OnTextChanged(object sender, EventArgs e) { RepaintChips(); if (!_selecting) Refresh(); }
         private void OnCaretMoved(object sender, MouseEventArgs e)
         {
             if (e.Button == MouseButtons.Left && _input.SelectionLength == 0)
@@ -162,7 +218,7 @@ namespace VSManager
                 var chip = CurrentChips().FirstOrDefault(c => caret > c.Start && caret < c.Start + c.Length);
                 if (chip.Length > 0) SnapCaret(caret - chip.Start < chip.Start + chip.Length - caret);
             }
-            _input.Invalidate();
+            RepaintChips();
             Refresh();
         }
         private void OnRefresh(object sender, EventArgs e) { if (IsOpen) Refresh(); }

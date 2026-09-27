@@ -36,7 +36,13 @@ namespace VSManager
         private static int HeaderHeight => Dpi.S(48);
         private static int CardHeight => Dpi.S(108);
         private readonly Timer _tick = new Timer { Interval = 1000 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
+        // 任务条目的提示：指针在同一条目上停留 ItemTipDelay 毫秒后才显示，移到其他条目时重新计时。
+        // Tips for task entries: shown only after the pointer rests on the same entry for ItemTipDelay ms; moving to another entry restarts the wait.
+        internal const int ItemTipDelay = 1200;
+        private readonly ThemedToolTip _itemTips = new ThemedToolTip();
+        private readonly Timer _itemTipTimer = new Timer { Interval = ItemTipDelay };
+        private object _hoverKey;
         private TaskQueue _queue;
         private bool _collapsed;
         private bool _loadWarningSeen;
@@ -121,14 +127,14 @@ namespace VSManager
             _list.Resize += (s, e) => _list.Invalidate();
             _list.MouseMove += (s, e) =>
             {
-                var hovered = ItemAt(e.Location);
-                string notice = hovered is TaskGroupHeader
-                    ? "点击折叠 / 展开，拖拽调整整组显示位置 / Click to collapse / expand; drag to move the whole group"
-                    : "拖拽调整显示位置，右键切换排序 / Drag to reorder display; right-click for sorting";
-                notice += "\r\n" + DisplayOrderNotice + "\r\n" + ((hovered as QueuedTask)?.PredecessorNotice ?? "");
-                if (hovered is QueuedTask task) notice += "\r\n" + TaskStateMachine.StatusText(task, DateTime.Now) + "\r\n" + EligibilityText(task);
-                if (_tips.GetToolTip(_list) != notice) _tips.SetToolTip(_list, notice);
+                object key = HoverKey(ItemAt(e.Location));
+                if (Equals(key, _hoverKey)) return;
+                ResetItemTip(key);
             };
+            _list.MouseLeave += (s, e) => ResetItemTip(null);
+            _list.MouseDown += (s, e) => ResetItemTip(null);
+            _list.MouseWheel += (s, e) => ResetItemTip(null);
+            _itemTipTimer.Tick += (s, e) => ShowItemTip();
             // 条目较高，滚轮每格滚动 1 条；焦点在其他控件时，指针位于任务清单上的滚轮也转给任务清单
             _list.WheelItemsPerNotch = 1;
             _wheel = new WheelForwarder(_list);
@@ -149,11 +155,51 @@ namespace VSManager
                 if (_queue != null) _queue.Changed -= Reload;
                 _tick.Dispose();
                 _tips.Dispose();
+                _itemTipTimer.Dispose();
+                _itemTips.Dispose();
                 _list.ContextMenuStrip?.Dispose();
             };
         }
 
         private readonly WheelForwarder _wheel;
+
+        /// <summary>按任务编号识别悬停条目，列表刷新后仍视为同一条。/ Identifies the hovered entry by task id so it stays the same across list reloads.</summary>
+        private static object HoverKey(object item) => item is QueuedTask t ? (object)("task:" + t.Id) : item;
+
+        private void ResetItemTip(object key)
+        {
+            _hoverKey = key;
+            _itemTipTimer.Stop();
+            _itemTips.HideText(_list);
+            if (key != null) _itemTipTimer.Start();
+        }
+
+        private void ShowItemTip()
+        {
+            _itemTipTimer.Stop();
+            if (IsDisposed || !_list.IsHandleCreated) return;
+            var point = _list.PointToClient(Cursor.Position);
+            var item = ItemAt(point);
+            if (item == null || !Equals(HoverKey(item), _hoverKey)) return;
+            string text = ItemTipText(item);
+            if (string.IsNullOrWhiteSpace(text)) return;
+            _itemTips.ShowText(text, _list, new Point(point.X + Dpi.S(14), point.Y + Dpi.S(18)));
+        }
+
+        /// <summary>条目提示：任务以内容 / 完成情况为主，分组标题说明折叠与拖拽。/ Entry tip: tasks focus on content / outcome; group headers explain collapsing and dragging.</summary>
+        private string ItemTipText(object item)
+        {
+            if (item is TaskGroupHeader)
+                return "点击折叠 / 展开，拖拽调整整组显示位置 / Click to collapse / expand; drag to move the whole group\n" + DisplayOrderNotice;
+            if (item is QueuedTask task)
+            {
+                string extra = null;
+                if (QueueStatus.Active(task.Status))
+                    extra = string.Join("\n", new[] { task.PredecessorNotice, EligibilityText(task) }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                return TaskTooltip.Build(task, TaskStateMachine.StatusText(task, DateTime.Now), extra);
+            }
+            return "拖拽调整显示位置，右键切换排序 / Drag to reorder display; right-click for sorting\n" + DisplayOrderNotice;
+        }
 
         /// <summary>把发给其他控件（如有焦点的输入框）、但指针正位于任务清单上的滚轮消息转给任务清单；其他区域的滚轮不受影响。</summary>
         private sealed class WheelForwarder : IMessageFilter
@@ -479,7 +525,7 @@ if (c != null)
                 unhide.Visible = has && IsResentHidden(t);
                 dispatch.Visible = dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
                 retry.Visible = retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled || t.Status == QueueStatus.Unverified);
-                verify.Visible = verify.Enabled = has && t.Status == QueueStatus.Unverified;
+                verify.Visible = verify.Enabled = has && TaskTestChecklist.Pending(t);
                 supplement.Visible = has && TaskStateMachine.IsHoldOutcome(t);
                 supplement.Enabled = supplement.Visible && t.SupplementCount < TaskStateMachine.MaxSupplements;
                 supplement.Text = has && t.SupplementCount > 0
@@ -702,7 +748,7 @@ if (c != null)
     fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
 case QueueStatus.Unverified:
                     text = "◐ 未验证" + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
-                    fg = Theme.Warning; bg = Color.FromArgb(56, 44, 18); dot = Theme.Warning; break;
+                    fg = Theme.UnverifiedFg; bg = Theme.UnverifiedBg; dot = Theme.UnverifiedDot; break;
                 case QueueStatus.Failed:
                     text = t.Released ? "失败 · 已放行" : "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;
                 default:

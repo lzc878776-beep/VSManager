@@ -34,6 +34,7 @@ namespace VSManager
             _rows.ColumnCount = 1;
             _rows.RowCount = 6;
             _rows.Margin = Padding.Empty;
+            _rows.AutoScroll = true;
             _rows.BackColor = Theme.Sidebar;
             _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             for (int i = 0; i < 6; i++) _rows.RowStyles.Add(new RowStyle());
@@ -128,39 +129,47 @@ namespace VSManager
             UpdateRows();
         }
 
-        /// <summary>侧栏行高度：AI → VS → 笔记本；笔记本折叠时剩余空间放在末尾而不是把标题推到底部。
-        /// / Row heights: AI → VS → notebooks; when notebooks are collapsed the spare space goes last instead of pushing the header down.</summary>
+        /// <summary>侧栏行高度：AI → VS → 笔记本；笔记本折叠时剩余空间放在末尾而不是把标题推到底部。行高未变化时不重新布局，避免切换页面时侧栏闪烁。
+        /// / Row heights: AI → VS → notebooks; when notebooks are collapsed the spare space goes last instead of pushing the header down. Skips relayout when nothing changed so switching pages does not make the sidebar flicker.</summary>
         private void UpdateRows()
         {
+            int header = Dpi.S(48), agent = _agentVisible ? _agentHeight : 0, minVs = Dpi.S(120);
+            var styles = new (SizeType Type, float Height)[6];
+            styles[AgentRow] = (SizeType.Absolute, agent);
+            styles[VsHeaderRow] = (SizeType.Absolute, header);
+            styles[NotesHeaderRow] = (SizeType.Absolute, header);
+            styles[NotesBodyRow] = NotionCollapsed ? (SizeType.Absolute, 0f) : (SizeType.Percent, 65f);
+            bool fitVs = _vsPreferredHeight != null;
+            if (VsCollapsed) styles[VsBodyRow] = (SizeType.Absolute, 0f);
+            else if (fitVs)
+            {
+                int available = Math.Max(minVs, _rows.ClientSize.Height - header * 2 - agent);
+                int cap = NotionCollapsed ? available : Math.Max(minVs, (int)(available * 0.45));
+                styles[VsBodyRow] = (SizeType.Absolute, Math.Min(cap, Math.Max(minVs, _vsPreferredHeight())));
+            }
+            else styles[VsBodyRow] = (SizeType.Percent, NotionCollapsed ? 100f : 35f);
+            bool filler = NotionCollapsed && (VsCollapsed || fitVs);
+            styles[FillerRow] = filler ? (SizeType.Percent, 100f) : (SizeType.Absolute, 0f);
+            var minSize = new Size(0, header * 2 + agent + (VsCollapsed ? 0 : minVs) + (NotionCollapsed ? 0 : Dpi.S(310)));
+
+            bool changed = _rows.AutoScrollMinSize != minSize;
+            for (int i = 0; i < styles.Length && !changed; i++)
+                changed = _rows.RowStyles[i].SizeType != styles[i].Type || _rows.RowStyles[i].Height != styles[i].Height;
+            if (!changed) return;
             _rows.SuspendLayout();
             try
             {
-                int header = Dpi.S(48), agent = _agentVisible ? _agentHeight : 0, minVs = Dpi.S(120);
-                _rows.AutoScroll = true;
-                _rows.AutoScrollMinSize = new Size(0, header * 2 + agent + (VsCollapsed ? 0 : minVs) + (NotionCollapsed ? 0 : Dpi.S(310)));
-                SetRow(AgentRow, SizeType.Absolute, agent);
-                SetRow(VsHeaderRow, SizeType.Absolute, header);
-                SetRow(NotesHeaderRow, SizeType.Absolute, header);
-                SetRow(NotesBodyRow, NotionCollapsed ? SizeType.Absolute : SizeType.Percent, NotionCollapsed ? 0 : 65);
-                bool fitVs = _vsPreferredHeight != null;
-                if (VsCollapsed) SetRow(VsBodyRow, SizeType.Absolute, 0);
-                else if (fitVs)
-                {
-                    int available = Math.Max(minVs, _rows.ClientSize.Height - header * 2 - agent);
-                    int cap = NotionCollapsed ? available : Math.Max(minVs, (int)(available * 0.45));
-                    SetRow(VsBodyRow, SizeType.Absolute, Math.Min(cap, Math.Max(minVs, _vsPreferredHeight())));
-                }
-                else SetRow(VsBodyRow, SizeType.Percent, NotionCollapsed ? 100 : 35);
-                bool filler = NotionCollapsed && (VsCollapsed || fitVs);
-                SetRow(FillerRow, filler ? SizeType.Percent : SizeType.Absolute, filler ? 100 : 0);
+                if (_rows.AutoScrollMinSize != minSize) _rows.AutoScrollMinSize = minSize;
+                for (int i = 0; i < styles.Length; i++) SetRow(i, styles[i].Type, styles[i].Height);
             }
             finally { _rows.ResumeLayout(true); }
         }
 
         private void SetRow(int row, SizeType sizeType, float height)
         {
-            _rows.RowStyles[row].SizeType = sizeType;
-            _rows.RowStyles[row].Height = height;
+            var style = _rows.RowStyles[row];
+            if (style.SizeType != sizeType) style.SizeType = sizeType;
+            if (style.Height != height) style.Height = height;
         }
     }
 }

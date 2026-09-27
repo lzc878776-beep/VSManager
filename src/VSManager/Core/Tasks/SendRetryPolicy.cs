@@ -26,8 +26,17 @@ namespace VSManager
         public const string BlockedPrefix = "等待处理 VS 弹窗：";
         public static readonly TimeSpan BlockedRetryDelay = TimeSpan.FromSeconds(3);
 
+        /// <summary>
+        /// 用户正在操作电脑（或前台被系统锁定），切换 VS 前台前暂缓；仅在提交前返回，稍后自动重试。
+        /// The user is working on the computer (or the foreground is locked), so switching to VS is deferred; only returned before submission and retried later.
+        /// </summary>
+        public const string UserBusyPrefix = "等待用户操作空闲：";
+
+        public static bool IsUserBusy(string result) => result != null && result.StartsWith(UserBusyPrefix, StringComparison.Ordinal);
+
         public static bool IsBlocked(string result) =>
-            ManualChatProtection.IsWait(result) || (result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal));
+            ManualChatProtection.IsWait(result) || IsUserBusy(result)
+            || (result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal));
 
         /// <summary>最多尝试次数。/ Maximum number of attempts.</summary>
         public const int MaxAttempts = 1;

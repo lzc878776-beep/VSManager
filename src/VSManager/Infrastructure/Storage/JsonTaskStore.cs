@@ -125,7 +125,7 @@ namespace VSManager
 
             var t = new QueuedTask
             {
-                Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Source = S("Source"),
+                Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Title = S("Title"), Source = S("Source"),
                 ExplicitInstanceKey = S("ExplicitInstanceKey"), ExplicitSolutionPath = S("ExplicitSolutionPath"),
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
                 Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
@@ -139,6 +139,14 @@ namespace VSManager
                     .Where(id => id > 0).Distinct().ToArray()
             };
             var worktree = e.Element("Worktree");
+            var testItems = e.Element("TestItems");
+            if (testItems != null && testItems.Attribute("type")?.Value != "null")
+            {
+                var items = testItems.Elements("item")
+                    .Select(x => new TaskTestItem { Text = x.Element("Text")?.Value, Checked = x.Element("Checked")?.Value == "true" })
+                    .Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToArray();
+                t.TestItems = items.Length > 0 ? items : null;
+            }
             var attachments = e.Element("Attachments");
             if (attachments != null && attachments.Attribute("type")?.Value != "null")
             {

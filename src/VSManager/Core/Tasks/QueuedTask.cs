@@ -39,6 +39,22 @@ namespace VSManager
     /// One task-list entry: always queued by ID and dispatched under policy after predecessors finish and the target is ready.
     /// Field names are the tasks.json field names.
     /// </summary>
+    /// <summary>任务题目规则：单行，最多 20 字。/ Task title rules: one line, at most 20 characters.</summary>
+    public static class TaskTitle
+    {
+        public const int MaxLength = 20;
+
+        /// <summary>规范为单行并截断到上限；为空时返回 null。/ Normalizes to one line and truncates to the limit; null when empty.</summary>
+        public static string Normalize(string title)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (char c in title ?? "") sb.Append(char.IsControl(c) || char.IsWhiteSpace(c) ? ' ' : c);
+            string result = System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ").Trim();
+            if (result.Length > MaxLength) result = result.Substring(0, MaxLength).TrimEnd();
+            return result.Length == 0 ? null : result;
+        }
+    }
+
     [DataContract]
     public sealed class QueuedTask
     {
@@ -53,6 +69,8 @@ namespace VSManager
             && v.InstanceKey == ExplicitInstanceKey && ExplicitSolutionPath != null
             && string.Equals(v.SolutionPath ?? "", ExplicitSolutionPath, StringComparison.OrdinalIgnoreCase);
         [DataMember] public string Text;
+        /// <summary>任务题目（AI 发布时总结，最多 <see cref="TaskTitle.MaxLength"/> 字）；未提供时为 null。/ Task title (summarized by the AI on submission, at most <see cref="TaskTitle.MaxLength"/> characters); null when not provided.</summary>
+        [DataMember(EmitDefaultValue = false)] public string Title;
         [DataMember] public string Source;
         [DataMember] public string Status;
         [DataMember] public DateTime Created;
@@ -100,6 +118,12 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public string Supplement;
         /// <summary>已插入补充信息重试的次数。/ Number of retries with supplementary info.</summary>
         [DataMember(EmitDefaultValue = false)] public int SupplementCount;
+        /// <summary>
+        /// 测试清单：未验证 / 待用户验证的任务需要用户在环境中实测的项目；全部勾选后任务转为已完成。没有时为 null。
+        /// Test checklist: items the user must test in the environment for unverified / awaiting-verification tasks; checking all of them
+        /// completes the task. Null when there are none.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public TaskTestItem[] TestItems;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -120,7 +144,7 @@ namespace VSManager
         /// <summary>复制持久化字段（不含运行期字段）。/ Copies the persisted fields (runtime fields excluded).</summary>
         public QueuedTask Clone() => new QueuedTask
         {
-            Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
+            Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Title = Title, Source = Source, Status = Status, Created = Created,
             ExplicitInstanceKey = ExplicitInstanceKey, ExplicitSolutionPath = ExplicitSolutionPath,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
@@ -128,7 +152,18 @@ namespace VSManager
             WorktreeCounted = WorktreeCounted, WorktreeBatch = WorktreeBatch,
             Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote,
             FailureKind = FailureKind, NeedsUser = NeedsUser, PriorFailure = PriorFailure,
-            Released = Released, Supplement = Supplement, SupplementCount = SupplementCount
+            Released = Released, Supplement = Supplement, SupplementCount = SupplementCount,
+            TestItems = TestItems?.Select(i => i?.Clone()).ToArray()
         };
+    }
+
+    /// <summary>测试清单中的一项（由用户手动勾选）。/ One test checklist item (checked off manually by the user).</summary>
+    [DataContract]
+    public sealed class TaskTestItem
+    {
+        [DataMember] public string Text;
+        [DataMember(EmitDefaultValue = false)] public bool Checked;
+
+        public TaskTestItem Clone() => new TaskTestItem { Text = Text, Checked = Checked };
     }
 }

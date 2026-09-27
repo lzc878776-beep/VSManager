@@ -29,7 +29,7 @@ namespace VSManager
         private readonly TextBox _threshold = new TextBox();
         private readonly DarkCombo _mode = new DarkCombo();
         private readonly Timer _timer = new Timer { Interval = 5000 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
         private readonly HashSet<string> _cleaning = new HashSet<string>();
         private readonly VsAutoMemoryTrimmer _trimmer;
         private readonly ToggleSwitch _autoTrim = new ToggleSwitch();

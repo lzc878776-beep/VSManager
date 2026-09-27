@@ -50,7 +50,7 @@ namespace VSManager
         private readonly ReleaseLevelSlider _releaseSlider = new ReleaseLevelSlider();
         private readonly Timer _renderTimer = new Timer { Interval = 60 };
         private readonly Timer _pulse = new Timer { Interval = 400 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
         private AgentService _agent;
         private int _dots;
 
@@ -141,6 +141,7 @@ namespace VSManager
             _inputStatus.TextAlign = ContentAlignment.MiddleLeft;
             _inputStatus.AutoEllipsis = true;
             _inputStatus.UseMnemonic = false;
+            SetDoubleBuffered(_inputStatus);
 
             _inputBox.Dock = DockStyle.Fill;
             _inputBox.BackColor = Theme.Background;
@@ -489,21 +490,34 @@ namespace VSManager
             }
         }
 
+        private string _headerState;
+
         private void UpdateUi()
         {
             bool running = _agent?.Running == true;
-            _placeholder.Visible = _input.TextLength == 0 && !_input.Focused;
-            _placeholder.Text = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
+            // 禁用有焦点的按钮会把焦点推给下一个控件；记下来并把焦点留在输入框。
+            // Disabling a focused button pushes focus to the next control; remember it and keep focus in the input instead.
+            bool buttonFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+                || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
+            bool placeholder = _input.TextLength == 0 && !_input.Focused;
+            if (_placeholder.Visible != placeholder) _placeholder.Visible = placeholder;
+            string hint = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
+            if (_placeholder.Text != hint) _placeholder.Text = hint;
             _btnSend.Enabled = (!running || VsMentionSession.HasIntent(_input.Text)) && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
             _btnStop.Enabled = running;
             if (_btnAttach != null) _btnAttach.Enabled = !running;
             _btnClear.Enabled = _agent != null && (running || _agent.Transcript.Messages.Count > 0);
             foreach (Control c in _toolbar.Controls) c.Enabled = !running;
+            bool stillFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+                || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
+            if (buttonFocused && !stillFocused && Form.ActiveForm != null && Form.ActiveForm == FindForm() && _input.CanFocus) _input.Focus();
             if (running && !_pulse.Enabled) { _dots = 0; _pulse.Start(); }
             else if (!running && _pulse.Enabled) _pulse.Stop();
             UpdateStatus();
             _transcript.SetActivity(running ? (_agent.Activity.Length > 0 ? _agent.Activity : "思考中…") : null, null);
-            _header.Invalidate();
+            // 标题栏只在状态变化时重绘，输入时不再逐键刷新。/ Repaint the header only when its state changes, not on every keystroke.
+            string header = _agent == null ? "" : _agent.Configured + "|" + running + "|" + _agent.ProviderName + "|" + _agent.ModelName;
+            if (header != _headerState) { _headerState = header; _header.Invalidate(); }
         }
 
         private void UpdateStatus()

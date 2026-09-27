@@ -34,33 +34,79 @@ namespace VSManager.Tests
                 Assert.AreEqual("original", store.Read(((NotebookEntry)tree.Nodes[0].Nodes[0].Tag).Path).Text, "父页面也有正文 / Parent pages have content");
                 tree.SelectedNode = tree.Nodes[0];
                 Assert.IsFalse(editor.Enabled);
-                foreach (var button in Field<List<Button>>(form, "_noteActions"))
-                {
-                    Assert.IsFalse(button.Enabled);
-                    Assert.AreEqual(Theme.TextMuted, button.ForeColor);
-                }
                 tree.SelectedNode = tree.Nodes[0].Nodes[0].Nodes[0];
                 Assert.AreEqual(saved, editor.Text.Replace("\r\n", "\n"));
-                foreach (int mode in new[] { 1, 2, 0, 2, 1 })
-                {
-                    typeof(NotebookWorkspace).GetMethod("SetMode", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(form.Workspace, new object[] { mode });
-                    var split = Field<SplitContainer>(form, "_split");
-                    Assert.AreEqual(mode == 0, split.Panel1Collapsed);
-                    Assert.AreEqual(mode == 1, split.Panel2Collapsed);
-                    var buttons = Field<List<Button>>(form, "_modeActions");
-                    for (int i = 0; i < buttons.Count; i++)
-                    {
-                        Assert.AreEqual(i == mode ? Theme.AccentLight : Theme.Background, buttons[i].BackColor);
-                        Assert.AreEqual(i == mode ? Theme.AccentText : Theme.Text, buttons[i].ForeColor);
-                        Assert.AreEqual(i == mode ? Theme.RowSelected : Theme.RowHover, buttons[i].FlatAppearance.MouseOverBackColor);
-                        Assert.AreEqual(Theme.AccentPressed, buttons[i].FlatAppearance.MouseDownBackColor);
-                    }
-                }
             });
         }
 
         [TestMethod]
-        public void Notebook_ConflictKeepsDraftAndSelection_UntilSavedAsCopy()
+        public void Notebook_LayoutIsAutomatic_WithoutToolbarButtons()
+        {
+            RunUi((form, store) =>
+            {
+                var tree = Field<TreeView>(form, "_tree");
+                tree.SelectedNode = tree.Nodes[0].Nodes[0].Nodes[0];
+                var split = Field<SplitContainer>(form, "_split");
+                split.Dock = DockStyle.None;
+                split.Width = Dpi.S(1000);
+                Assert.IsTrue(split.Panel1Collapsed, "宽布局也不显示 Markdown 原文 / Wide layout does not show the Markdown source");
+                Assert.IsFalse(split.Panel2Collapsed, "宽布局显示阅读视图 / Wide layout shows the preview");
+                split.Width = Dpi.S(500);
+                Assert.IsTrue(split.Panel1Collapsed, "窄布局默认阅读 / Narrow layout reads by default");
+                Assert.IsFalse(split.Panel2Collapsed);
+                split.Width = Dpi.S(1000);
+                typeof(NotebookWorkspace).GetMethod("BeginEdit", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(form.Workspace, null);
+                Assert.IsFalse(split.Panel1Collapsed, "编辑时显示编辑器 / Editing shows the editor");
+                Assert.IsTrue(split.Panel2Collapsed, "编辑时不并排显示 / Editing does not show both side by side");
+                tree.SelectedNode = tree.Nodes[0].Nodes[0];
+                Assert.IsTrue(split.Panel1Collapsed, "切换页面后回到阅读 / Switching pages returns to reading");
+                var labels = new[] { "阅读 / Read", "编辑 / Edit", "分栏 / Split", "另存草稿 / Save copy", "插图 / Image", "复制给 AI / Copy" };
+                foreach (Control control in Descendants(form.Workspace))
+                    Assert.IsFalse(control is Button && labels.Contains(control.Text), control.Text);
+            });
+        }
+
+        [TestMethod]
+        public void Notebook_AgentPromptPage_IsTopLevelBesideNotebooks()
+        {
+            RunUi((form, store) =>
+            {
+                string prompt = NotebookAgentPrompt.Ensure(store);
+                typeof(NotebookWorkspace).GetMethod("RefreshTree", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(form.Workspace, new object[] { prompt, false });
+                var tree = Field<TreeView>(form, "_tree");
+                Assert.AreEqual(2, tree.Nodes.Count, "提示词页与笔记本同级 / The prompt page sits beside the notebooks root");
+                Assert.AreEqual(NotebookAgentPrompt.PageTitle, tree.Nodes[1].Text);
+                Assert.AreSame(tree.Nodes[1], tree.SelectedNode, "可直接选中提示词页 / The prompt page can be selected");
+                foreach (TreeNode child in tree.Nodes[0].Nodes)
+                    Assert.AreNotEqual(NotebookAgentPrompt.PageTitle, child.Text, "不再混在普通笔记中 / No longer listed among ordinary notes");
+            });
+        }
+
+        [TestMethod]
+        public void Notebook_PastedScreenshot_IsStoredAndLinked()
+        {
+            RunUi((form, store) =>
+            {
+                var tree = Field<TreeView>(form, "_tree");
+                tree.SelectedNode = tree.Nodes[0].Nodes[0].Nodes[0];
+                string page = ((NotebookEntry)tree.SelectedNode.Tag).Path;
+                var editor = Field<TextBox>(form, "_editor");
+                using (var bitmap = new Bitmap(4, 4))
+                {
+                    Clipboard.SetImage(bitmap);
+                    Assert.IsTrue((bool)typeof(NotebookWorkspace).GetMethod("PasteImages", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(form.Workspace, null));
+                }
+                StringAssert.Contains(editor.Text, "](attachments/");
+                string target = editor.Text.Substring(editor.Text.IndexOf("](", StringComparison.Ordinal) + 2);
+                target = target.Substring(0, target.IndexOf(')'));
+                StringAssert.StartsWith(store.ImageData(page, target), "data:image/png;base64,");
+                Clipboard.SetText("plain");
+                Assert.IsFalse((bool)typeof(NotebookWorkspace).GetMethod("PasteImages", BindingFlags.NonPublic | BindingFlags.Instance).Invoke(form.Workspace, null));
+            });
+        }
+
+        [TestMethod]
+        public void Notebook_Conflict_AutomaticallySavesDraftAsCopy()
         {
             RunUi((form, store) =>
             {
@@ -72,17 +118,18 @@ namespace VSManager.Tests
                 string path = ((NotebookEntry)note.Tag).Path;
                 var other = new NotebookStore(store.Root);
                 other.Save(other.Read(path), "external change");
-                Assert.IsFalse(form.TrySave());
-                tree.SelectedNode = tree.Nodes[0];
-                Assert.AreSame(note, tree.SelectedNode);
-                Assert.AreEqual("local draft", editor.Text);
+                Assert.IsTrue(form.TrySave(), "冲突时自动另存草稿 / Conflicts save the draft as a copy");
                 Assert.AreEqual("external change", store.Read(path).Text);
                 StringAssert.Contains(Field<Label>(form, "_status").Text, "Page changed");
-                Assert.AreEqual(Theme.Danger, Field<Label>(form, "_status").ForeColor);
-                string copy = store.CreatePage(((NotebookEntry)tree.Nodes[0].Nodes[0].Tag).Path, "Draft", editor.Text);
-                Assert.AreEqual("local draft", store.Read(copy).Text);
-                typeof(NotebookWorkspace).GetMethod("Display", BindingFlags.NonPublic | BindingFlags.Instance)
-                    .Invoke(form.Workspace, new object[] { store.Read(path) });
+                Assert.AreEqual(Theme.TextSecondary, Field<Label>(form, "_status").ForeColor);
+                string parent = ((NotebookEntry)tree.Nodes[0].Nodes[0].Tag).Path;
+                var copy = store.LoadTree().Single().Children.Single(c => c.Name.StartsWith("Ideas-draft-", StringComparison.Ordinal));
+                Assert.AreEqual("local draft", store.Read(copy.Path).Text);
+                Assert.AreEqual(parent, store.ParentOf(copy.Path));
+                editor.Text = "local draft 2";
+                Assert.IsTrue(form.TrySave());
+                Assert.AreEqual("local draft 2", store.Read(copy.Path).Text, "后续编辑写入副本 / Later edits go to the copy");
+                Assert.AreEqual("external change", store.Read(path).Text);
             });
         }
 
@@ -206,6 +253,15 @@ namespace VSManager.Tests
                     foreach (Control control in child.Controls)
                         Assert.IsFalse(control.Text.StartsWith("+ "));
             });
+        }
+
+        private static IEnumerable<Control> Descendants(Control root)
+        {
+            foreach (Control child in root.Controls)
+            {
+                yield return child;
+                foreach (var nested in Descendants(child)) yield return nested;
+            }
         }
 
         private static T Field<T>(object value, string name)

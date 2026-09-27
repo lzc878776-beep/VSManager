@@ -140,6 +140,29 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
         return template.content;
     }
 
+    // 用户按住鼠标选择文字时暂缓刷新，松开后按顺序补上；已有选区时不自动滚到底部。
+    // Defer updates while the user drags a selection and apply them in order on release; never auto-scroll away from a selection.
+    let pointerDown = false;
+    const deferred = [];
+    function selecting() {
+        const selection = document.getSelection();
+        return !!selection && !selection.isCollapsed && root.contains(selection.anchorNode);
+    }
+    function flush() {
+        while (deferred.length) {
+            const data = deferred.shift();
+            try { render(data); }
+            catch (error) {
+                deferred.length = 0;
+                send('error', String(error.message || error).slice(0, 1024));
+                send('resync', '');
+            }
+        }
+    }
+    document.addEventListener('mousedown', function (event) { if (event.button === 0) pointerDown = true; }, true);
+    window.addEventListener('mouseup', function () { if (!pointerDown) return; pointerDown = false; flush(); }, true);
+    window.addEventListener('blur', function () { if (!pointerDown) return; pointerDown = false; flush(); });
+
     function render(data) {
         if (!Number.isSafeInteger(data.revision) || data.revision <= revision || !Array.isArray(data.messages) ||
             !Number.isSafeInteger(data.generation) || data.generation < generation ||
@@ -149,7 +172,7 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
         const scroller = document.scrollingElement;
         const oldTop = scroller.scrollTop;
         const oldLeft = scroller.scrollLeft;
-        const atBottom = reset || scroller.scrollHeight - oldTop - scroller.clientHeight <= 24;
+        const atBottom = reset || (!selecting() && scroller.scrollHeight - oldTop - scroller.clientHeight <= 24);
         let anchor = null;
         let anchorOffset = 0;
         if (!atBottom) {
@@ -213,7 +236,12 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
     document.addEventListener('auxclick', function (event) { if (event.target.closest('a')) event.preventDefault(); });
     document.addEventListener('dragstart', function (event) { event.preventDefault(); });
     window.chrome.webview.addEventListener('message', function (event) {
-        try { if (event.data && event.data.type === 'render') render(event.data); }
+        try {
+            if (!event.data || event.data.type !== 'render') return;
+            if (pointerDown && event.data.reset !== true) { deferred.push(event.data); return; }
+            deferred.length = 0;
+            render(event.data);
+        }
         catch (error) {
             send('error', String(error.message || error).slice(0, 1024));
             send('resync', '');

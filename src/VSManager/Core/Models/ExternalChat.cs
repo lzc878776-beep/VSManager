@@ -28,6 +28,8 @@ namespace VSManager
         public string ArchiveId;
         public DateTime Started;
         public DateTime? Finished;
+        /// <summary>运行期：本轮完成后已写入笔记本任务记录。/ Runtime only: already recorded in the notebook after completing.</summary>
+        public bool NotebookRecorded;
 
         public string StatusText => Generating ? "生成中" : Stopped ? "已停止" : Interrupted ? "已中断" : "已完成";
 

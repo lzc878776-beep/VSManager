@@ -90,7 +90,7 @@ namespace VSManager
             _btnOpenPane.Visible = false;
             _btnDock = HeaderButton("⇲ 工具窗模式", () => DockPaneRequested?.Invoke());
             _btnDock.AccessibleName = "把所有 VS 的 Copilot 对话窗格切换为停靠的工具窗口";
-            new ToolTip().SetToolTip(_btnDock, "把所有 VS 的 Copilot 对话助手切换为停靠的工具窗口，\r\n切换文档标签时不再被隐藏，始终可以监听");
+            new ThemedToolTip().SetToolTip(_btnDock, "把所有 VS 的 Copilot 对话助手切换为停靠的工具窗口，\r\n切换文档标签时不再被隐藏，始终可以监听");
             _header.Controls.AddRange(new Control[] { _btnOpen, _btnNew, _btnOpenPane, _btnDock });
 
             // ---- 工具栏（调试按钮由主窗体填充） ----
@@ -131,6 +131,7 @@ namespace VSManager
             _inputStatus.TextAlign = ContentAlignment.MiddleLeft;
             _inputStatus.AutoEllipsis = true;
             _inputStatus.UseMnemonic = false;
+            SetDoubleBuffered(_inputStatus);
 
             _inputBox.Dock = DockStyle.Fill;
             _inputBox.BackColor = Theme.Background;
@@ -321,21 +322,26 @@ namespace VSManager
 
         private void UpdateInputStatus()
         {
-            _placeholder.Visible = _input.TextLength == 0 && !_input.Focused && _voiceStatus == null;
-            _placeholder.Text = HasTarget ? "向 Copilot 提问或下达任务…" : "请先在左侧选择 VS，可先输入草稿…";
+            // 只在值变化时赋值，避免逐键重绘占位符与状态行。/ Assign only on change so typing does not repaint the placeholder and status line on every key.
+            bool placeholder = _input.TextLength == 0 && !_input.Focused && _voiceStatus == null;
+            if (_placeholder.Visible != placeholder) _placeholder.Visible = placeholder;
+            string hint = HasTarget ? "向 Copilot 提问或下达任务…" : "请先在左侧选择 VS，可先输入草稿…";
+            if (_placeholder.Text != hint) _placeholder.Text = hint;
             if (_voiceStatus != null)
             {
-                _inputStatus.Text = _voiceStatus;
-                _inputStatus.ForeColor = _voiceColor;
+                if (_inputStatus.Text != _voiceStatus) _inputStatus.Text = _voiceStatus;
+                if (_inputStatus.ForeColor != _voiceColor) _inputStatus.ForeColor = _voiceColor;
                 return;
             }
             string state = !HasTarget ? "未选择 VS · 请选择发送目标" :
                 _sending ? "正在发送，请稍候…" :
                 Busy ? "Copilot 正在处理 · 可编辑草稿，完成后发送" :
                 _input.Focused ? "正在输入" : _input.TextLength > 0 || _images.Count > 0 ? "草稿待发送" : "等待输入";
-            _inputStatus.Text = state + " · " + _input.TextLength + " 字" +
+            string status = state + " · " + _input.TextLength + " 字" +
                 (_images.Count > 0 ? " · " + _images.Count + " 张图片（发送时短暂切换 VS）" : " · 可粘贴或拖入图片");
-            _inputStatus.ForeColor = _sending || Busy ? Theme.BusyFg : _input.Focused ? Theme.AccentText : Theme.TextSecondary;
+            if (_inputStatus.Text != status) _inputStatus.Text = status;
+            var color = _sending || Busy ? Theme.BusyFg : _input.Focused ? Theme.AccentText : Theme.TextSecondary;
+            if (_inputStatus.ForeColor != color) _inputStatus.ForeColor = color;
         }
 
         private void Header_Paint(object sender, PaintEventArgs e)

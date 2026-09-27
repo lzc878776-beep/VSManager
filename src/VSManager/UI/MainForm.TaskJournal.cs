@@ -22,5 +22,26 @@ namespace VSManager
             }
             finally { t.FullResult = null; }
         }
+
+        /// <summary>
+        /// 检测到的手动对话生成完成时写入当天的「任务记录」（每轮只写一次；停止或中断的不记录）。
+        /// Records a detected manual chat in today's task records once it finishes (once per round; stopped or interrupted chats are skipped).
+        /// </summary>
+        private void RecordManualChatInNotebook(ExternalChat c)
+        {
+            if (!_settings.RecordCompletedTasksInNotebook || c == null || c.NotebookRecorded || c.Generating || c.Stopped || c.Interrupted) return;
+            c.NotebookRecorded = true;
+            try
+            {
+                string path = new NotebookTaskJournal(new NotebookStore()).RecordManual(c);
+                AppLog.Write(AppLog.TasksFile, "手动对话已写入笔记本 / Manual chat recorded in notebook: " + path);
+                _notebook?.ReloadIfClean();
+            }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is System.Security.SecurityException)
+            {
+                AppLog.Write(AppLog.TasksFile, "手动对话写入笔记本失败 / Manual chat notebook record failed: " + ex.Message);
+                SetStatus("任务记录写入笔记本失败 / Notebook record failed: " + ex.Message);
+            }
+        }
     }
 }

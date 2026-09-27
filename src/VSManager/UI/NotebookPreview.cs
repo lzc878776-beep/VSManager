@@ -21,6 +21,8 @@ namespace VSManager
         public event Action<string> Error;
         /// <summary>点击笔记间相对链接（原始链接目标）。/ A relative note link was clicked (raw link target).</summary>
         public event Action<string> NoteLinkRequested;
+        /// <summary>双击阅读视图，请求进入编辑。/ The preview was double-clicked to request editing.</summary>
+        public event Action EditRequested;
 
         public NotebookPreview()
         {
@@ -86,6 +88,8 @@ namespace VSManager
                         var message = _json.Deserialize<System.Collections.Generic.Dictionary<string, object>>(e.WebMessageAsJson);
                         if (message != null && message.TryGetValue("note", out var note) && note is string target && NotebookMarkdown.IsNoteLink(target))
                             NoteLinkRequested?.Invoke(target);
+                        else if (message != null && message.ContainsKey("edit"))
+                            EditRequested?.Invoke();
                     }
                     catch (ArgumentException) { }
                     catch (InvalidOperationException) { }
@@ -176,6 +180,7 @@ img{max-width:100%;height:auto;border-radius:3px;display:block;margin:22px 0}hr{
 @media(max-width:600px){main{padding:32px 24px 80px}h1{font-size:28px}}
 </style></head><body><main id='note'></main><script nonce='{{nonce}}'>
 document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[data-note]');if(!a)return;e.preventDefault();window.chrome.webview.postMessage({note:a.getAttribute('data-note')});});
+document.addEventListener('dblclick',e=>{if(e.target.closest&&e.target.closest('a'))return;window.chrome.webview.postMessage({edit:true});});
 window.chrome.webview.addEventListener('message',e=>{const y=window.scrollY;document.getElementById('note').innerHTML=e.data.html;window.scrollTo(0,e.data.top?0:y);});
 </script></body></html>".Replace("{{nonce}}", nonce).Replace("{{palette}}", palette).Replace("{{font}}", Theme.FontName);
         }

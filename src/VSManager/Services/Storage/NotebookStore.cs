@@ -30,7 +30,7 @@ namespace VSManager
 
     internal sealed class NotebookConflictException : IOException
     {
-        public NotebookConflictException() : base("页面已在别处修改或删除。草稿仍保留，请先另存草稿，再重载已保存版本。 / Page changed or deleted elsewhere. Save a draft copy before reloading.") { }
+        public NotebookConflictException() : base("页面已在别处修改或删除。 / Page changed or deleted elsewhere.") { }
     }
 
     /// <summary>
@@ -231,7 +231,17 @@ namespace VSManager
             ValidateId(pageId);
             string extension = System.IO.Path.GetExtension(source).ToLowerInvariant();
             if (!IsImage(extension)) throw new IOException("支持 PNG、JPG、GIF、WebP、BMP 图片。 / Supported: PNG, JPG, GIF, WebP, BMP.");
-            byte[] bytes = ReadBytes(source);
+            return ImportImage(pageId, ReadBytes(source), extension);
+        }
+
+        /// <summary>导入内存中的图片（例如剪贴板截图）。/ Imports in-memory image data (e.g. a clipboard screenshot).</summary>
+        public string ImportImage(string pageId, byte[] bytes, string extension)
+        {
+            ValidateId(pageId);
+            extension = (extension ?? "").ToLowerInvariant();
+            if (!IsImage(extension)) throw new IOException("支持 PNG、JPG、GIF、WebP、BMP 图片。 / Supported: PNG, JPG, GIF, WebP, BMP.");
+            if (bytes == null || bytes.Length == 0) throw new IOException("图片为空。 / Image is empty.");
+            if (bytes.Length > MaxNoteBytes) throw new IOException("文件超过 4 MB。 / File exceeds 4 MB.");
             string name = Guid.NewGuid().ToString("N") + extension;
             Run(c => Exec(c, "INSERT INTO assets(name, page_id, mime, data, created) VALUES(@n, @p, @m, @d, @c)", null,
                 ("@n", name), ("@p", pageId), ("@m", Mime(extension)), ("@d", bytes), ("@c", Now())));

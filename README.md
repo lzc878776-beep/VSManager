@@ -124,7 +124,7 @@ VSManager/
 
 ### 分层架构
 
-- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 未验证 / 失败 / 已取消；「未验证」`unverified` 表示功能已实现、构建 / 测试通过，仅尚未在运行中的程序里实际验证，不阻塞后续任务，可右键「标记为已验证」转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
+- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 未验证 / 失败 / 已取消；「未验证」`unverified` 表示功能已实现、构建 / 测试通过，仅尚未在运行中的程序里实际验证，不阻塞后续任务，可右键「标记为已验证」或在任务清单旁的「测试清单」逐项勾选（`TaskTestChecklist`，全部勾选即完成）转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
 - **Services（服务层）**：VS 管理、Copilot 消息发送、AI 助手、语音、归档、发布。`TaskDispatcher` 负责任务调度，通过 `ITaskDispatchHost` 与主窗口交互；外部依赖通过 `IVsOperations`、`ICopilotChannel`、`IVoiceService`、`IAiClientFactory` 抽象。
 - **Infrastructure（基础设施层）**：Win32 封装、配置与数据目录、文件系统抽象 `IFileSystem` 与原子写入 `AtomicFile`、统一日志 `AppLog`（含未处理异常记录到 crash.log）、HTTP 客户端创建。
 - **UI（界面层）**：窗体与控件，只负责展示与交互，业务动作委托给服务层。
@@ -173,7 +173,7 @@ VSManager/
 | | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | 写入 Copilot 输入框后的确认超时（秒，2–120）、粘贴未确认或未找到输入框时是否自动重试及粘贴重试次数（0–5） |
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | 每轮定位 Copilot 输入框的轮询超时（秒，1–60）、未找到时重新打开窗格并重试的次数（0–5，`SendAutoRetry=false` 时不重试） |
 | | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | 显式开启后，仅在文档标签数量严格超过阈值（0–1000）时清理已保存文档；未保存、未知状态与调试会话跳过 |
-| | `RecordCompletedTasksInNotebook` | true | 任务成功完成后写入笔记本：按完成日期自动建立「yyyy.M.d 任务记录」页面，其子页面「已完成任务」逐条列出时间与简述，点击进入该任务的详情页（任务内容、VS、时间、完整回复）；仅保存在本地笔记数据库 `%APPDATA%\VSManager\Notebooks\notebook.db`（SQLite；文件夹与笔记合并为可含子页面的页面，旧 `.md` 首次启动时一次性导入并保留作备份，可「导出 Markdown」） |
+| | `RecordCompletedTasksInNotebook` | true | 任务成功完成后写入笔记本：按完成日期自动建立「yyyy.M.d 任务记录」页面，页面正文即当天清单，逐条列出时间与题目（检测到的手动对话也会记录并标注「手动对话」），点击进入详情子页面（任务内容或提问、VS、时间、完整回复）；仅保存在本地笔记数据库 `%APPDATA%\VSManager\Notebooks\notebook.db`（SQLite；文件夹与笔记合并为可含子页面的页面，旧 `.md` 首次启动时一次性导入并保留作备份，可「导出 Markdown」） |
 | | `SaveAndCloseDocumentsAfterTask` | true | 任务回复结束后（成功或回执为失败，发送失败除外）、发布下一个任务前，自动保存目标 VS 中已修改且有可写路径的文档，再关闭已保存的文档标签；保存失败的保持打开，调试中不关闭 |
 | 解决方案登记 | `SolutionCloseConfirm` | true | AI 关闭 VS 前总是弹窗确认（关闭时仍会检查未保存修改） |
 | | `SolutionOpenWaitSeconds` | 90 | AI 打开解决方案后等待 VS 出现的最长时间（秒，10–600） |
@@ -184,7 +184,7 @@ VSManager/
 | AI 总控助手 | `AgentEnabled` | true | 启用 AI 助手 |
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI 兼容接口与模型 |
 | | `AgentKeyProtected` | 空 | API Key（DPAPI 加密；也可用 `VSMANAGER_AGENT_API_KEY`） |
-| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进 |
+| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进；也可在笔记本根目录的「AI 助手补充提示词」页面中写补充要求，每次开始新对话时读取（点「新对话」使修改生效） |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | 默认仅授权已登记解决方案目录；额外根目录必须在「AI 文件授权」中应用确认，或由用户编辑本机配置；两者都为空时拒绝全部访问 |
 | | `AgentPowerShellEnabled` | false | 兼容保留字段；AI 任意脚本入口停用，旧配置设为 true 也不能绕过文件白名单 |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | 单次文本上限（字符） |
@@ -622,7 +622,7 @@ All source files still share the single namespace `VSManager`; folders only grou
 
 ### Layered architecture
 
-- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / unverified / failed / cancelled; `unverified` means implemented with build / tests passing but not yet verified in the running app, never blocks successors, and can be turned into done via "Mark as verified"; older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
+- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / unverified / failed / cancelled; `unverified` means implemented with build / tests passing but not yet verified in the running app, never blocks successors, and can be turned into done via "Mark as verified" or by checking off every item in the "Test checklist" beside the task list (`TaskTestChecklist`); older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
 - **Services**: VS management, Copilot messaging, AI assistant, voice, archive and publishing. `TaskDispatcher` dispatches tasks and talks to the main window through `ITaskDispatchHost`; external dependencies are abstracted by `IVsOperations`, `ICopilotChannel`, `IVoiceService` and `IAiClientFactory`.
 - **Infrastructure**: Win32 wrappers, settings and data folder, the file-system abstraction `IFileSystem` with atomic writes `AtomicFile`, the unified log `AppLog` (unhandled exceptions go to crash.log) and HTTP client creation.
 - **UI**: forms and controls only handle display and interaction; business actions are delegated to the service layer.
@@ -669,7 +669,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | Polling timeout of each round locating the Copilot input box (seconds, 1–60) and how often the pane is reopened and the lookup retried when it is not found (0–5; no retry when `SendAutoRetry=false`) |
 | | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | After explicit opt-in, close saved documents only when tab count strictly exceeds the threshold (0–1000); skip unsaved, unknown and debugging states |
 | | `SaveAndCloseDocumentsAfterTask` | true | After a task reply ends (success or a failed receipt, not send failures) and before the next is published, save modified documents with a writable path in the target VS, then close saved document tabs; unsaved ones stay open, nothing closes while debugging |
-| | `RecordCompletedTasksInNotebook` | true | Record successfully completed tasks in the notebook: a "yyyy.M.d 任务记录" page per completion day with a "已完成任务" subpage listing time and summary, each linking to a detail page (task, VS, times, full reply); stored only in the local notebook database `%APPDATA%\VSManager\Notebooks\notebook.db` (SQLite; folders and notes are merged into pages that can have subpages; legacy `.md` files are imported once on first start and kept as a backup; use "Export Markdown" for files) |
+| | `RecordCompletedTasksInNotebook` | true | Record successfully completed tasks in the notebook: a "yyyy.M.d 任务记录" page per completion day whose body lists the day's entries with time and title (detected manual chats are recorded too, marked "Manual chat"), each linking to a detail subpage (task or question, VS, times, full reply); stored only in the local notebook database `%APPDATA%\VSManager\Notebooks\notebook.db` (SQLite; folders and notes are merged into pages that can have subpages; legacy `.md` files are imported once on first start and kept as a backup; use "Export Markdown" for files) |
 | Solution registry | `SolutionCloseConfirm` | true | Always ask before the AI closes a VS (unsaved changes are checked regardless) |
 | | `SolutionOpenWaitSeconds` | 90 | How long the AI waits for VS to appear after opening a solution (seconds, 10–600) |
 | | `PendingVsSettleSeconds` | 20 | Extra seconds a parked task waits after its VS appears so the solution and Copilot can load (0–300) |
@@ -679,7 +679,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | AI assistant | `AgentEnabled` | true | Enable the assistant |
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI-compatible endpoint and model |
 | | `AgentKeyProtected` | empty | API key (DPAPI-encrypted; or `VSMANAGER_AGENT_API_KEY`) |
-| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish |
+| | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish; extra instructions can also be written in the root notebook page "AI 助手补充提示词", read at the start of each new conversation (click "New chat" to apply edits) |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | Defaults to registered solution directories only; extra roots require Apply/confirmation in AI file authorization or a user-edited local configuration; no roots means deny all |
 | | `AgentPowerShellEnabled` | false | Legacy compatibility field; arbitrary AI scripts are disabled, and setting this to true cannot bypass the file allowlist |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | Per-call text limits (characters) |

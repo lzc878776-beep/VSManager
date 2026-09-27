@@ -39,7 +39,7 @@ namespace VSManager
 		private string _archiveWarning;
 		private readonly NotifyIcon _tray = new NotifyIcon();
 		private readonly Timer _refreshTimer = new Timer { Interval = 3000 };
-		private readonly ToolTip _tips = new ToolTip();
+		private readonly ToolTip _tips = new ThemedToolTip();
 		private Icon _headerIcon;
 		private readonly IVoiceService _voice;
 		/// <summary>VS 进程与 DTE 操作（可替换，便于测试）。/ VS process and DTE operations (replaceable for tests).</summary>
@@ -78,6 +78,7 @@ namespace VSManager
 		/// <summary>任务调度（发布、跟踪、完成 / 失败通知）。/ Task dispatching (publish, track, completion / failure notices).</summary>
 		private readonly TaskDispatcher _dispatcher;
 		private readonly TaskPanel _taskPanel = new TaskPanel();
+		private readonly TestChecklistPanel _testPanel = new TestChecklistPanel();
 		private readonly Timer _taskTimer = new Timer { Interval = 2000 };
 		/// <summary>启动后的一段时间内 VS 列表与 Copilot 状态尚未就绪，不据此判定执行中的任务失败或完成。</summary>
 		private DateTime _tasksReadyAt = DateTime.MaxValue;
@@ -117,6 +118,7 @@ namespace VSManager
 			_voice.Failed += err => SafeInvoke(() => SetStatus("豆包语音播报失败：" + err));
 			_voice.Notice += msg => SafeInvoke(() => SetStatus("🔊 " + msg));
 			_agent = new AgentService(this, () => _settings);
+			_agent.NotebookPromptSource = () => NotebookAgentPrompt.Load(new NotebookStore());
 			_agentSupervisor = new AgentSupervisor(_agent, () => _settings);
 			_agentSupervisor.Notice += msg => SafeInvoke(() =>
 			{
@@ -361,13 +363,26 @@ namespace VSManager
 			};
 			_taskPanel.ExternalActionRequested += OnExternalAction;
 			_taskPanel.SetCollapsed(_settings.TaskPanelCollapsed);
-			_taskPanel.CollapsedChanged += c => { _settings.TaskPanelCollapsed = c; _settings.Save(); };
+			_taskPanel.CollapsedChanged += c => { _settings.TaskPanelCollapsed = c; _settings.Save(); _testPanel.SetSuppressed(c); };
 			_taskPanel.ActionRequested += OnTaskAction;
+			// 测试清单：逐项勾选，全部勾选后任务转为已完成 / Test checklist: check items off; the task completes once all are checked
+			_testPanel.Bind(_tasks, () => _settings.TaskListClearedAt);
+			_testPanel.SetSuppressed(_settings.TaskPanelCollapsed);
+			_testPanel.ItemToggled += (t, index, done) =>
+			{
+				bool wasPending = TaskTestChecklist.Pending(t);
+				if (!_dispatcher.SetTestItem(t, index, done)) { SetStatus("该任务已不在待验证状态 / The task no longer awaits verification"); return; }
+				if (wasPending && !TaskTestChecklist.Pending(t))
+					SetStatus($"任务 #{t.Id} 测试项已全部勾选，已标记为完成 / All test items of task #{t.Id} checked; marked done");
+				_taskPanel.RefreshItems();
+			};
+			_testPanel.ActionRequested += OnTaskAction;
 			_taskTimer.Tick += (s, e) => PumpTasks();
 
 			Controls.Add(_chat);
 			Controls.Add(_agentPanel);
 			Controls.Add(_notebookHost);
+			Controls.Add(_testPanel);
 			Controls.Add(_taskPanel);
 			Controls.Add(splitter);
 			Controls.Add(_sidebar);
@@ -995,7 +1010,7 @@ namespace VSManager
 			on &= _settings.AgentEnabled;
 			if (_workspaceNavigation != null && !_workspaceNavigation.Select(on ? WorkspacePage.Agent : WorkspacePage.VisualStudio))
 			{
-				SetStatus("笔记未保存，无法切换。请先另存草稿。 / Save a copy of the note before switching.");
+				SetStatus("笔记未保存，无法切换，请查看笔记本底部的错误。 / Note not saved; check the notebook status before switching.");
 				return false;
 			}
 			_agentMode = on;
@@ -1405,7 +1420,15 @@ namespace VSManager
 		Task<string> IAgentHost.QueueTask(VsInstance v, string text) => OnUi(() => EnqueueTextTask(v, text, "AI"));
 
 		/// <summary>所有文本任务只入队，由计时调度发布。/ All text tasks enqueue only; the timer-driven dispatcher publishes them.</summary>
-		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null)
+		/// <summary>为新任务记录题目（已有题目的复用任务保持不变）。/ Records the title on a task that has none yet.</summary>
+		private void ApplyTitle(QueuedTask q, string title)
+		{
+			if (q == null || title == null || !string.IsNullOrEmpty(q.Title)) return;
+			q.Title = title;
+			_tasks.Commit();
+		}
+
+		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null, string title = null)
 		{
 			if (v == null || string.IsNullOrWhiteSpace(text)) return "目标或任务内容无效 / Invalid target or task text";
 			if (source == "AI" && TaskFailureAnalyzer.FindVerbatimResend(_tasks.Items, v.Key, text) is QueuedTask same)
@@ -1419,8 +1442,9 @@ namespace VSManager
 			var q = duplicate ?? (attachments != null && attachments.Length > 0
 				? _tasks.Add(v.Key, name, text.Trim(), source, attachments)
 				: _tasks.Add(v.Key, name, text.Trim(), source));
+			ApplyTitle(q, title);
 			string hidden = duplicate == null ? HideResentFailed(q) : null;
-			if (_taskPanel.Collapsed) { _taskPanel.SetCollapsed(false); _settings.TaskPanelCollapsed = false; _settings.Save(); }
+			if (_taskPanel.Collapsed) { _taskPanel.SetCollapsed(false); _testPanel.SetSuppressed(false); _settings.TaskPanelCollapsed = false; _settings.Save(); }
 			string startNote = _dispatcher.AcceptQueued(q, source);
 			UpdateTaskTimer();
 			_taskPanel.RefreshItems();
@@ -2051,7 +2075,7 @@ namespace VSManager
 					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					_dispatcher.Retry(t);
 					return;
-				case "verify": _dispatcher.MarkVerified(t); return;
+				case "verify": _dispatcher.MarkVerified(t); _taskPanel.RefreshItems(); return;
 				case "dispatch": _dispatcher.DispatchNow(t); return;
 				case "attachments": ShowTaskAttachments(t); return;
 				case "release":
@@ -2167,7 +2191,7 @@ namespace VSManager
 			{
 				bool changed = false;
 				if (answer.Length > 0 && answer != entry.Answer) { entry.Answer = answer; changed = true; }
-				if (entry.Generating && !busy) { entry.Generating = false; entry.Interrupted = false; entry.Finished = DateTime.Now; changed = true; }
+				if (entry.Generating && !busy) { entry.Generating = false; entry.Interrupted = false; entry.Finished = DateTime.Now; changed = true; RecordManualChatInNotebook(entry); }
 				Archive.ManualChat(entry);
 				if (changed) _taskPanel.RefreshItems();
 				return;
@@ -2184,6 +2208,7 @@ namespace VSManager
 				old.Generating = false;
 				old.Finished = DateTime.Now;
 				Archive.ManualChat(old);
+				RecordManualChatInNotebook(old);
 			}
 			var added = new ExternalChat
 			{
@@ -2193,6 +2218,7 @@ namespace VSManager
 			};
 			_externals.Add(added);
 			Archive.ManualChat(added);
+			if (!busy) RecordManualChatInNotebook(added);
 			// 只在内存中保留最近 50 条已结束的手动对话（归档中保留全部）
 			foreach (var stale in _externals.Where(c => !c.Generating).OrderByDescending(c => c.Finished ?? c.Started)
 				.Skip(Math.Max(50, _settings.ExternalRestoreLimit)).ToList())
@@ -2231,6 +2257,7 @@ namespace VSManager
 					c.Generating = false;
 					c.Finished = DateTime.Now;
 					Archive.ManualChat(c);
+					RecordManualChatInNotebook(c);
 					changed = true;
 				}
 			}
@@ -2532,7 +2559,7 @@ namespace VSManager
 			_dispatcher.ApplyAutomaticStart();
 			UpdateTaskTimer();
 			_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
-			_taskPanel.SetCollapsed(false);
+			_taskPanel.SetCollapsed(false); _testPanel.SetSuppressed(false);
 		}
 
 		protected override void OnResize(EventArgs e)
@@ -2571,7 +2598,7 @@ namespace VSManager
 				e.Cancel = true;
 				_exiting = false;
 				OpenNotebooks();
-				SetStatus("笔记未保存，已取消退出。请在笔记本中另存草稿。 / Exit cancelled: save a copy of the unsaved note.");
+				SetStatus("笔记未保存，已取消退出，请查看笔记本底部的错误。 / Exit cancelled: the note was not saved; check the notebook status.");
 				return;
 			}
 			// 真正退出：告诉看门狗这是正常退出 / Real exit: tell the watchdog this is a clean exit

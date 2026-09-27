@@ -29,7 +29,7 @@ namespace VSManager
             if (!TrySave())
             {
                 e.Cancel = true;
-                MessageBox.Show(this, "笔记尚未保存，已取消关闭。请查看底部错误，可使用“另存草稿”。\r\nClosing cancelled: note was not saved. Check the status and use Save copy.",
+                MessageBox.Show(this, "笔记尚未保存，已取消关闭。请查看底部错误。\r\nClosing cancelled: note was not saved. Check the status message.",
                     Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
             base.OnFormClosing(e);

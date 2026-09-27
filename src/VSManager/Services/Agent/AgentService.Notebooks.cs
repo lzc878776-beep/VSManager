@@ -15,6 +15,32 @@ namespace VSManager
         /// <summary>笔记本技能使用的存储；可在测试中替换。/ Store used by the notebook skill; replaceable in tests.</summary>
         internal Func<NotebookStore> NotebookStoreFactory { get; set; } = () => new NotebookStore();
 
+        /// <summary>
+        /// 读取笔记本中的用户补充提示词；为 null 时不读取（测试默认）。每次新对话开始时调用一次。
+        /// Reads the user's extra instructions from the notebook; null disables it (the test default). Called once per new conversation.
+        /// </summary>
+        internal Func<string> NotebookPromptSource { get; set; }
+
+        private string _notebookPrompt;
+        private bool _notebookPromptLoaded;
+
+        /// <summary>本轮对话使用的笔记本补充提示词。/ Notebook extra instructions used by the current conversation.</summary>
+        internal string NotebookPrompt => _notebookPrompt;
+
+        private void LoadNotebookPromptForConversation()
+        {
+            if (_notebookPromptLoaded && _history.Count > 0) return;
+            _notebookPromptLoaded = true;
+            _notebookPrompt = null;
+            var source = NotebookPromptSource;
+            if (source == null) return;
+            try { _notebookPrompt = source(); }
+            catch (Exception ex) when (ex is IOException || ex is ArgumentException || ex is SqliteException || ex is UnauthorizedAccessException)
+            {
+                Log("读取笔记本补充提示词失败 / Failed to read notebook instructions: " + ex.Message);
+            }
+        }
+
         [Description("笔记本技能：列出或搜索笔记本页面（按标题与正文匹配），返回页面编号、层级标题路径；只读。/ Notebook skill: list or search notebook pages (title and body match), returning page ids and title paths; read-only.")]
         private string ListNotes(
             [Description("可选搜索词；为空时列出全部页面 / Optional search text; empty lists every page")] string query = null)

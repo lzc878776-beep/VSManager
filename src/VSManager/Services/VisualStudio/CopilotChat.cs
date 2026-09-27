@@ -769,6 +769,8 @@ namespace VSManager
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
             // 在任何 DTE 命令（可能把 VS 带到前台）之前记录 / Record before any DTE command (which may bring VS to the front)
             bool fgBefore = ForegroundIs(vs);
+            // 发送后切回用户原本所在的窗口（不一定是本工具）/ Afterwards return to the window the user was actually using (not necessarily this tool)
+            returnTo = RestoreTarget(vs, returnTo);
 
             var pane = FindPane(vs);
             if (_queueGuard != null)
@@ -819,7 +821,7 @@ namespace VSManager
                 : "Copilot 仍在处理上一条消息（VS 中存在停止按钮），请等待完成或先停止后再发送";
 
             string r = null;
-            if (hasImages) r = SendImages(vs, pane, edit, text, images, returnTo);
+            if (hasImages) r = WaitUserIdle(vs) ?? SendImages(vs, pane, edit, text, images, returnTo);
             else
             {
                 if (background && text.IndexOf('\n') < 0)
@@ -830,7 +832,7 @@ namespace VSManager
                     if (r == null) T("后台发送不可用，改为前台发送");
                 }
                 else if (background) T("消息包含换行，使用前台发送");
-                if (r == null) r = SendForeground(vs, pane, edit, text, returnTo);
+                if (r == null) r = WaitUserIdle(vs) ?? SendForeground(vs, pane, edit, text, returnTo);
             }
             // 打开窗格等 DTE 命令可能把 VS 带到前台：发送后切回本工具，保持用户当前界面
             if (!fgBefore && returnTo != IntPtr.Zero && Native.IsWindow(returnTo) && ForegroundIs(vs))
@@ -1076,6 +1078,34 @@ namespace VSManager
             return message;
         }
 
+        /// <summary>
+        /// 队列发送切换前台前等待用户短暂空闲；用户仍在操作时返回可重试的等待结果（尚未触及 VS）。手动发送不等待。
+        /// Queued sends wait for a short user idle before switching the foreground; while the user keeps working a retryable wait
+        /// is returned (VS untouched). Manual sends never wait.
+        /// </summary>
+        private string WaitUserIdle(VsInstance vs)
+        {
+            if (_queueGuard == null) return null;
+            if (UserActivity.WaitIdle(UserIdleSource, UserActivity.RequiredIdleMs, UserActivity.MaxWaitMs)) return null;
+            T("前台：用户正在操作电脑，暂不切换到 VS，稍后重试 / user is active; not switching to VS, retrying later");
+            return SendRetryPolicy.UserBusyPrefix + "用户正在操作电脑，稍后自动发送 / The user is working; sending automatically later";
+        }
+
+        /// <summary>用户空闲时长来源（测试可替换）。/ Source of the user idle time (replaceable in tests).</summary>
+        internal static Func<int> UserIdleSource = UserActivity.IdleMs;
+
+        /// <summary>
+        /// 发送后要切回的窗口：用户当前的前台窗口（不属于目标 VS 时），否则为调用方指定的窗口。
+        /// Window to return to after sending: the user's current foreground window (unless it belongs to the target VS), otherwise the caller's window.
+        /// </summary>
+        private static IntPtr RestoreTarget(VsInstance vs, IntPtr fallback)
+        {
+            var fg = Native.GetForegroundWindow();
+            if (fg == IntPtr.Zero || !Native.IsWindow(fg)) return fallback;
+            Native.GetWindowThreadProcessId(fg, out uint pid);
+            return pid == (uint)vs.Pid ? fallback : fg;
+        }
+
         private static bool ForegroundIs(VsInstance vs)
         {
             Native.GetWindowThreadProcessId(Native.GetForegroundWindow(), out uint pid);
@@ -1123,6 +1153,11 @@ namespace VSManager
                     if (err == null) { focusAttempted = true; err = FocusForPaste(vs, edit); }
                     if (err != null)
                     {
+                        // 队列任务：激活 / 聚焦被用户操作打断时尚未粘贴，稍后重试而不是失败。
+                        // Queued task: activation / focus interrupted by the user happens before pasting, so retry later instead of failing.
+                        if (_queueGuard != null && !SendRetryPolicy.IsBlocked(err)
+                            && (err.StartsWith("无法激活", StringComparison.Ordinal) || err.StartsWith("发送前 VS 焦点已改变", StringComparison.Ordinal)))
+                            return SendRetryPolicy.UserBusyPrefix + err;
                         if (last || SendRetryPolicy.IsBlocked(err)) return err;
                         Thread.Sleep(300);
                         continue;
@@ -1146,7 +1181,18 @@ namespace VSManager
 
                 string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
                 if (beforeSubmit != null) return beforeSubmit;
-                if (!ForegroundIs(vs) || !HasFocus(edit)) { T("前台：回车前焦点已改变"); return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）"; }
+                if (!ForegroundIs(vs) || !HasFocus(edit))
+                {
+                    T("前台：回车前焦点已改变");
+                    // 内容已确认写入时改用发送按钮（UI 自动化调用不需要焦点），避免用户操作导致发送失败。
+                    // When the content is confirmed, use the send button instead (UI Automation invoke needs no focus) so user activity does not fail the send.
+                    if (PasteVerifier.IsConfirmed(rep.Check) && TryInvokeSend(pane) && WaitSent(pane, edit, 1500))
+                    {
+                        T("前台：已通过发送按钮提交 / submitted through the send button");
+                        return "已发送（已短暂切换到 VS）";
+                    }
+                    return "发送前 VS 焦点已改变，发送已取消（内容保留在 VS 输入框中）";
+                }
                 T("前台：内容已粘贴，发送 Enter");
                 Key(VK_RETURN, false); Key(VK_RETURN, true);
 

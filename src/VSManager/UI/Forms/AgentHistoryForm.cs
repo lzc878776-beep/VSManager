@@ -89,7 +89,7 @@ namespace VSManager
             _btnFolder = new FlatButton { Text = "📂", Ghost = true, Dock = DockStyle.Right, Width = Dpi.S(40) };
             _btnFolder.Click += (s, e) => OpenFolder();
 
-            var tips = new ToolTip();
+            var tips = new ThemedToolTip();
             tips.SetToolTip(_search, "按关键词筛选（不区分大小写；多个词需同时出现），也可输入「#12」查找关联任务\nFilter by keywords (case-insensitive, all words must match), or \"#12\" for a task");
             tips.SetToolTip(_date, "按日期筛选 / Filter by date");
             tips.SetToolTip(_order, "排序方式 / Sort order");

@@ -1,6 +1,7 @@
 using System;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -183,9 +184,10 @@ namespace VSManager.Tests
                         Assert.AreEqual("original", store.Read(ideas).Text);
                         var other = new NotebookStore(root);
                         other.Save(other.Read(ideas), "external");
-                        Assert.IsFalse(workspace.TrySave());
+                        Assert.IsTrue(workspace.TrySave(), "冲突时草稿自动另存 / Conflicting drafts are saved as a copy");
                         Assert.AreEqual("draft", editor.Text);
                         Assert.AreEqual("external", store.Read(ideas).Text);
+                        Assert.AreEqual("draft", store.Read(store.LoadTree().Single(e => e.Name.StartsWith("Ideas-draft-", StringComparison.Ordinal)).Path).Text);
                     }
                 }
                 finally { Directory.Delete(root, true); }

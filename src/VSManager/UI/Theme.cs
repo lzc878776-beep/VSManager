@@ -37,6 +37,10 @@ namespace VSManager
 
         public static readonly Color RowHover = Color.FromArgb(52, 53, 61);
         public static readonly Color RowSelected = Color.FromArgb(62, 54, 90);
+        /// <summary>笔记本中「AI 助手补充提示词」页的玫红色调。/ Rose palette for the notebook's AI assistant instructions page.</summary>
+        public static readonly Color PromptAccent = Color.FromArgb(244, 114, 182);
+        public static readonly Color PromptText = Color.FromArgb(251, 182, 216);
+        public static readonly Color PromptSelected = Color.FromArgb(86, 46, 74);
 
         public static readonly Color BusyFg = Color.FromArgb(252, 196, 72);
         public static readonly Color BusyBg = Color.FromArgb(56, 42, 12);
@@ -47,6 +51,10 @@ namespace VSManager
         public static readonly Color NoneFg = Color.FromArgb(150, 150, 164);
         public static readonly Color NoneBg = Color.FromArgb(58, 59, 68);
         public static readonly Color NoneDot = Color.FromArgb(96, 96, 110);
+        // 「未验证」状态用天蓝色，避免与执行中的琥珀色混淆 / Sky blue for "unverified" so it is not confused with the amber "running" state
+        public static readonly Color UnverifiedFg = Color.FromArgb(125, 211, 252);
+        public static readonly Color UnverifiedBg = Color.FromArgb(14, 42, 60);
+        public static readonly Color UnverifiedDot = Color.FromArgb(56, 189, 248);
         public static readonly Color Danger = Color.FromArgb(248, 113, 113);
         public static readonly Color Success = Color.FromArgb(52, 211, 153);
         public static readonly Color Warning = Color.FromArgb(251, 191, 36);

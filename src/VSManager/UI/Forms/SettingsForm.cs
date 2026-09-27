@@ -673,7 +673,7 @@ namespace VSManager
                     if (IsDisposed) return;
                     clean.Enabled = true;
                     cleanStatus.Text = r ?? "清理正在进行中 / A cleanup is already running";
-                    new ToolTip().SetToolTip(cleanStatus, cleanStatus.Text);
+                    new ThemedToolTip().SetToolTip(cleanStatus, cleanStatus.Text);
                 };
                 attachRow.Controls.Add(cleanStatus);
                 attachRow.Controls.Add(openFolder);
@@ -706,7 +706,7 @@ namespace VSManager
                 test.Enabled = true;
                 status.ForeColor = err == null ? Theme.IdleFg : Theme.Danger;
                 status.Text = err ?? "✔ 连接成功，模型可用";
-                new ToolTip().SetToolTip(status, status.Text);
+                new ThemedToolTip().SetToolTip(status, status.Text);
             };
             testRow.Controls.Add(status);
             testRow.Controls.Add(test);
@@ -727,7 +727,7 @@ namespace VSManager
         }
 
         private readonly Dictionary<string, TextBox> _quotaBoxes = new Dictionary<string, TextBox>();
-        private readonly ToolTip _quotaTip = new ToolTip { AutoPopDelay = 15000 };
+        private readonly ToolTip _quotaTip = new ThemedToolTip { AutoPopDelay = 15000 };
 
         /// <summary>校验并保存 AI 额度：非数字恢复原值，超出范围自动修正并回写到输入框。</summary>
         private void CommitAgentQuota()
@@ -798,7 +798,7 @@ namespace VSManager
                 _s.VoiceLanguage = code;
                 Changed?.Invoke();
             };
-            new ToolTip().SetToolTip(_voiceLanguage, "语音播报与 AI 总控助手回复使用的语言，切换后立即生效\r\nLanguage for voice announcements and AI assistant replies; applies immediately");
+            new ThemedToolTip().SetToolTip(_voiceLanguage, "语音播报与 AI 总控助手回复使用的语言，切换后立即生效\r\nLanguage for voice announcements and AI assistant replies; applies immediately");
             Row(NewLabel("语言 / Language"), _voiceLanguage, Dpi.S(40));
             Row(null, Toggle("用 AI 总控助手总结概述 / AI summary", "已配置 AI 助手模型（如 DeepSeek）时，由模型按语音语言把回答概括为 30 字（英文 30 词）内的播报语；未配置或失败时按规则提取首句。" +
                 " / When an AI model is configured, it summarizes the answer in the voice language (≤ 30 words); otherwise the first sentence is used.", _s.VoiceAiSummary, v => _s.VoiceAiSummary = v), Dpi.S(56), true);
@@ -848,7 +848,7 @@ namespace VSManager
             Control spkEn;
             (spkEn, _voiceSpeakerEn) = NewTextBox(string.IsNullOrWhiteSpace(_s.VoiceSpeakerEn) ? DoubaoVoice.DefaultVoiceFor(_s.VoiceResource, true) : _s.VoiceSpeakerEn, false);
             _voiceSpeakerEn.Leave += (s2, e2) => CommitVoice();
-            new ToolTip().SetToolTip(_voiceSpeakerEn, "语音语言为 English 时使用；不可用时自动回退到默认音色并提示\r\nUsed when the voice language is English; falls back to the default voice with a notice if unavailable");
+            new ThemedToolTip().SetToolTip(_voiceSpeakerEn, "语音语言为 English 时使用；不可用时自动回退到默认音色并提示\r\nUsed when the voice language is English; falls back to the default voice with a notice if unavailable");
             SyncVoiceLabel();
             Row(spkEnLabel, spkEn, Dpi.S(42));
 
@@ -870,7 +870,7 @@ namespace VSManager
                 _voiceStatus.ForeColor = err != null ? Theme.Danger : result.Notice != null ? Theme.Warning : Theme.IdleFg;
                 _voiceStatus.Text = err != null ? err : result.Notice != null ? "⚠ " + result.Notice
                     : _s.VoiceEnabled ? "✔ 播放成功" : "✔ 播放成功（注意：「完成时语音播报」未开启）";
-                new ToolTip().SetToolTip(_voiceStatus, _voiceStatus.Text);
+                new ThemedToolTip().SetToolTip(_voiceStatus, _voiceStatus.Text);
             };
             testRow.Controls.Add(_voiceStatus);
             testRow.Controls.Add(test);
@@ -1056,7 +1056,7 @@ namespace VSManager
             if (_archiveStatus.Text != null) _tipArchive.SetToolTip(_archiveStatus, _archiveStatus.Text);
         }
 
-        private readonly ToolTip _tipArchive = new ToolTip();
+        private readonly ToolTip _tipArchive = new ThemedToolTip();
 
         #endregion
 
@@ -1093,7 +1093,7 @@ namespace VSManager
                 "默认开启；只保存已有路径且可写的文件，保存失败的保持打开；调试中不关闭 / On by default; saves only existing writable files, keeps failures open; no closing while debugging",
                 _s.SaveAndCloseDocumentsAfterTask, v => _s.SaveAndCloseDocumentsAfterTask = v), Dpi.S(72), true);
             Row(null, Toggle("已完成任务写入笔记本 / Record completed tasks in notebooks",
-                "默认开启；按天建立「任务记录」目录，清单页含简述与时间，点击进入详情 / On by default; daily folder with a list of summaries and times linking to details",
+                "默认开启；已完成任务与检测到的手动对话按天写入「任务记录」页面，页面即清单，点击进入详情 / On by default; completed tasks and detected manual chats go to a daily task-record page that lists them, linking to details",
                 _s.RecordCompletedTasksInNotebook, v => _s.RecordCompletedTasksInNotebook = v), Dpi.S(72), true);
             Row(null, Toggle("发送前关闭已保存文档 / Close saved documents before sending",
                 "默认关闭；跳过未保存、状态未知和调试中的文档，不关闭工具窗口 / Off by default; skip unsaved, unknown and debugging states; never close tool windows",
