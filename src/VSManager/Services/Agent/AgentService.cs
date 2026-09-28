@@ -294,7 +294,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<bool, bool, Task<string>>)PauseTaskQueue, "pause_task_queue"),
                 AIFunctionFactory.Create((Func<int, string, bool, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)EditTaskResult, "edit_task_result"),
-                AIFunctionFactory.Create((Func<int, Task<string>>)RetryTask, "retry_task"),
+                AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTask, "retry_task"),
+                AIFunctionFactory.Create((Func<int, int, Task<string>>)ReadTaskReply, "read_task_reply"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
@@ -742,7 +743,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                         : "暂停任务队列" + (Arg("interrupt_running").Equals("true", StringComparison.OrdinalIgnoreCase) ? "并中断执行中的任务（需用户确认）" : "") + " / Pause task queue";
                 case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
                 case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
-                case "retry_task": return "原样重试任务 #" + Arg("id") + " / Retry task";
+                case "retry_task": return "重试任务 #" + Arg("id") + (Arg("note").Length > 0 ? "：" + OneLine(Arg("note"), 50) : "") + " / Retry task";
+                case "read_task_reply": return "读取任务 #" + Arg("id") + " 的完整 Copilot 回复 / Read the whole task reply";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
                 case "read_vs_file":
                 case "read_file": return "读取并脱敏授权文件 / Read and redact granted file";

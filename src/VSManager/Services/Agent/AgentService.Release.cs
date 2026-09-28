@@ -17,8 +17,17 @@ namespace VSManager
         Task<string> ReleaseTask(int id);
         /// <summary>插入补充信息后重试任务（<paramref name="fromUser"/>：信息来自用户，不受 AI 自主重试限制），返回结果文字。/ Retries a task with supplementary info (<paramref name="fromUser"/>: the info comes from the user and bypasses the AI self-retry limits); returns result text.</summary>
         Task<string> RetryTaskWithInfo(int id, string info, bool fromUser);
-        /// <summary>非内容类失败后原样重试任务，返回结果文字。/ Retries a task unchanged after a non-content failure; returns result text.</summary>
-        Task<string> RetryTask(int id);
+        /// <summary>非内容类失败后重试任务（<paramref name="note"/>：可选的接续说明），返回结果文字。/ Retries a task after a non-content failure (<paramref name="note"/>: optional continuation note); returns result text.</summary>
+        Task<string> RetryTask(int id, string note);
+    }
+
+    /// <summary>
+    /// 可选宿主能力：分页读取失败任务保存的本轮 Copilot 完整回复（界面线程之外可调用）。
+    /// Optional host capability: reads the whole Copilot turn stored for a failed task, page by page (callable from background threads).
+    /// </summary>
+    public interface IAgentTaskReplyHost
+    {
+        Task<string> ReadTaskReply(int id, int page);
     }
 
     /// <summary>
@@ -79,15 +88,28 @@ namespace VSManager
             return await host.RetryTaskWithInfo(id, info, from_user).ConfigureAwait(false);
         }
 
-        [Description("原样重试因非任务内容原因失败的任务：投递失败、目标 VS 关闭、读取回复失败，或 Copilot 本轮没执行完（网络 / 服务错误、被中断、没有回复）。" +
-            "这类失败不计入需求的执行次数，也不需要新内容；每个任务最多直接重试 " + TaskFailureAnalyzer.MaxRecoveryRetriesText + " 次，超过后交给用户检查。" +
+        [Description("重试因非任务内容原因失败的任务：投递失败、目标 VS 关闭、读取回复失败，或 Copilot 本轮没执行完（返回中断 / 未预期的 EOF、返回体过大、达到单轮迭代上限、网络 / 服务错误、没有回复）。" +
+            "本轮中断的任务重试时会自动提示 Copilot 在已有进度上继续；可在 note 中针对中断原因补充做法（如分步完成、缩小范围、减少输出、从哪一步接着做）。" +
+            "这类失败不计入需求的执行次数；每个任务最多直接重试 " + TaskFailureAnalyzer.MaxRecoveryRetriesText + " 次，超过后交给用户检查。" +
             "Copilot 执行完但任务失败（缺少回执、回报失败）时会被拒绝，应用 retry_task_with_info 写明新信息或交给用户。")]
-        internal async Task<string> RetryTask([Description("任务编号，如 3")] int id)
+        internal async Task<string> RetryTask(
+            [Description("任务编号，如 3")] int id,
+            [Description("可选：给 Copilot 的接续说明，针对中断原因调整做法；没有时留空")] string note = null)
         {
             if (!(_host is IAgentReleaseHost host)) return ReleaseUnsupported;
-            if (_settings().AgentConfirm && !await ConfirmAsync("重试任务 #" + id, "任务 #" + id + " 因投递、读取或 Copilot 本轮中断而失败，将原样重新排队。"))
+            if (_settings().AgentConfirm && !await ConfirmAsync("重试任务 #" + id, "任务 #" + id + " 因投递、读取或 Copilot 本轮中断而失败，将重新排队并在已有进度上继续。" + (string.IsNullOrWhiteSpace(note) ? "" : "\n接续说明：" + note)))
                 return "用户拒绝了该操作。";
-            return await host.RetryTask(id).ConfigureAwait(false);
+            return await host.RetryTask(id, note).ConfigureAwait(false);
+        }
+
+        [Description("读取失败任务保存的本轮 Copilot 完整回复（最后一条任务消息之后的全部回答与过程步骤，不只是最后一行状态），分页返回。" +
+            "失败通知中的回复被省略、或需要确认中断原因（返回中断 / EOF、返回体过大、迭代上限等）与已完成进度时调用，据此决定补充什么内容后用 retry_task / retry_task_with_info 继续或重试。")]
+        internal async Task<string> ReadTaskReply(
+            [Description("任务编号，如 3")] int id,
+            [Description("页码，从 1 开始")] int page = 1)
+        {
+            if (!(_host is IAgentTaskReplyHost host)) return "当前宿主不支持读取任务回复 / Reading task replies is unavailable.";
+            return await host.ReadTaskReply(id, page).ConfigureAwait(false);
         }
     }
 }

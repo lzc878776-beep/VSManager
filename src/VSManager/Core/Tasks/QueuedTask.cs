@@ -140,6 +140,19 @@ namespace VSManager
         /// changes; cleared once that send is delivered.
         /// </summary>
         [DataMember(EmitDefaultValue = false)] public bool Interrupted;
+        /// <summary>
+        /// 失败时本轮 Copilot 的完整回复（含过程步骤，见 <see cref="TaskReply"/>），供主控 AI 分析原因；重新排队时清除。
+        /// The whole Copilot turn on failure (steps included, see <see cref="TaskReply"/>) for the main AI to analyze; cleared on requeue.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string Reply;
+        /// <summary>从完整回复识别出的执行异常（见 <see cref="VSManager.RunIssue"/>），没有时为 null。/ Run issue detected from the whole turn (see <see cref="VSManager.RunIssue"/>); null when none.</summary>
+        [DataMember(EmitDefaultValue = false)] public string RunIssue;
+        /// <summary>
+        /// 本轮中断后重试时的接续说明（含主控 AI 的补充），随下一次发送附给 Copilot；该次送达后清除。
+        /// Continuation note for a retry after an interrupted run (including the main AI's additions), sent with the next
+        /// attempt and cleared once delivered.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string ResumeNote;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -171,7 +184,8 @@ namespace VSManager
             Released = Released, Supplement = Supplement, SupplementCount = SupplementCount,
             ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
             PendingNote = PendingNote, FailureReason = FailureReason,
-            TestItems = TestItems?.Select(i => i?.Clone()).ToArray(), Interrupted = Interrupted
+            TestItems = TestItems?.Select(i => i?.Clone()).ToArray(), Interrupted = Interrupted,
+            Reply = Reply, RunIssue = RunIssue, ResumeNote = ResumeNote
         };
     }
 

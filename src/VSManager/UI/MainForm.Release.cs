@@ -111,7 +111,7 @@ namespace VSManager
             return $"已修改任务 #{id} 的结果文字并保存，状态与排队不变{checklist} / Result of task #{id} edited and saved; status and queue unchanged";
         });
 
-        Task<string> IAgentReleaseHost.RetryTask(int id) => OnUi(() =>
+        Task<string> IAgentReleaseHost.RetryTask(int id, string note) => OnUi(() =>
         {
             var t = _tasks.Find(id);
             if (t == null) return "没有任务 #" + id + " / No task #" + id;
@@ -123,7 +123,7 @@ namespace VSManager
             }
             if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
             t.RecoveryRetries++;
-            _dispatcher.Retry(t);
+            _dispatcher.Retry(t, note);
             _taskPanel.RefreshItems();
             if (t.Status == QueueStatus.Failed)
             {
@@ -133,6 +133,8 @@ namespace VSManager
             return $"已原样重新排队任务 #{id}（直接重试第 {t.RecoveryRetries}/{TaskFailureAnalyzer.MaxRecoveryRetries} 次，不计入执行次数），完成后会再通知你 / "
                 + $"Task #{id} requeued unchanged (direct retry {t.RecoveryRetries}/{TaskFailureAnalyzer.MaxRecoveryRetries}, not counted as a run); you will be notified";
         });
+
+        Task<string> IAgentTaskReplyHost.ReadTaskReply(int id, int page) => OnUi(() => TaskReply.Page(_tasks.Find(id), page));
 
         private bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit)
         {

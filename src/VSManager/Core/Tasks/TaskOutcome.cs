@@ -125,8 +125,8 @@ namespace VSManager
         {
             string kind = t?.FailureKind;
             if (kind == FailureKind.Interrupted)
-                return "处理建议：Copilot 本轮没有正常执行完（网络 / 服务错误或被中断），不是任务内容的问题，不计入该需求的执行次数；可直接用 retry_task 重试，或发送「继续」让 Copilot 接着做，不必总结新内容；连续多次仍中断时请用户检查网络或 Copilot 状态。"
-                    + " / Guidance: Copilot's run did not finish (network / service error or interruption). This is not a task-content problem and does not count toward the request's runs; retry it with retry_task or send \"continue\" without composing new content; if it keeps getting interrupted, ask the user to check the network or Copilot.";
+                return "处理建议：Copilot 本轮没有正常执行完（返回中断 / EOF、返回体过大、达到迭代上限、网络 / 服务错误或被中断），不是任务内容的问题，不计入该需求的执行次数。先阅读上面的完整回复判断中断原因和已完成的进度，再用 retry_task 重试：重试会自动提示 Copilot 在已有进度上继续；需要调整做法时（如分步完成、缩小范围、减少输出）写在 note 里。连续多次仍中断时请用户检查网络或 Copilot 状态。"
+                    + " / Guidance: Copilot's run did not finish (cut-off response / EOF, oversized payload, iteration limit, network / service error or interruption). This is not a task-content problem and does not count toward the request's runs. Read the whole reply above to find the cause and the progress made, then call retry_task: the retry tells Copilot to continue from its progress; put any approach change (smaller steps, narrower scope, less output) in note. If it keeps getting interrupted, ask the user to check the network or Copilot.";
             if (!FailureKind.IsContent(kind) && !FailureKind.IsRecoverable(kind))
                 return "处理建议：这是未分类的问题（如 Worktree 失败），与 Copilot 回复无关；向用户说明原因，用户处理并同意后可原样重新排队。"
                     + " / Guidance: this is an unclassified problem (such as a worktree failure) unrelated to a Copilot reply; explain the cause to the user, and requeue unchanged once the user has resolved it and agrees.";
@@ -134,7 +134,9 @@ namespace VSManager
                 return "处理建议：这是投递类问题（未送达或未读到结果），与任务内容无关，不计入执行次数；原因已排除或可能是偶发问题时可用 retry_task 原样重试，VS 未打开 / 弹窗 / 输入框异常等需要用户处理时先告诉用户。"
                     + " / Guidance: this is a delivery problem (not delivered or result not read), unrelated to the task content and not counted as a run; retry unchanged with retry_task when the cause is gone or likely transient, and tell the user first when it needs them (VS not open, a dialog, input box problems).";
             var h = Analyze(t.Result ?? t.Error);
-            var sb = new System.Text.StringBuilder("处理建议 / Guidance：先阅读上面的 Copilot 回复，判断失败的真实原因 / First read the Copilot reply above and determine the real cause。");
+            var sb = new System.Text.StringBuilder("处理建议 / Guidance：先阅读上面的 Copilot 完整回复，判断失败的真实原因 / First read the whole Copilot reply above and determine the real cause。");
+            if (FailureKind.IsContent(kind) && VSManager.RunIssue.Label(t.RunIssue) != null)
+                sb.Append("回复中出现执行异常（见上方「检测到的执行问题」），失败可能源于中断而不是任务本身：在补充信息中针对该问题调整做法（如分步完成、缩小范围、减少输出）。/ The reply shows a run issue (see \"Detected run issue\" above); the failure may stem from the interruption rather than the task: address it in the supplement (smaller steps, narrower scope, less output)。");
             if (h.PreExisting)
                 sb.Append("回复提到与本任务无关的遗留问题：本任务可能已完成，只是被旧问题误判为失败；向用户说明哪些是遗留问题，不要重发同一需求。/ The reply mentions pre-existing issues: the task may be done and merely misjudged; tell the user which issues are pre-existing and do not resend the same request。");
             if (h.NeedsUser)
@@ -142,7 +144,7 @@ namespace VSManager
             if (h.NeedsInput)
                 sb.Append("回复需要用户补充信息或做决定：向用户提问，拿到答复后再发布包含该答复的修正任务。/ The reply needs user input or a decision: ask the user, then publish a revised task that includes the answer。");
             if (!h.Any)
-                sb.Append("若确需再次执行，先征得用户同意，再以「重发 @" + t.Id + "：」发布修正任务，正文须针对失败原因写明调整（例如先解决哪个阻碍、忽略哪些无关问题、缩小到哪部分）。/ If another attempt is needed, get the user's consent and publish a revised task prefixed 'resend @" + t.Id + ":' whose text addresses the cause (which blocker to solve first, which unrelated issues to ignore, which part to narrow to)。");
+                sb.Append("若原因明确且你能从已有信息（回复、对话、目录、常识）补齐所需内容，用 retry_task_with_info 写明针对失败原因的调整后在原条目重试（例如先解决哪个阻碍、忽略哪些无关问题、缩小到哪部分）；确实无法判断或需要用户决定时，再把原因和需要的信息告诉用户。/ If the cause is clear and you can supply what is missing from existing information (reply, chat, directories, common knowledge), call retry_task_with_info with an adjustment addressing the cause (which blocker to solve first, which unrelated issues to ignore, which part to narrow to); only when you cannot tell or the user must decide, tell the user the cause and what is needed。");
             sb.Append("禁止原样重发同一内容。/ Never resend the same text verbatim.");
             return sb.ToString();
         }

@@ -64,6 +64,7 @@ namespace VSManager
                     t.SawBusy = false;
                     t.Error = null;
                     t.Interrupted = false;
+                    t.ResumeNote = null;
                     break;
                 case SendDecision.Fail:
                     Fail(t, result, now, FailureKind.Delivery);
@@ -95,6 +96,7 @@ namespace VSManager
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
             + RoundText(t)
             + (t.Interrupted ? InterruptedNote + " " : "")
+            + (string.IsNullOrEmpty(t.ResumeNote) ? "" : t.ResumeNote + " ")
             + (string.IsNullOrEmpty(t.PriorFailure) ? ""
                 : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
             + (string.IsNullOrEmpty(t.Supplement) ? ""
@@ -347,6 +349,9 @@ namespace VSManager
         {
             // 把本次失败的反馈带到下一次尝试 / Carry this failure's feedback into the next attempt
             t.PriorFailure = TaskFailureAnalyzer.PriorFailureSummary(t) ?? t.PriorFailure;
+            // 本轮中断（EOF、过大、迭代上限等）后重试：提示 Copilot 在已有进度上继续 / Retry after an interrupted run: tell Copilot to continue from its progress
+            t.ResumeNote = t.Status == QueueStatus.Failed && t.FailureKind == FailureKind.Interrupted ? ResumeNoteFor(t.RunIssue) : null;
+            t.Reply = t.RunIssue = null;
             t.FailureKind = null;
             t.NeedsUser = false;
             t.Released = false;
@@ -400,6 +405,36 @@ namespace VSManager
 
         /// <summary>中断后再次发送时附加的说明。/ Note added when an interrupted task is sent again.</summary>
         public const string InterruptedNote = "【继续执行】本任务上次执行到一半时被用户暂停中断，可能已完成部分改动：请先检查当前代码与对话中的已有进度，在此基础上继续完成本任务，不要重复或回滚已完成的部分。";
+
+        /// <summary>
+        /// Copilot 本轮执行异常后重试时附加的接续说明（发给 Copilot）。
+        /// Continuation note (sent to Copilot) for a retry after a Copilot run problem.
+        /// </summary>
+        public static string ResumeNoteFor(string runIssue)
+        {
+            string cause;
+            switch (runIssue)
+            {
+                case RunIssue.Eof: cause = "返回中断（未预期的 EOF）"; break;
+                case RunIssue.TooLarge: cause = "返回体或上下文过大"; break;
+                case RunIssue.IterationLimit: cause = "达到单轮迭代上限"; break;
+                default: cause = "网络 / 服务错误或回复被中断"; break;
+            }
+            return "【继续执行】本任务上次执行因「" + cause + "」没有完成，可能已完成部分改动：请先检查当前代码与对话中的已有进度，在此基础上继续完成剩余部分，不要重复或回滚已完成的部分。"
+                + (runIssue == RunIssue.TooLarge ? "请分步完成，每次只处理少量文件，避免输出整文件或大段日志。" : "")
+                + (runIssue == RunIssue.IterationLimit ? "请优先完成剩余的关键步骤，减少不必要的探索。" : "");
+        }
+
+        /// <summary>
+        /// 为接续说明追加主控 AI 的补充（针对中断原因的做法调整）。
+        /// Appends the main AI's addition (an approach change for the interruption) to the continuation note.
+        /// </summary>
+        public static void AddResumeNote(QueuedTask t, string note)
+        {
+            note = note?.Trim();
+            if (t == null || string.IsNullOrEmpty(note)) return;
+            t.ResumeNote = (string.IsNullOrEmpty(t.ResumeNote) ? "" : t.ResumeNote + " ") + "【重试说明】" + note;
+        }
 
         /// <summary>
         /// 暂停时中断执行中的任务：重新排队（内容、附件与补充信息不变），恢复后按编号重新发送并提示 Copilot 接着做。

@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost
+	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost, ITaskRoundHost, IAgentTaskReplyHost
 	{
 		private readonly AppSettings _settings = AppSettings.Load();
 		private volatile List<VsInstance> _instances = new List<VsInstance>();
@@ -2144,6 +2144,12 @@ namespace VSManager
 			if (chat == null || !chat.PaneFound || chat.Messages.Count == 0
 				|| chat.Messages.Last().Role != ChatRole.Assistant) return null;
 			return TaskSummary.AnswerText(chat, int.MaxValue);
+		}
+
+		async Task<string> ITaskRoundHost.ReadRoundAsync(VsInstance v)
+		{
+			var chat = await DteWorker.RunSta(() => _chatSvc.Read(v, 12));
+			return chat != null && chat.PaneFound ? TaskReply.Round(chat) : null;
 		}
 
 		void ITaskDispatchHost.SetStatus(string text) => SetStatus(text);

@@ -137,6 +137,7 @@ namespace VSManager
                 // 放行与中断标记也需恢复，否则重开后已放行的失败会再次阻塞后续任务 / Released and interrupted flags must survive, or a released failure blocks successors again after a reopen
                 Released = S("Released") == "true", Interrupted = S("Interrupted") == "true",
                 PendingNote = S("PendingNote"), FailureReason = S("FailureReason"),
+                Reply = S("Reply"), RunIssue = S("RunIssue"), ResumeNote = S("ResumeNote"),
                 IsWorktreeMerge = S("IsWorktreeMerge") == "true", WorktreeCounted = S("WorktreeCounted") == "true",
                 WorktreeBatch = Math.Max(0, I("WorktreeBatch")),
                 Replaces = e.Element("Replaces")?.Elements("item")

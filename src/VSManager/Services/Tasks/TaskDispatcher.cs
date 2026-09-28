@@ -47,6 +47,16 @@ namespace VSManager
     }
 
     /// <summary>
+    /// 可选宿主能力：读取本轮 Copilot 完整回复（最后一条用户消息之后的全部回答与过程步骤，见 <see cref="TaskReply.Round"/>），任务失败时保存供主控 AI 分析；未实现时只保存最后一条回答。
+    /// Optional host capability: reads the whole Copilot turn (every answer and step after the last user message, see
+    /// <see cref="TaskReply.Round"/>), stored on failure for the main AI to analyze; without it only the last answer is stored.
+    /// </summary>
+    public interface ITaskRoundHost
+    {
+        Task<string> ReadRoundAsync(VsInstance v);
+    }
+
+    /// <summary>
     /// 可选宿主能力：发送带附件的任务（图片粘贴到 Copilot、文本文件内联、其他文件发送路径）。未实现时带附件的任务按普通文字发送。
     /// Optional host capability: sends a task with attachments (images pasted into Copilot, text files inlined, other files as
     /// paths). Without it, tasks with attachments are sent as plain text.
@@ -370,8 +380,15 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             if (t.FromAgent)
             {
                 bool content = FailureKind.IsContent(t.FailureKind);
-                string reply = (content || t.FailureKind == FailureKind.Interrupted) && !string.IsNullOrWhiteSpace(t.Result)
-                    ? "\nCopilot 回复 / Copilot reply：" + TextUtil.Clip(t.Result, 1200) : "";
+                // 附上本轮完整回复（过长时为开头 + 结尾摘录），不只看最后一行状态 / Include the whole turn (head + tail excerpt when long), not just the last status line
+                string excerpt = TaskReply.Excerpt(t.Reply);
+                string reply = excerpt != null
+                    ? $"\n本轮 Copilot 完整回复 / Whole Copilot turn（共 {t.Reply.Length} 字 / {t.Reply.Length} characters；「{TaskReply.StepPrefix.Trim()}」开头为过程步骤 / \"{TaskReply.StepPrefix.Trim()}\" marks steps"
+                        + (excerpt.Length < t.Reply.Length ? $"；已省略中间部分，可用 read_task_reply 读取全文 / middle omitted, read it all with read_task_reply" : "") + "）：\n" + excerpt
+                    : (content || t.FailureKind == FailureKind.Interrupted) && !string.IsNullOrWhiteSpace(t.Result)
+                        ? "\nCopilot 回复 / Copilot reply：" + TextUtil.Clip(t.Result, 1200) : "";
+                string issue = RunIssue.Label(t.RunIssue) is string label
+                    ? $"\n检测到的执行问题 / Detected run issue：{label}。{RunIssue.Advice(t.RunIssue)}" : "";
                 string advice = FailureKind.IsRecoverable(t.FailureKind)
                     ? TaskFailureAnalyzer.RecoveryNote(t) + "\n"
                         + (HoldsSuccessors(t) ? "该失败正在暂停同一 VS 的后续任务 / This failure is pausing successors on the same VS. " : "")
@@ -381,7 +398,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName} / Task #{t.Id} failed",
                     $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」失败 / failed（{FailureKind.Label(t.FailureKind)}）：{TextUtil.Clip(error, 300)}。" +
                     $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" +
-                    (string.IsNullOrEmpty(t.FailureReason) ? "" : "\n失败原因 / Failure reason：" + t.FailureReason) + reply + "\n" +
+                    (string.IsNullOrEmpty(t.FailureReason) ? "" : "\n失败原因 / Failure reason：" + t.FailureReason) + reply + issue + "\n" +
                     TaskFailureAnalyzer.Guidance(t) + "\n" + advice);
             }
         }
@@ -447,9 +464,18 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 {
                     bool reported = receipt == TaskReceipt.Failed;
                     t.Result = TextUtil.Clip(reported ? result : answer, 1500);
+                    // 保存本轮完整回复并从中识别执行异常，主控 AI 据此判断补充什么 / Keep the whole turn and detect run issues so the main AI can decide what to add
+                    string round = await ReadRoundAsync(v) ?? answer;
+                    if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+                    t.Reply = TaskReply.Store(StripReceipt(t, round));
+                    string issue = RunIssue.Detect(t.Reply);
+                    t.RunIssue = issue;
                     if (reported)
                         Fail(t, "Copilot 回报本任务未完成 / Copilot reported the task as not completed: " + TextUtil.Clip(result, 300), FailureKind.Reported);
-                    // 空回复或 Copilot 自身的错误 / 中断提示：本轮没执行完，不算任务内容失败 / Empty reply or Copilot's own error notice: the run did not finish; not a content failure
+                    // 空回复、Copilot 自身的错误 / 中断提示，或回复结尾出现 EOF、过大、迭代上限等：本轮没执行完，不算任务内容失败
+                    // Empty reply, Copilot's own error notice, or EOF / oversize / iteration limit at the end: the run did not finish; not a content failure
+                    else if (issue != null)
+                        Fail(t, "Copilot 本轮未执行完 / Copilot's run did not finish（" + RunIssue.Label(issue) + "）: " + TextUtil.Clip(Tail(t.Reply, 300), 300), FailureKind.Interrupted);
                     else if (TaskFailureAnalyzer.LooksInterrupted(answer))
                         Fail(t, "Copilot 本轮未执行完（网络 / 服务错误或被中断）/ Copilot's run did not finish (network / service error or interrupted): " + TextUtil.Clip(StripReceipt(t, answer), 300), FailureKind.Interrupted);
                     else
@@ -527,6 +553,24 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             return text;
         }
 
+        /// <summary>读取本轮完整回复；宿主不支持或读取失败时返回 null。/ Reads the whole turn; null when unsupported or unreadable.</summary>
+        private async Task<string> ReadRoundAsync(VsInstance v)
+        {
+            if (!(_host is ITaskRoundHost host) || v == null) return null;
+            try { return await host.ReadRoundAsync(v); }
+            catch (Exception ex)
+            {
+                AppLog.Write(AppLog.TasksFile, "读取本轮完整回复失败 / Failed to read the whole turn: " + ex.Message);
+                return null;
+            }
+        }
+
+        private static string Tail(string s, int max)
+        {
+            s = (s ?? "").Trim();
+            return s.Length <= max ? s : "…" + s.Substring(s.Length - max);
+        }
+
         /// <summary>用户确认待测试任务已实际验证：转为已完成，并继续发布被它暂停的后续任务。/ The user confirms a task awaiting tests was verified: it becomes done and paused successors continue.</summary>
         public bool MarkVerified(QueuedTask t)
         {
@@ -562,7 +606,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
         }
 
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
-        public void Retry(QueuedTask t)
+        public void Retry(QueuedTask t, string note = null)
         {
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
                 || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled && t.Status != QueueStatus.Unverified))
@@ -572,6 +616,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             }
             PrepareManualRecheck(t);
             TaskStateMachine.Requeue(t);
+            TaskStateMachine.AddResumeNote(t, note);
             _tasks.Commit();
             Pump();
         }
