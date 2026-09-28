@@ -289,6 +289,13 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Prompts_PublishClearTargetWithoutConfirmation()
+        {
+            StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Now, "VS", ""), "禁止再问「发给 #N 可以吗」");
+            StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Now, "VS", ""), "never ask \"Shall I send it to #N?\"");
+        }
+
+        [TestMethod]
         public void Prompts_DescribeToolsAndApprovalBoundary()
         {
             foreach (bool english in new[] { false, true })
@@ -1038,8 +1045,19 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost
+        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost
         {
+            internal WorkspaceDisplaySnapshot Displays = new WorkspaceDisplaySnapshot();
+            internal WorkspaceLayoutPlan LayoutPlan;
+            internal string LayoutSignature;
+            internal int DisplayReads, LayoutRestores;
+            public Task<WorkspaceDisplaySnapshot> GetDisplays() { DisplayReads++; return Task.FromResult(Displays); }
+            public Task<string> ArrangeWorkspace(WorkspaceLayoutPlan plan, string displaySignature)
+            {
+                LayoutPlan = plan; LayoutSignature = displaySignature;
+                return Task.FromResult("布局完成 / Layout completed");
+            }
+            public Task<string> RestoreWorkspaceLayout() { LayoutRestores++; return Task.FromResult("已还原 / Restored"); }
             internal int DirectCaptures;
             internal Exception DirectError;
             public Task<byte[]> CaptureScreenshot(VsInstance vs, CancellationToken cancellationToken)

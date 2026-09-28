@@ -281,6 +281,9 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, Task<string>>)NewCopilotThread, "new_copilot_thread"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)ActivateVs, "activate_vs"),
                 AIFunctionFactory.Create((Func<Task<string>>)DockPanes, "dock_copilot_panes"),
+                AIFunctionFactory.Create((Func<Task<string>>)GetDisplays, "get_displays"),
+                AIFunctionFactory.Create((Func<string, int, int, bool, bool, Task<string>>)ArrangeWorkspace, "arrange_workspace_layout"),
+                AIFunctionFactory.Create((Func<Task<string>>)RestoreWorkspaceLayout, "restore_workspace_layout"),
 AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
 AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
 AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"),
@@ -750,6 +753,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "new_copilot_thread": return target + "新建 Copilot 线程";
                 case "activate_vs": return "切换到" + target;
                 case "dock_copilot_panes": return "把 Copilot 切换为工具窗模式";
+                case "get_displays": return "读取显示器数量、尺寸与当前屏幕 / Read displays and current screen";
+                case "arrange_workspace_layout": return "自动布局 VS 主窗口、Copilot 与附属窗格 / Arrange VS workspace";
+                case "restore_workspace_layout": return "还原 VS 工作区布局 / Restore VS workspace layout";
                 case "arrange_copilot_panes":
                 {
                     string scr = Arg("screen");
@@ -897,7 +903,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             return Format(t, MaxToolText, MaxMessageText);
         }
 
-        [Description("只入队并按编号调度，绝不直发或插队。默认新发布 AI 任务保存成功后自动启动，无需另点 Start；手动前序仍可阻塞。模式可在属性配置，以返回的启动资格为准；入队不代表执行完成；返回以「✅ 推送成功」开头才表示已送达 Copilot，「⏳」为已入队未送达，「❌」为未推送，须如实转述。目标未打开时暂存，任务结束后通知助手。/ Enqueue in ID order only. By default, persisted AI submissions become eligible automatically without Start; manual predecessors still block. Settings control the mode; follow returned eligibility, not assumed completion. Only a result starting with \"✅ 推送成功\" means delivered to Copilot; \"⏳\" is queued but undelivered, \"❌\" is not pushed; relay it truthfully. Park closed targets and report outcomes.")]
+        [Description("只入队并按编号调度，绝不直发或插队。目标 VS 可明确判断时直接调用，不要先向用户确认目标。默认新发布 AI 任务保存成功后自动启动，无需另点 Start；手动前序仍可阻塞。模式可在属性配置，以返回的启动资格为准；入队不代表执行完成；返回以「✅ 推送成功」开头才表示已送达 Copilot，「⏳」为已入队未送达，「❌」为未推送，须如实转述。目标未打开时暂存，任务结束后通知助手。/ Enqueue in ID order only. Call directly when the target VS is clear; do not ask the user to confirm the target first. By default, persisted AI submissions become eligible automatically without Start; manual predecessors still block. Settings control the mode; follow returned eligibility, not assumed completion. Only a result starting with \"✅ 推送成功\" means delivered to Copilot; \"⏳\" is queued but undelivered, \"❌\" is not pushed; relay it truthfully. Park closed targets and report outcomes.")]
         private async Task<string> SendTask(
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,

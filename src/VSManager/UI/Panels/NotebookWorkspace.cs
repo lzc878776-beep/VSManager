@@ -554,11 +554,14 @@ namespace VSManager
             try
             {
                 string imageError = null;
-                string html = NotebookMarkdown.Render(_editor.Text, target =>
+                string ImageData(string target)
                 {
                     try { return _store.ImageData(_document.Path, target); }
                     catch (Exception ex) when (IsFileError(ex)) { imageError = ex.Message; return null; }
-                });
+                }
+                string html = NotebookTaskTable.IsJournal(_document.Title)
+                    ? NotebookTaskTable.Render(_document.Path, _document.Title, _editor.Text, _store.ReadChildHeaders(_document.Path), ImageData)
+                    : NotebookMarkdown.Render(_editor.Text, ImageData);
                 _preview.Render(html, scrollTop);
                 if (imageError != null) SetStatus("图片未加载 / Image not loaded: " + imageError, true);
             }

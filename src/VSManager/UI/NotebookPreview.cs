@@ -193,12 +193,36 @@ h1+.note-card,h2+.note-card,h3+.note-card{margin-top:4px}.note-card+:not(.note-c
 .ncs-numbered{display:flex;gap:12px;align-items:flex-start}.nc-num{flex:none;min-width:30px;padding-top:1px;font-size:20px;font-weight:700;line-height:1.2;color:var(--pd);font-variant-numeric:tabular-nums;text-align:center}.nc-body{flex:1 1 auto;min-width:0}
 .ncs-noted .nc-text{display:block;-webkit-line-clamp:unset}.ncs-noted .nc-note{margin-top:8px;padding:6px 10px;border-left:3px solid var(--pd);border-radius:0 6px 6px 0;background:var(--surface-alt);color:var(--secondary);line-height:1.55;white-space:normal}
 .ncs-accent{border-left:4px solid var(--pd);border-radius:4px 8px 8px 4px}
+main.has-journal{max-width:1100px;padding:32px 32px 100px}.task-journal [hidden]{display:none!important}
+.tj-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px}.tj-filters button{font:inherit;font-size:13px;line-height:1.6;color:var(--secondary);background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:5px 12px;cursor:pointer}
+.tj-filters button[aria-pressed=true]{color:var(--accent-text);background:var(--accent-light);border-color:var(--accent)}.tj-filters button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tj-summary{font-size:13px;color:var(--secondary);white-space:nowrap;overflow:auto;margin:0 0 28px}.tj-summary span{color:var(--muted)}.tj-empty{color:var(--secondary)}
+.tj-day{margin:28px 0}.tj-day h1{margin:0 0 20px}.tj-project{margin:0 0 28px}.tj-project h2{font-size:18px;margin:0 0 10px}.tj-count{font-variant-numeric:tabular-nums}
+.tj-scroll{overflow-x:auto;border:1px solid var(--border);border-radius:8px}.tj-table{display:table;table-layout:fixed;width:100%;min-width:680px;margin:0;line-height:1.6;font-size:13px}
+.tj-time{width:104px}.tj-status{width:224px}.tj-duration{width:125px}.tj-table th,.tj-table td{border:0;border-bottom:1px solid var(--divider);padding:10px 12px}.tj-table th{font-size:12px;color:var(--secondary);white-space:nowrap}.tj-table tbody tr:last-child td{border-bottom:0}
+.task-journal{--pf:var(--none-fg);--pb:var(--none-bg);--pd:var(--none-dot)}.tj-table tbody tr{cursor:pointer}
+.tj-table tbody tr:hover,.tj-table tbody tr:focus-within{background:var(--surface)}.tj-table td:first-child,.tj-table td:last-child{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--secondary)}
+.tj-task a{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;color:var(--text)}.tj-task a:hover{color:var(--accent-text)}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}::-webkit-scrollbar-thumb:hover{background:var(--elevated)}
-@media(max-width:600px){main{padding:32px 24px 80px}h1{font-size:28px}}
+@media(max-width:600px){main,main.has-journal{padding:32px 24px 80px}h1{font-size:28px}}
 </style></head><body><main id='note'></main><script nonce='{{nonce}}'>
-document.addEventListener('click',e=>{const a=e.target.closest&&e.target.closest('a[data-note]');if(!a)return;e.preventDefault();window.chrome.webview.postMessage({note:a.getAttribute('data-note')});});
-document.addEventListener('dblclick',e=>{if(e.target.closest&&e.target.closest('a'))return;window.chrome.webview.postMessage({edit:true});});
-window.chrome.webview.addEventListener('message',e=>{const y=window.scrollY;document.getElementById('note').innerHTML=e.data.html;window.scrollTo(0,e.data.top?0:y);});
+const journalFilters=new Map();
+function filterJournal(journal,status){
+journalFilters.set(journal.dataset.journal,status);
+journal.querySelectorAll('[data-status-filter]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.statusFilter===status)));
+journal.querySelectorAll('[data-task-status]').forEach(r=>r.hidden=status!=='all'&&r.dataset.taskStatus!==status);
+journal.querySelectorAll('.tj-project').forEach(g=>{const count=g.querySelectorAll('tbody tr:not([hidden])').length;g.hidden=count===0;g.querySelector('.tj-count').textContent=count;});
+journal.querySelectorAll('.tj-day').forEach(d=>d.hidden=!d.querySelector('.tj-project:not([hidden])'));
+journal.querySelector('.tj-empty').hidden=!!journal.querySelector('tbody tr:not([hidden])');
+}
+document.addEventListener('click',e=>{
+if(!e.target.closest)return;
+const filter=e.target.closest('[data-status-filter]');if(filter){filterJournal(filter.closest('.task-journal'),filter.dataset.statusFilter);return;}
+const row=e.target.closest('tr[data-task-status]');const a=e.target.closest('a[data-note]')||(row&&row.querySelector('a[data-note]'));
+if(!a)return;e.preventDefault();window.chrome.webview.postMessage({note:a.getAttribute('data-note')});
+});
+document.addEventListener('dblclick',e=>{if(e.target.closest&&e.target.closest('a,button,.tj-table'))return;window.chrome.webview.postMessage({edit:true});});
+window.chrome.webview.addEventListener('message',e=>{const y=window.scrollY;const note=document.getElementById('note');note.innerHTML=e.data.html;const journal=note.querySelector('.task-journal');note.classList.toggle('has-journal',!!journal);if(journal)filterJournal(journal,journalFilters.get(journal.dataset.journal)||'all');window.scrollTo(0,e.data.top?0:y);});
 </script></body></html>".Replace("{{nonce}}", nonce).Replace("{{palette}}", palette).Replace("{{font}}", Theme.FontName);
         }
     }

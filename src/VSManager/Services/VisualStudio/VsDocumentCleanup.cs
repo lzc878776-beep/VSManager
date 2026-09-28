@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Automation;
@@ -37,6 +36,7 @@ namespace VSManager
         internal string Title;
         internal string FullName;
         internal IntPtr Hwnd;
+        internal bool CsOnly;
     }
 
     internal interface IDocumentTabFallback
@@ -58,60 +58,17 @@ namespace VSManager
             Run(vs, threshold, log, new DocumentTabUiaFallback(), DocumentTabUiaFallback.OwnerReady);
 
         /// <summary>
-        /// 任务完成后：先保存有磁盘路径、非只读的已修改文档（不弹另存为），再关闭全部已保存的文档标签。
-        /// After a task: save modified documents that have an on-disk, writable path (never Save As), then close every saved document tab.
+        /// AI 任务完成后只关闭已保存的 .cs 标签页；未保存或状态未知的文件保持打开，绝不自动保存。
+        /// After an AI task, closes only saved .cs tabs; unsaved or unknown-state files stay open and are never auto-saved.
         /// </summary>
-        public static VsDocumentCleanupResult RunAfterTask(VsInstance vs, Action<string> log)
-        {
-            int saved = 0;
-            var failed = new List<string>();
-            if (vs?.Dte != null && DocumentTabUiaFallback.OwnerReady(vs))
-            {
-                var clock = Stopwatch.StartNew();
-                try
-                {
-                    int inspected = 0;
-                    foreach (object document in (IEnumerable)((dynamic)vs.Dte).Documents)
-                    {
-                        if (++inspected > MaximumTabs || clock.Elapsed >= Budget) break;
-                        if (Saved(document) != false) continue;
-                        string path = null;
-                        try
-                        {
-                            path = (string)((dynamic)document).FullName;
-                            if (!Path.IsPathRooted(path) || !File.Exists(path) || (File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
-                            {
-                                failed.Add(Path.GetFileName(path ?? ""));
-                                continue;
-                            }
-                            ((dynamic)document).Save();
-                            if (Saved(document) == true) saved++;
-                            else failed.Add(Path.GetFileName(path));
-                        }
-                        catch (Exception ex) when (Expected(ex) || ex is IOException)
-                        {
-                            failed.Add(Path.GetFileName(path ?? ""));
-                            try { log?.Invoke("保存失败 / Save failed: " + path + "; " + Failure(ex)); }
-                            catch (Exception logError) when (Expected(logError)) { }
-                        }
-                    }
-                }
-                catch (Exception ex) when (Expected(ex))
-                {
-                    try { log?.Invoke("枚举文档失败 / Cannot enumerate documents: " + Failure(ex)); }
-                    catch (Exception logError) when (Expected(logError)) { }
-                }
-                try { log?.Invoke($"任务后自动保存 / Auto-save after task: saved={saved}, not saved={failed.Count}"); }
-                catch (Exception logError) when (Expected(logError)) { }
-            }
-            var result = Run(vs, 0, log);
-            result.SavedCount = saved;
-            result.SaveFailedNames.AddRange(failed.Where(n => n.Length > 0));
-            return result;
-        }
+        public static VsDocumentCleanupResult RunAfterTask(VsInstance vs, Action<string> log) =>
+            RunAfterTask(vs, log, new DocumentTabUiaFallback(), DocumentTabUiaFallback.OwnerReady);
+
+        internal static VsDocumentCleanupResult RunAfterTask(VsInstance vs, Action<string> log,
+            IDocumentTabFallback fallback, Func<VsInstance, bool> ownerReady) => Run(vs, 0, log, fallback, ownerReady, true);
 
         internal static VsDocumentCleanupResult Run(VsInstance vs, int threshold, Action<string> log,
-            IDocumentTabFallback fallback, Func<VsInstance, bool> ownerReady)
+            IDocumentTabFallback fallback, Func<VsInstance, bool> ownerReady, bool csOnly = false)
         {
             var result = new VsDocumentCleanupResult();
             var clock = Stopwatch.StartNew();
@@ -138,6 +95,16 @@ namespace VSManager
                 }
                 var targets = Snapshot(vs, clock, result, report);
                 if (targets == null) return result;
+                if (csOnly)
+                {
+                    foreach (var target in targets.Where(t => string.IsNullOrWhiteSpace(t.FullName)))
+                    {
+                        result.Unknown++;
+                        report(Describe(target, Saved(target.Document)) + "跳过：文件类型未知 / Skipped: file type unknown");
+                    }
+                    targets = targets.Where(t => VsService.IsCsFile(t.FullName)).ToList();
+                    foreach (var target in targets) target.CsOnly = true;
+                }
                 result.InitialTabCount = targets.Count;
                 result.ThresholdExceeded = targets.Count > Math.Max(0, threshold);
                 report("检查阈值 / Threshold=" + Math.Max(0, threshold));
@@ -211,6 +178,11 @@ namespace VSManager
                             }
                         }
                         else report(Describe(target, Saved(target.Document)) + "拒绝 UIA：身份歧义或状态不安全 / UIA refused: ambiguous identity or unsafe state");
+                    }
+                    if (Saved(target.Document) == false)
+                    {
+                        RecordNotReady(target, result, report);
+                        continue;
                     }
                     result.Failed++;
                     report(Describe(target, Saved(target.Document)) + method + "; 未确认关闭 / Closure not confirmed");
@@ -298,7 +270,9 @@ namespace VSManager
             {
                 return clock.Elapsed < Budget && ownerReady(vs) && IsDocumentWindow(target.Document, target.Window)
                     && Absent(vs, target, clock) == false && Saved(target.Document) == true
-                    && DesignMode(vs) && ownerReady(vs) && clock.Elapsed < Budget;
+                    && DesignMode(vs) && ownerReady(vs) && clock.Elapsed < Budget
+                    && (!target.CsOnly || string.Equals((string)((dynamic)target.Document).FullName, target.FullName, StringComparison.OrdinalIgnoreCase))
+                    && Saved(target.Document) == true;
             }
             catch (Exception ex) when (Expected(ex)) { return false; }
         }

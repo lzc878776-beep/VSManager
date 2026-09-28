@@ -427,10 +427,12 @@ namespace VSManager
         /// <summary>文档标签页数量严格超过此值才清理，默认 10，范围 0–1000。/ Clean only when document tabs strictly exceed this threshold; default 10, range 0–1000.</summary>
         [DataMember] public int CloseVsDocumentsThreshold;
         public const int DefaultCloseVsDocumentsThreshold = 10;
-        /// <summary>任务完成后自动保存并关闭目标 VS 打开的文档，默认开启；调试中不关闭。/ Auto-save and close the target VS's open documents after a task completes; on by default, no closing while debugging.</summary>
+        /// <summary>AI 任务完成后关闭已保存的 .cs 标签页，默认开启；绝不自动保存，保留旧字段名以兼容设置。/ Closes saved .cs tabs after AI completion, on by default; never auto-saves, retaining the legacy field name for compatibility.</summary>
         [DataMember] public bool SaveAndCloseDocumentsAfterTask;
-        /// <summary>任务成功完成后写入笔记本「yyyy.M.d 任务记录」，默认开启。/ Record successfully completed tasks in the notebook "yyyy.M.d 任务记录" folder; on by default.</summary>
+        /// <summary>已完成、待验证和失败任务按天写入笔记本，默认开启；保留旧字段名以兼容设置。/ Records done, awaiting-verification and failed tasks daily; on by default, retaining the legacy field name for compatibility.</summary>
         [DataMember] public bool RecordCompletedTasksInNotebook;
+        /// <summary>调试 CAD 插件（启动程序为 acad.exe 等）时自动 NETLOAD 启动项目 DLL，默认开启。/ Auto-NETLOAD the startup project DLL when debugging a CAD plug-in (start program acad.exe etc.); on by default.</summary>
+        [DataMember] public bool CadDebugAutoLoad;
 
         public const int DefaultSendConfirmTimeoutSeconds = PasteVerifier.DefaultTimeoutSeconds, DefaultSendRetryCount = 1;
         public const int DefaultSendLocateTimeoutSeconds = InputLocator.DefaultTimeoutSeconds, DefaultSendLocateRetryCount = InputLocator.DefaultRetryCount;
@@ -634,6 +636,7 @@ namespace VSManager
             CloseVsDocumentsThreshold = DefaultCloseVsDocumentsThreshold;
             SaveAndCloseDocumentsAfterTask = true;
             RecordCompletedTasksInNotebook = true;
+            CadDebugAutoLoad = true;
             SolutionCloseConfirm = true;
             SolutionOpenWaitSeconds = DefaultSolutionOpenWaitSeconds;
             PendingVsSettleSeconds = DefaultPendingVsSettleSeconds;

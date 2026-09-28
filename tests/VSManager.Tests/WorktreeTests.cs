@@ -134,10 +134,15 @@ namespace VSManager.Tests
             var dispatcher = new TaskDispatcher(queue, host, worktrees: git);
             dispatcher.Start();
             var tasks = Enumerable.Range(0, 6).Select(i => queue.Add("A", "A", "task " + i, "AI")).ToList();
+            var cleaned = new List<QueuedTask>();
+            host.AfterCompleted = (task, target) => { Assert.AreSame(vs, target); cleaned.Add(task); return Task.CompletedTask; };
             await dispatcher.PumpAsync();
             foreach (var task in tasks.Take(5)) await dispatcher.FinishAsync(task, vs, null);
             Assert.AreEqual(1, git.Integrations);
-            Assert.AreEqual(QueueStatus.Done, queue.Items.Single(t => t.IsWorktreeMerge).Status);
+            var merge = queue.Items.Single(t => t.IsWorktreeMerge);
+            Assert.AreEqual(QueueStatus.Done, merge.Status);
+            Assert.AreEqual(6, cleaned.Count);
+            Assert.AreEqual(1, cleaned.Count(t => t == merge));
             Assert.AreEqual(QueueStatus.Waiting, tasks[5].Status);
             await dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Running, tasks[5].Status);

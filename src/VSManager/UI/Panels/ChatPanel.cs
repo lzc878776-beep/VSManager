@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-    /// <summary>主界面：所选 VS 的 Copilot 对话，含标题栏、调试工具栏、对话记录与输入框。</summary>
+    /// <summary>所选 VS 的 Copilot 对话查看与控制；任务从总控助手直发。/ Views and controls the selected VS's Copilot chat; tasks are sent from the manager assistant.</summary>
     public class ChatPanel : Panel
     {
         private readonly Panel _header = new Panel();
@@ -215,6 +215,19 @@ namespace VSManager
             _inputArea.Controls.Add(_inputBox);
             _inputArea.Controls.Add(_imagePreview);
             _inputArea.Controls.Add(_inputStatus);
+
+            // 旧输入区不再参与布局或键盘导航；任务统一从总控助手直发。
+            // The legacy composer is excluded from layout and keyboard navigation; use the manager assistant's Direct action.
+            _inputArea.Visible = false;
+            _inputArea.Enabled = false;
+            _inputArea.TabStop = false;
+            var stopHost = new Panel { Dock = DockStyle.Right, Width = Dpi.S(140), BackColor = Theme.Background,
+                Padding = new Padding(0, Dpi.S(8), Dpi.S(8), Dpi.S(8)) };
+            _btnStop.Text = "■ 停止 Copilot";
+            _btnStop.AccessibleName = "停止 Copilot / Stop Copilot";
+            _btnStop.Dock = DockStyle.Fill;
+            stopHost.Controls.Add(_btnStop);
+            _toolbarRow.Controls.Add(stopHost);
 
             Controls.Add(_transcriptHost);
             Controls.Add(_inputArea);

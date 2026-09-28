@@ -218,7 +218,7 @@ namespace VSManager
                 // 通过 VS 命令路由执行，与 IDE 按钮使用相同的状态检查和命令处理。
                 switch (action)
                 {
-                    case "go": dte.ExecuteCommand("Debug.Start"); return "已启动或继续调试";
+                    case "go": return StartDebugging(vs, dte);
                     case "run": dte.ExecuteCommand("Debug.StartWithoutDebugging"); return "已开始执行（不调试）";
                     case "break": dte.ExecuteCommand("Debug.BreakAll"); return "已全部中断";
                     case "stop": dte.ExecuteCommand("Debug.StopDebugging"); return "已停止调试";
@@ -240,6 +240,27 @@ namespace VSManager
             {
                 ReadDebugState(vs);
             }
+        }
+
+        /// <summary>
+        /// 启动 / 继续调试；从设计模式启动时先识别 CAD 宿主并临时注入 NETLOAD 启动脚本。
+        /// Starts / continues debugging; when starting from design mode, detects a CAD host first and temporarily injects the NETLOAD startup script.
+        /// </summary>
+        private static string StartDebugging(VsInstance vs, dynamic dte)
+        {
+            CadDebugSession cad = null;
+            string note = null;
+            int mode = 0;
+            try { mode = Convert.ToInt32(dte.Debugger.CurrentMode); } catch { }
+            if (mode == 1)
+            {
+                try { cad = VsCadDebug.Prepare(vs, out note); }
+                catch (Exception ex) { note = "CAD 自动加载准备失败，按普通调试启动 / CAD auto-load setup failed, starting a normal debug session: " + ex.Message; }
+            }
+            try { dte.ExecuteCommand("Debug.Start"); }
+            catch { VsCadDebug.Finish(cad); throw; }
+            VsCadDebug.Watch(vs, cad);
+            return "已启动或继续调试" + (string.IsNullOrEmpty(note) ? "" : "；" + note);
         }
 
         /// <summary>读取错误列表（错误优先），用于 AI 助手汇报生成结果。</summary>
@@ -384,7 +405,7 @@ namespace VSManager
             return null;
         }
 
-        private static object StartupProject(dynamic dte)
+        internal static object StartupProject(dynamic dte)
         {
             object sp = dte.Solution.SolutionBuild.StartupProjects;
             string first = (sp as object[])?.OfType<string>().FirstOrDefault() ?? (sp as Array)?.OfType<string>().FirstOrDefault();

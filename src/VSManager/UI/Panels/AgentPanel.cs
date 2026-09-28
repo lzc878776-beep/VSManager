@@ -16,11 +16,26 @@ namespace VSManager
 
         // 快捷任务：由 AI 用 send_task 派给合适的 VS，Copilot 在其仓库内执行 git 操作。
         // Quick tasks: the AI dispatches them via send_task; Copilot runs the git steps in that repository.
-        internal const string SyncGitPrompt = "用 send_task 给解决方案位于 git 仓库的 VS 发布任务（同一仓库只派给一个 VS，优先空闲的，不必询问我）。任务内容："
-            + "在当前解决方案所在的 git 仓库中同步主分支，使最终本地主分支与远程主分支（以远程默认分支 main/master 为准）代码完全一致："
+        // 「同步 git」为下拉菜单：只同步所选 VS 的仓库，不再一次同步全部。
+        // "Sync git" is a dropdown: it syncs only the chosen VS's repository instead of all of them.
+        internal const string SyncGitText = "🔄 同步 git ▾";
+        internal const string SyncGitTask = "在当前解决方案所在的 git 仓库中同步主分支，使最终本地主分支与远程主分支（以远程默认分支 main/master 为准）代码完全一致："
             + "1) git fetch --prune；2) 若工作区有未提交修改，先提交，不得丢弃；3) 切换到主分支，把远程主分支的新提交以 rebase 方式并入；"
             + "4) 若本地主分支有未推送的提交，推送到远程；5) 最后确认 git status 干净，且本地主分支与 origin 主分支指向同一提交。"
-            + "禁止 force push、reset --hard 或删除任何分支；遇到冲突先尝试正确解决，无法确定时停止并说明。完成后汇总每个仓库的结果。";
+            + "禁止 force push、reset --hard 或删除任何分支；遇到冲突先尝试正确解决，无法确定时停止并说明。完成后汇总该仓库的结果。";
+
+        /// <summary>
+        /// 生成只发给所选 VS 的同步提示：AI 必须原样发布给该编号，不改派、不询问。
+        /// Builds the sync prompt for the chosen VS only: the AI must publish it verbatim to that number without reassigning or asking.
+        /// </summary>
+        internal static string SyncGitPrompt(VsMentionTarget target, string branch)
+        {
+            string label = "#" + target.Number + " " + target.Name;
+            return "[用户选择了目标 VS / Target VS chosen: " + label + (string.IsNullOrEmpty(branch) ? "" : "，当前分支 / current branch: " + branch) + "] "
+                + "请立即用 send_task 把下面的任务只发布给这一个 VS（vs 参数填 \"" + target.Number + "\"），不要发给其他 VS，不要询问或征求确认，任务文字保持原样；发布后用一句话说明结果。"
+                + " / Publish the task below right away with send_task to this VS only (vs = \"" + target.Number + "\"); do not send it to any other VS, do not ask for confirmation, keep the task text unchanged, then reply with one sentence. 任务内容 / Task: "
+                + SyncGitTask;
+        }
 
         internal const string MergeWorktreesPrompt = "用 send_task 给解决方案位于 git 仓库的 VS 发布任务（同一仓库只派给一个 VS，优先空闲的，不必询问我）。任务内容："
             + "用 git worktree list 列出该仓库的所有 worktree，把每个 worktree 所在分支的改动合并进本地主分支（main/master）："
@@ -28,9 +43,12 @@ namespace VSManager
             + "3) 解决冲突后生成解决方案，确保编译通过；4) 不推送远程，不删除 worktree 或分支。"
             + "无法确定如何解决冲突时停止并说明。完成后列出合并了哪些分支及结果。";
 
+        internal const string WorkspaceLayoutPrompt = "先用 get_displays 读取显示器和当前屏幕，再用 arrange_workspace_layout 自动布局所有 VS 主窗口、Copilot 和输出窗格；报告实际结果与未处理项。/ Read displays first, then auto-arrange VS main windows, Copilot and Output; report actual results and skipped items.";
+
         private static readonly (string Text, string Prompt)[] QuickPrompts =
         {
-            ("🔄 同步 git", SyncGitPrompt),
+            ("屏幕布局 / Layout", WorkspaceLayoutPrompt),
+            (SyncGitText, SyncGitTask),
             ("🔀 worktree 并入主分支", MergeWorktreesPrompt),
         };
 
@@ -106,7 +124,7 @@ namespace VSManager
 
             // ---- 快捷指令 ----
             _toolbarRow.Dock = DockStyle.Top;
-            _toolbarRow.Height = Dpi.S(46);
+            _toolbarRow.Height = Dpi.S(noteMode ? 46 : 64);
             _toolbarRow.BackColor = Theme.Background;
             _toolbarRow.Paint += (s, e) =>
             {
@@ -114,7 +132,7 @@ namespace VSManager
             };
             _toolbar.Dock = DockStyle.Fill;
             _toolbar.WrapContents = false;
-            _toolbar.AutoScroll = false;
+            _toolbar.AutoScroll = !noteMode;
             _toolbar.BackColor = Theme.Background;
             _toolbar.Padding = new Padding(0, Dpi.S(6), 0, 0);
             foreach (var q in noteMode ? NotePrompts : QuickPrompts)
@@ -122,8 +140,16 @@ namespace VSManager
                 var b = new FlatButton { Text = q.Text, Ghost = true, Height = Dpi.S(30), Margin = new Padding(Dpi.S(6), 0, 0, 0) };
                 b.Width = TextRenderer.MeasureText(q.Text, b.Font).Width + Dpi.S(26);
                 string prompt = q.Prompt;
-                b.Click += (s, e) => Send(prompt);
-                _tips.SetToolTip(b, prompt);
+                if (q.Text == SyncGitText)
+                {
+                    b.Click += (s, e) => ShowSyncMenu(b);
+                    _tips.SetToolTip(b, "选择要同步的 VS（显示其仓库当前分支），只同步该仓库\nChoose the VS to sync (shows its repository's current branch); only that repository is synced");
+                }
+                else
+                {
+                    b.Click += (s, e) => Send(prompt);
+                    _tips.SetToolTip(b, prompt);
+                }
                 _toolbar.Controls.Add(b);
             }
             if (noteMode)
@@ -377,6 +403,78 @@ namespace VSManager
             _ = _agent.RunAsync(prompt, shown, files);
             FocusInput();
             return true;
+        }
+
+        private ContextMenuStrip _syncMenu;
+
+        /// <summary>
+        /// 弹出「同步 git」下拉：列出各 VS 及其仓库当前分支，非 git 仓库不可选；同一仓库的多个 VS 标出首个编号。
+        /// Shows the "Sync git" dropdown: each VS with its repository's current branch; non-git solutions are disabled and VS sharing a repository point to the first number.
+        /// </summary>
+        private void ShowSyncMenu(Control anchor)
+        {
+            if (_syncMenu == null) { _syncMenu = new ContextMenuStrip(); Theme.Apply(_syncMenu); }
+            foreach (ToolStripItem old in _syncMenu.Items.Cast<ToolStripItem>().ToArray()) old.Dispose();
+            _syncMenu.Items.Clear();
+            var targets = _mentionTargets?.Invoke() ?? new VsMentionTarget[0];
+            foreach (var entry in SyncMenuEntries(targets, GitHeadInfo.Read))
+            {
+                var item = new ToolStripMenuItem(entry.Text) { Enabled = entry.Branch != null };
+                var target = entry.Target; string branch = entry.Branch;
+                item.Click += (s, e) => SyncTarget(target, branch);
+                _syncMenu.Items.Add(item);
+            }
+            if (_syncMenu.Items.Count == 0)
+                _syncMenu.Items.Add(new ToolStripMenuItem("没有打开的 VS / No open VS") { Enabled = false });
+            _syncMenu.Show(anchor, new Point(0, anchor.Height));
+        }
+
+        /// <summary>生成下拉项文字 / Builds the dropdown entries.</summary>
+        internal static IList<(VsMentionTarget Target, string Branch, string Text)> SyncMenuEntries(IEnumerable<VsMentionTarget> targets, Func<string, GitHeadInfo> read)
+        {
+            var list = new List<(VsMentionTarget, string, string)>();
+            var firstByRepo = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in targets ?? Enumerable.Empty<VsMentionTarget>())
+            {
+                var git = read(t.SolutionPath);
+                string text = "#" + t.Number + " " + t.Name + "  —  ";
+                if (git == null) text += "非 git 仓库 / not a git repo";
+                else
+                {
+                    text += git.Branch;
+                    if (firstByRepo.TryGetValue(git.Root, out int first)) text += "（与 #" + first + " 同仓库 / same repo as #" + first + "）";
+                    else firstByRepo[git.Root] = t.Number;
+                }
+                list.Add((t, git?.Branch, text));
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// 只把同步任务发给所选 VS：模型可用时交 AI 按编号发布，否则按精确目标直接入队。
+        /// Sends the sync task to the chosen VS only: via the AI by number when the model is available, otherwise enqueued to the pinned target.
+        /// </summary>
+        private void SyncTarget(VsMentionTarget chosen, string branch)
+        {
+            var live = _mentionTargets?.Invoke() ?? new VsMentionTarget[0];
+            var now = live.FirstOrDefault(t => t.InstanceKey == chosen.InstanceKey
+                && string.Equals(t.SolutionPath, chosen.SolutionPath, StringComparison.OrdinalIgnoreCase));
+            string label = "#" + chosen.Number + " " + chosen.Name;
+            if (now == null) { _mentionStatus = VsMentionSession.MissingError; _inputStatus.Text = _mentionStatus; return; }
+            label = "#" + now.Number + " " + now.Name;
+            if (_agent != null && _agent.Configured && !_agent.Running)
+            {
+                _mentionStatus = "已交给 AI 发布同步任务到 " + label + " / Handed the sync task to the AI for " + label;
+                _inputStatus.Text = _mentionStatus;
+                _ = _agent.RunAsync(SyncGitPrompt(now, branch), "🔄 同步 git → " + label + (branch == null ? "" : "（" + branch + "）"), new AttachmentRef[0]);
+                return;
+            }
+            if (_mentionSession == null || MentionRequested == null) { SettingsRequested?.Invoke(); return; }
+            MentionSubmission result;
+            try { result = MentionRequested(_mentionSession.Select(now) + " " + SyncGitTask, new AttachmentRef[0]); }
+            catch (Exception ex) { result = new MentionSubmission(null, "同步任务未接纳 / Sync task not accepted: " + ex.Message); }
+            _mentionStatus = result.Message;
+            _inputStatus.Text = _mentionStatus;
         }
 
         internal const string DirectNeedsMention = "直发需要先用 @ 指定目标 VS / Direct send needs an @ target first";

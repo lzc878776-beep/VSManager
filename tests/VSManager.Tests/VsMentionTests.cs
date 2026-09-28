@@ -490,7 +490,7 @@ namespace VSManager.Tests
             Sta(() =>
             {
                 using (var form = new QuietForm { Width = 950, Height = 650, ShowInTaskbar = false })
-                using (var panel = new ChatPanel { Dock = DockStyle.Fill })
+                using (var panel = new AgentPanel { Dock = DockStyle.Fill })
                 {
                     Field<TranscriptView>(panel, "_transcript").Visible = false;
                     var session = new VsMentionSession(); var vs = new[] { Vs(1), Vs(2) };
@@ -517,21 +517,20 @@ namespace VSManager.Tests
         }
         [TestMethod]
         [TestCategory(TestKind.Ui)]
-        public void ChatUi_AtArrowsEnterEscapeMouseAndNoMatchKeepDraft()
+        public void AgentUi_AtArrowsEnterEscapeMouseAndNoMatchKeepDraft()
         {
             Sta(() =>
             {
                 using (var form = new QuietForm { Width = 950, Height = 650, ShowInTaskbar = false })
-                using (var panel = new ChatPanel { Dock = DockStyle.Fill })
+                using (var panel = new AgentPanel { Dock = DockStyle.Fill })
                 {
                     Field<TranscriptView>(panel, "_transcript").Visible = false;
                     var session = new VsMentionSession(); var vs = new[] { Vs(1), Vs(2) };
                     panel.BindMentions(session, () => vs.Select((v, i) => Target(v, i + 1)).ToArray());
                     form.Controls.Add(panel); form.Show();
                     var input = Field<TextBox>(panel, "_input"); input.Focus();
-                    int sends = 0, cancellations = 0;
-                    panel.SendRequested += _ => sends++;
-                    panel.VoiceCancel += () => cancellations++;
+                    int sends = 0;
+                    panel.MentionRequested = (text, files) => { sends++; return new MentionSubmission(null, "未发送 / Not sent"); };
                     input.SelectedText = "@";
                     var mentions = Field<VsMentionInput>(panel, "_mentions");
                     Assert.IsTrue(mentions.IsOpen);
@@ -550,7 +549,6 @@ namespace VSManager.Tests
                     Assert.IsFalse(mentions.IsOpen);
                     panel.RefreshMentions();
                     Assert.IsFalse(mentions.IsOpen);
-                    Assert.AreEqual(0, cancellations);
                     input.Text = "@不存在"; input.SelectionStart = input.TextLength; mentions.Refresh();
                     Assert.AreEqual(0, mentions.CandidateCount);
                     Assert.IsFalse(mentions.IsOpen);
@@ -576,12 +574,12 @@ namespace VSManager.Tests
 
         [TestMethod]
         [TestCategory(TestKind.Ui)]
-        public void ChatUi_ConfirmedMentionRendersAsChip_AndDeletesAsWhole()
+        public void AgentUi_ConfirmedMentionRendersAsChip_AndDeletesAsWhole()
         {
             Sta(() =>
             {
                 using (var form = new QuietForm { Width = 950, Height = 650, ShowInTaskbar = false })
-                using (var panel = new ChatPanel { Dock = DockStyle.Fill })
+                using (var panel = new AgentPanel { Dock = DockStyle.Fill })
                 {
                     Field<TranscriptView>(panel, "_transcript").Visible = false;
                     var session = new VsMentionSession(); var vs = new[] { Vs(1) };
@@ -614,21 +612,89 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void ChatUi_BusyTargetStillSendsTextToQueue()
+        [TestCategory(TestKind.Ui)]
+        public void AgentUi_WrappedInput_KeepsMentionTokenOnOneLine_AndSplitTokensStillPaintSegments()
         {
             Sta(() =>
             {
-                using (var panel = new ChatPanel())
+                using (var form = new QuietForm { Width = 950, Height = 650, ShowInTaskbar = false })
+                using (var panel = new AgentPanel { Dock = DockStyle.Fill })
                 {
-                    int sends = 0;
-                    panel.SendRequested += _ => sends++;
+                    Field<TranscriptView>(panel, "_transcript").Visible = false;
+                    var session = new VsMentionSession();
+                    var v = Vs(1); v.Title = "My Demo App"; var target = Target(v, 1);
+                    panel.BindMentions(session, () => new[] { target });
+                    form.Controls.Add(panel); form.Show();
+                    var input = Field<TextBox>(panel, "_input");
+                    string token = session.Select(target);
+                    Assert.AreEqual("@#1 My Demo App", session.Chips(token).Single().Label);
+                    string prefix = "点击调试的时候，能判断是 cad 的环境调试吗 如果判断出来 cad 打开后 可以自动加载需要调试的 dll 吗 ";
+                    int tokenWidth = TextRenderer.MeasureText(token, input.Font).Width;
+                    int checkedWraps = 0;
+                    for (int extra = 0; extra < 40; extra++)
+                    {
+                        input.Text = prefix + new string('x', extra) + " " + token + " 输入栏中的标签没了？";
+                        int start = input.Text.IndexOf(token, StringComparison.Ordinal);
+                        var first = input.GetPositionFromCharIndex(start);
+                        var last = input.GetPositionFromCharIndex(start + token.Length - 1);
+                        if (tokenWidth < input.ClientSize.Width) Assert.AreEqual(first.Y, last.Y, "extra=" + extra);
+                        if (first.X < input.ClientSize.Width / 4 && first.Y > 0) checkedWraps++;
+                    }
+                    Assert.IsTrue(checkedWraps > 0, "至少一次令牌整体换到下一行 / Token wrapped as a whole at least once");
+
+                    // 比输入框还宽的令牌只能拆行，此时仍按段绘制气泡。/ A token wider than the box must split; chip segments are still produced.
+                    form.Width = 260;
+                    input.Text = token;
+                    var mentions = Field<VsMentionInput>(panel, "_mentions");
+                    var method = typeof(VsMentionInput).GetMethod("ChipSegments", BindingFlags.Instance | BindingFlags.NonPublic);
+                    using (var g = input.CreateGraphics())
+                    {
+                        var segments = (System.Collections.Generic.List<Rectangle>)method.Invoke(mentions, new object[] { g, input.Text, 0, token.Length });
+                        bool split = input.GetPositionFromCharIndex(0).Y != input.GetPositionFromCharIndex(token.Length - 1).Y;
+                        Assert.AreEqual(split ? true : false, segments.Count > 1);
+                        Assert.IsTrue(segments.All(r => r.Width > 0));
+                    }
+                    input.Refresh();
+                    form.Close();
+                }
+            });
+        }
+
+        [TestMethod]
+        [TestCategory(TestKind.Ui)]
+        public void ChatUi_HasNoComposer_TranscriptFillsSpace_AndStopRemainsAvailable()
+        {
+            Sta(() =>
+            {
+                using (var form = new QuietForm { Width = 1200, Height = 700, ShowInTaskbar = false })
+                using (var panel = new ChatPanel { Dock = DockStyle.Fill })
+                {
+                    Field<TranscriptView>(panel, "_transcript").Visible = false;
+                    form.Controls.Add(panel); form.Show();
                     panel.SetTarget("VS", "");
                     panel.SetState("忙碌 / Busy", Color.White, Color.Black, Color.Red, true);
-                    panel.InputText = "编辑后的消息";
-                    // 忙碌时文字排入任务清单，发送按钮与回车都不能静默失效 / Busy targets queue text; neither the button nor Enter may silently do nothing
-                    Assert.IsTrue(Field<FlatButton>(panel, "_btnSend").Enabled);
-                    Key(panel, Keys.Enter);
-                    Assert.AreEqual(1, sends);
+                    panel.VoiceInputEnabled = true;
+                    var input = Field<TextBox>(panel, "_input");
+                    Assert.IsFalse(Field<Panel>(panel, "_inputArea").Visible);
+                    Assert.IsFalse(input.Visible);
+                    Assert.IsFalse(input.Enabled);
+                    Assert.IsFalse(input.CanFocus);
+                    Assert.AreEqual(panel.ClientSize.Height, Field<Panel>(panel, "_transcriptHost").Bottom);
+                    var stop = Field<FlatButton>(panel, "_btnStop");
+                    Assert.IsTrue(stop.Visible);
+                    Assert.IsTrue(stop.Enabled);
+                    Assert.AreSame(Field<Panel>(panel, "_toolbarRow"), stop.Parent.Parent);
+                    int stops = 0;
+                    panel.StopRequested += () => stops++;
+                    typeof(Button).GetMethod("OnClick", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(stop, new object[] { EventArgs.Empty });
+                    Assert.AreEqual(1, stops);
+                    panel.SetSending(true);
+                    panel.SetSending(false);
+                    panel.Visible = false; panel.Visible = true;
+                    Assert.IsFalse(input.Visible);
+                    panel.SetState("空闲 / Idle", Color.White, Color.Black, Color.Green, false);
+                    Assert.IsFalse(stop.Enabled);
+                    form.Close();
                 }
             });
         }
@@ -653,10 +719,10 @@ namespace VSManager.Tests
                         calls++; Assert.AreEqual(text, body); Assert.AreEqual(1, files.Length);
                         return new MentionSubmission(null, "保存失败 / Save failed");
                     };
-                    Key(panel, Keys.Enter);
+                    Key(panel, Keys.Control | Keys.Enter);
                     Assert.AreEqual(1, calls); Assert.AreEqual(text, input.Text); Assert.AreEqual(1, pending.Count);
                     panel.MentionRequested = (body, files) => new MentionSubmission(new QueuedTask(), "已接纳 / Accepted");
-                    Key(panel, Keys.Enter);
+                    Key(panel, Keys.Control | Keys.Enter);
                     Assert.AreEqual("", input.Text); Assert.AreEqual(0, pending.Count);
                 }
             });

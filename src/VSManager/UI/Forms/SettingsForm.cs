@@ -878,33 +878,19 @@ namespace VSManager
             testRow.Controls.Add(test);
             Row(null, testRow, Dpi.S(42), true);
 
-            Row(null, Toggle("按住空格语音输入", "在输入框中按住空格（或按住「🎙 按住说话」）说话，松开后由豆包流式识别转成文字；短按仍输入空格，Esc 取消",
-                _s.AsrEnabled, v => _s.AsrEnabled = v), Dpi.S(56), true);
-            var asrRes = new DarkCombo { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty, DropDownWidth = Dpi.S(360) };
-            asrRes.Items.AddRange(DoubaoAsr.Resources);
-            asrRes.SelectedItem = _s.AsrResource;
-            if (asrRes.SelectedIndex < 0) asrRes.SelectedIndex = 0;
-            asrRes.SelectedIndexChanged += (s2, e2) =>
-            {
-                if (_loading) return;
-                _s.AsrResource = asrRes.SelectedItem as string ?? DoubaoAsr.DefaultResource;
-                Changed?.Invoke();
-            };
-            Row(NewLabel("识别资源"), asrRes, Dpi.S(40));
-
             var help = new Label
             {
                 Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Font = Theme.Small,
-                Text = "seed-audio-1.0：用一句话描述声音（如“年轻女声，语气轻快”），合成约需 10 秒。seed-tts-*：需在控制台开通「语音合成大模型」，" +
-                       "填写音色 ID（如 zh_female_vv_uranus_bigtts），响应更快。语音输入与播报共用 API Key，识别资源默认 volc.seedasr.sauc.duration。API Key 加密保存在本机；留空时读取环境变量 VSMANAGER_DOUBAO_API_KEY。" +
-                       "语言选 English 时使用英文提示词与英文音色，英文音色不可用时自动回退到默认音色并提示。 / With English selected, English prompts and the English voice are used; an unavailable voice falls back to the default with a notice."
+                Text = "seed-audio-1.0 使用声音描述，seed-tts-* 使用控制台开通的音色 ID。API Key 加密保存在本机；留空时读取 VSMANAGER_DOUBAO_API_KEY。" +
+                       "English 使用英文音色，不可用时回退并提示。 / seed-audio-1.0 uses a voice description; seed-tts-* uses an enabled voice ID. " +
+                       "The API key is encrypted locally, falling back to VSMANAGER_DOUBAO_API_KEY when blank. English selects an English voice, with a fallback notice if unavailable."
             };
             Row(null, help, Dpi.S(112), true);
 
             grid.RowCount = rows.Count + 1;
             grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             grid.Height = rows.Sum();
-            return NewCard("豆包语音", "完成播报 · 按住空格语音输入", grid);
+            return NewCard("豆包语音 / Doubao voice", "任务完成播报 / Task completion announcements", grid);
         }
 
         private void CommitVoice()
@@ -1091,12 +1077,15 @@ namespace VSManager
                 return row;
             }
 
-            Row(null, Toggle("任务完成后保存并关闭文档 / Save and close documents after tasks",
-                "默认开启；只保存已有路径且可写的文件，保存失败的保持打开；调试中不关闭 / On by default; saves only existing writable files, keeps failures open; no closing while debugging",
+            Row(null, Toggle("AI 任务完成后关闭 .cs 标签页 / Close .cs tabs after AI tasks",
+                "默认开启；仅关闭已保存的 .cs，未保存文件不保存、不关闭并提示；调试或状态未知时保留 / On by default; closes only saved .cs tabs, keeps unsaved files without saving and reports them; skips debugging or unknown states",
                 _s.SaveAndCloseDocumentsAfterTask, v => _s.SaveAndCloseDocumentsAfterTask = v), Dpi.S(72), true);
-            Row(null, Toggle("已完成任务写入笔记本 / Record completed tasks in notebooks",
-                "默认开启；已完成任务与检测到的手动对话按天写入「任务记录」页面，页面即清单，点击进入详情 / On by default; completed tasks and detected manual chats go to a daily task-record page that lists them, linking to details",
+            Row(null, Toggle("已结束任务写入笔记本 / Record finished tasks in notebooks",
+                "默认开启；已完成、待验证、失败任务与手动对话按天记录，按项目分组为可筛选表格，点击查看详情 / On by default; done, awaiting-verification, failed tasks and manual chats are recorded daily in filterable project tables with linked details",
                 _s.RecordCompletedTasksInNotebook, v => _s.RecordCompletedTasksInNotebook = v), Dpi.S(72), true);
+            Row(null, Toggle("CAD 调试自动加载 DLL / Auto-load DLL for CAD debugging",
+                "默认开启；启动程序为 AutoCAD / ZWCAD / GstarCAD / BricsCAD 时，点击调试临时加入 /b 启动脚本 NETLOAD 启动项目 DLL，启动后恢复原参数 / On by default; when the start program is AutoCAD / ZWCAD / GstarCAD / BricsCAD, Debug temporarily adds a /b startup script that NETLOADs the startup project DLL and restores the original arguments after launch",
+                _s.CadDebugAutoLoad, v => _s.CadDebugAutoLoad = v), Dpi.S(72), true);
             Row(null, Toggle("发送前关闭已保存文档 / Close saved documents before sending",
                 "默认关闭；跳过未保存、状态未知和调试中的文档，不关闭工具窗口 / Off by default; skip unsaved, unknown and debugging states; never close tool windows",
                 _s.CloseVsDocumentsBeforeSend, v => _s.CloseVsDocumentsBeforeSend = v), Dpi.S(72), true);

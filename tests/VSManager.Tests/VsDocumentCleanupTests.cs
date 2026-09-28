@@ -18,6 +18,103 @@ namespace VSManager.Tests
                 fallback ?? new CleanupFallback(), ownerReady ?? (_ => true));
 
         [TestMethod]
+        public void AfterTask_ClosesOnlySavedCsTabs_AndNeverSavesAnyDocument()
+        {
+            var dte = new CleanupDte(5);
+            dte.Documents[0].FullName = "Generated.CS";
+            dte.Documents[1].SavedValue = false;
+            dte.Documents[2].FullName = "Readme.md";
+            dte.Documents[3].FullName = "Project.csproj";
+            dte.Documents[3].SavedValue = false;
+            dte.Documents[4].FullName = "View.cshtml";
+            var closed = dte.Documents[0].Windows[0];
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback(), _ => true);
+            Assert.AreEqual(2, result.InitialTabCount);
+            Assert.AreEqual(1, result.Closed);
+            Assert.AreEqual(1, result.SkippedUnsaved);
+            CollectionAssert.AreEqual(new[] { "Document1.cs" }, result.UnsavedNames);
+            CollectionAssert.AreEqual(new[] { 0 }, closed.Arguments);
+            Assert.IsTrue(dte.Documents.Skip(1).All(d => d.Windows.Count == 1 && d.Windows[0].Arguments.Count == 0));
+            Assert.IsTrue(dte.Documents.All(d => d.SaveCalls == 0));
+            Assert.IsFalse(dte.Documents[1].SavedValue);
+        }
+
+        [TestMethod]
+        public void AfterTask_KeepsUnknownDirtyAndRenamedDocuments()
+        {
+            var dte = new CleanupDte(3);
+            dte.Documents[0].SavedError = true;
+            dte.Documents[1].ReadSaved = count => count == 1;
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback(), _ =>
+            {
+                dte.Documents[2].FullName = "Renamed.txt";
+                return true;
+            });
+            Assert.AreEqual(0, result.Closed);
+            Assert.AreEqual(1, result.SkippedUnsaved);
+            Assert.AreEqual(2, result.Unknown);
+            Assert.IsTrue(dte.Documents.All(d => d.SaveCalls == 0 && d.Windows[0].Arguments.Count == 0));
+        }
+
+        [TestMethod]
+        public void AfterTask_RechecksDirtyStateImmediatelyBeforeClosing()
+        {
+            var dte = new CleanupDte(1);
+            dte.Documents[0].ReadSaved = count => count < 3;
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback(), _ => true);
+            Assert.AreEqual(0, result.Closed);
+            Assert.AreEqual(1, result.SkippedUnsaved);
+            Assert.AreEqual(0, dte.Documents[0].SaveCalls);
+            Assert.AreEqual(0, dte.Documents[0].Windows[0].Arguments.Count);
+        }
+
+        [DataTestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
+        public void AfterTask_FallbackClosesOnlyWithFreshSavedState(bool becomesDirty)
+        {
+            var dte = new CleanupDte(1);
+            var doc = dte.Documents[0];
+            doc.Windows[0].ThrowOnClose = true;
+            var fallback = new CleanupFallback { RemoveWindow = true, BeforeGuard = () => doc.SavedValue = !becomesDirty };
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, fallback, _ => true);
+            Assert.AreEqual(becomesDirty ? 0 : 1, result.Closed);
+            Assert.AreEqual(becomesDirty ? 1 : 0, result.SkippedUnsaved);
+            Assert.AreEqual(becomesDirty ? 1 : 0, doc.Windows.Count);
+            Assert.AreEqual(becomesDirty ? 0 : 1, fallback.GuardedInvocations);
+            Assert.AreEqual(0, result.Failed);
+            Assert.AreEqual(0, doc.SaveCalls);
+            if (becomesDirty) CollectionAssert.AreEqual(new[] { "Document0.cs" }, result.UnsavedNames);
+        }
+
+        [TestMethod]
+        public void AfterTask_UnknownPathsAreKeptAndReported()
+        {
+            var dte = new CleanupDte(1);
+            dte.Documents[0].FullName = null;
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback(), _ => true);
+            Assert.AreEqual(1, result.Unknown);
+            Assert.AreEqual(0, result.Attempted);
+            Assert.AreEqual(1, dte.Documents[0].Windows.Count);
+            Assert.AreEqual(0, dte.Documents[0].SaveCalls);
+        }
+
+        [TestMethod]
+        public void AfterTask_ReportsDebuggingUnavailableDteAndCloseFailures()
+        {
+            var dte = new CleanupDte(1);
+            dte.Debugger.Mode = 2;
+            Assert.IsTrue(VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback(), _ => true).DebuggingOrUnknown);
+            Assert.AreEqual(1, VsDocumentCleanup.RunAfterTask(new VsInstance(), null, new CleanupFallback(), _ => true).Unknown);
+            dte.Debugger.Mode = 1;
+            dte.Documents[0].Windows[0].ThrowOnClose = true;
+            var result = VsDocumentCleanup.RunAfterTask(new VsInstance { Dte = dte }, null, new CleanupFallback { Refuse = true }, _ => true);
+            Assert.AreEqual(0, result.Closed);
+            Assert.AreEqual(1, result.Failed);
+            Assert.AreEqual(0, dte.Documents[0].SaveCalls);
+        }
+
+        [TestMethod]
         public void ThresholdEquality_DoesNotClose()
         {
             var dte = new CleanupDte(10);
@@ -380,6 +477,8 @@ namespace VSManager.Tests
         public bool SavedValue = true;
         public bool SavedError;
         public Func<int, bool> ReadSaved;
+        public int SaveCalls;
+        public void Save() { SaveCalls++; SavedValue = true; }
         private int reads;
         public bool Saved => SavedError ? throw new COMException("合成失败 / Synthetic failure") : ReadSaved?.Invoke(++reads) ?? SavedValue;
         public string FullName { get; set; }

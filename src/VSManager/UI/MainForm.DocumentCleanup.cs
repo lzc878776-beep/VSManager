@@ -6,20 +6,29 @@ namespace VSManager
 {
     public partial class MainForm : ITaskCompletionHost
     {
-        /// <summary>任务成功后保存并关闭目标 VS 的文档；未保存成功的文档保持打开。/ After success, save and close the target VS's documents; documents that could not be saved stay open.</summary>
+        /// <summary>AI 任务完成后只关闭目标 VS 已保存的 .cs 标签页，保留未保存文件并提示。/ After an AI task completes, closes only saved .cs tabs in its VS and reports unsaved files kept open.</summary>
         async Task ITaskCompletionHost.AfterTaskCompletedAsync(QueuedTask t, VsInstance v)
         {
-            if (!_settings.SaveAndCloseDocumentsAfterTask || v?.Dte == null) return;
-            string name = NameOf(v);
+            if (!_settings.SaveAndCloseDocumentsAfterTask || t == null || !t.FromAgent
+                || (t.Status != QueueStatus.Done && t.Status != QueueStatus.Unverified)) return;
+            string name = v == null ? t.VsName : NameOf(v);
             var result = await DteWorker.RunSta(() => VsDocumentCleanup.RunAfterTask(v, message => SendLog.Event(name, message)));
-            var kept = result.SaveFailedNames.Concat(result.UnsavedNames).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-            string text = $"任务 #{t.Id} 完成：「{name}」已保存 {result.SavedCount} 个、关闭 {result.Closed} 个文档"
-                + (kept.Length > 0 ? "，保留未保存：" + string.Join("、", kept) : "")
-                + (result.DebuggingOrUnknown ? "（调试中未关闭）" : "")
-                + $" / Saved {result.SavedCount}, closed {result.Closed} documents";
+            string kept = string.Join("、", result.UnsavedNames.Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(n => (n ?? "").Replace("\r", " ").Replace("\n", " ")));
+            string zh = $"AI 任务 #{t.Id}「{name}」.cs 标签页检查：已关闭 {result.Closed}，未保存保留 {result.SkippedUnsaved}，关闭失败 {result.Failed}，状态未知 {result.Unknown}；未自动保存任何文件"
+                + (kept.Length > 0 ? "；保留文件：" + kept : "")
+                + (result.DebuggingOrUnknown ? "；调试中或调试状态未知，未关闭" : "");
+            string en = $"AI task #{t.Id} \"{name}\" .cs tab check: closed {result.Closed}, unsaved kept {result.SkippedUnsaved}, failed {result.Failed}, unknown {result.Unknown}; no files were auto-saved"
+                + (kept.Length > 0 ? "; kept files: " + kept : "")
+                + (result.DebuggingOrUnknown ? "; debugging or unknown debugger state, tabs kept open" : "");
+            string text = zh + "\n" + en;
             SendLog.Event(name, text);
             AppLog.Write(AppLog.TasksFile, text);
-            if (result.SavedCount > 0 || result.Closed > 0 || kept.Length > 0 || result.DebuggingOrUnknown) SetStatus(text);
+            SetStatus(text.Replace("\n", " · "));
+            if (result.InitialTabCount > 0 || result.Unknown > 0 || result.Failed > 0 || result.DebuggingOrUnknown)
+                _agent?.ShowLocalNotice("AI 任务后 .cs 标签页清理 / Post-task C# tab cleanup", text);
+            if (result.SkippedUnsaved > 0 || result.Unknown > 0 || result.Failed > 0 || result.DebuggingOrUnknown)
+                NotifyWithVoice(".cs 文件已保留 / C# files kept open", zh, en);
         }
 
         private void ReportDocumentCleanup(VsInstance vs, VsDocumentCleanupResult result)

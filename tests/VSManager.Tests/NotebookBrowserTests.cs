@@ -134,6 +134,7 @@ namespace VSManager.Tests
                                 Assert.IsTrue(Field<Label>(workspace, "_breadcrumb").Visible);
                                 Assert.IsTrue(Field<Label>(workspace, "_status").Visible);
                                 Assert.AreEqual(editor.Text.Replace("\r\n", "\n"), store.Read(note).Text);
+                                await AssertJournal(workspace, store, web, form);
                                 string screenshot = Environment.GetEnvironmentVariable("VSM_NOTEBOOK_SCREENSHOT");
                                 if (!string.IsNullOrEmpty(screenshot))
                                 {
@@ -171,8 +172,78 @@ namespace VSManager.Tests
             }) { IsBackground = true };
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
-            Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(45)), "Notebook browser test timed out");
+            Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(90)), "Notebook browser test timed out");
             if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        private static async Task AssertJournal(NotebookWorkspace workspace, NotebookStore store, WebView2 web, Form form)
+        {
+            var journal = new NotebookTaskJournal(store);
+            string Add(int id, string project, string status, int hour) => journal.Record(new QueuedTask
+            {
+                Id = id, Title = "项目任务 " + id, Text = "Full task body", VsName = project, Status = status,
+                Started = new DateTime(2026, 9, 28, hour, 0, 0), Finished = new DateTime(2026, 9, 28, hour, 2, 0),
+                Result = "Detail-only result\n- [ ] Detail-only checklist", Error = "Example failure"
+            });
+            Add(1, "Alpha", QueueStatus.Done, 9);
+            string pending = Add(2, "Alpha", QueueStatus.Unverified, 11);
+            Add(3, "Beta", QueueStatus.Failed, 10);
+            string day = store.FindChild("", "2026.9.28 任务记录");
+            var index = store.Read(day);
+            store.Save(index, index.Text.Replace("[项目任务 2]", "[" + new string('长', 100) + "]"));
+            workspace.ReloadIfClean();
+            workspace.OpenLinkedNote("page:" + day);
+            await WaitForScript(web, "document.querySelectorAll('.tj-table').length===2");
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.tj-summary').textContent.includes('共 3 条 · 完成 1 · 待验证 1 · 失败 1')"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("Array.from(document.querySelectorAll('.tj-table thead tr')).every(r=>r.cells.length===4)"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.tj-project h2').textContent==='Alpha（2）'"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.tj-task a').textContent.startsWith('#2 ·')"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("(()=>{const a=document.querySelector('.tj-task a');return a.scrollWidth>a.clientWidth&&getComputedStyle(a).textOverflow==='ellipsis';})()"));
+            Assert.AreEqual("false", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.task-journal').textContent.includes('Detail-only')"));
+            await AssertColor(web, "tr.nc-unverified .nc-pill", "backgroundColor", Theme.UnverifiedBg);
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('[data-status-filter=unverified]').click()");
+            Assert.AreEqual("1", await web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('.tj-table tbody tr:not([hidden])').length"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.tj-project:not([hidden]) h2').textContent==='Alpha（1）'"));
+            Assert.IsFalse(Field<bool>(workspace, "_editing"));
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('tr[data-task-status=unverified] td').click()");
+            await WaitForScript(web, "!document.querySelector('.task-journal')&&document.querySelector('h1').textContent.includes('#2')");
+            Assert.AreEqual(pending, Field<NotebookDocument>(workspace, "_document").Path);
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.getElementById('note').textContent.includes('Detail-only result')&&document.querySelectorAll('input[type=checkbox]').length===1"));
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('a[data-note]').click()");
+            await WaitForScript(web, "!!document.querySelector('.task-journal')");
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('[data-status-filter=unverified]').getAttribute('aria-pressed')==='true'"));
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('[data-status-filter=failed]').click()");
+            Assert.AreEqual("1", await web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('.tj-project:not([hidden])').length"));
+            Add(4, "Beta", QueueStatus.Failed, 12);
+            workspace.ReloadIfClean();
+            await WaitForScript(web, "document.querySelectorAll('tr[data-task-status=failed]:not([hidden])').length===2");
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.tj-summary').textContent.includes('共 4 条 · 完成 1 · 待验证 1 · 失败 2')"));
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('[data-status-filter=done]').click()");
+            Assert.AreEqual("1", await web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('tbody tr:not([hidden])').length"));
+            string empty = store.CreatePage("", "2026.9.29 任务记录");
+            workspace.ReloadIfClean();
+            workspace.OpenLinkedNote("page:" + empty);
+            await WaitForScript(web, "!!document.querySelector('.tj-empty:not([hidden])')");
+            workspace.OpenLinkedNote("page:" + day);
+            await WaitForScript(web, "document.querySelectorAll('.tj-table').length===2");
+            await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('[data-status-filter=all]').click()");
+            form.Width = Dpi.S(740);
+            await Task.Delay(100);
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("(()=>{const s=document.querySelector('.tj-scroll');return s.scrollWidth>s.clientWidth&&getComputedStyle(s).overflowX==='auto';})()"));
+            Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.documentElement.scrollWidth<=window.innerWidth"));
+            form.Width = Dpi.S(1400);
+            await Task.Delay(100);
+        }
+
+        private static async Task WaitForScript(WebView2 web, string condition)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (await web.CoreWebView2.ExecuteScriptAsync(condition) == "true") return;
+                await Task.Delay(50);
+            }
+            Assert.Fail("Browser condition timed out: " + condition);
         }
 
         private static string CssColor(Color color) => $"rgb({color.R}, {color.G}, {color.B})";

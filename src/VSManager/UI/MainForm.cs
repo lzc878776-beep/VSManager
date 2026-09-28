@@ -114,6 +114,7 @@ namespace VSManager
 
 			// 归档目录需在任务清单 / 发送日志开始写入前确定；保存一次以确保 settings.json 中有 ArchiveRoot
 			_archiveWarning = Archive.Configure(_settings);
+			VsCadDebug.Enabled = _settings.CadDebugAutoLoad;
 			_settings.Save();
 
 			_voice = new DoubaoVoice(() => _settings);
@@ -141,6 +142,7 @@ namespace VSManager
 			AppDomain.CurrentDomain.UnhandledException += (s, e) => EmergencySave();
 			_dispatcher = new TaskDispatcher(_tasks, this, worktrees: new WorktreeService(WorktreeFileRoots), startSettings: () => _settings);
 			_dispatcher.TaskCompleted += RecordTaskInNotebook;
+			_dispatcher.TaskFailed += RecordTaskInNotebook;
 			// 无论用户还是 AI 启动流程，都同步「开始流程」按钮 / Sync the Start button whether the user or the AI started the workflow
 			_dispatcher.StartedChanged += () => { _taskPanel?.SetWorkflowStarted(_dispatcher.IsStarted); UpdateTaskTimer(); };
 
@@ -314,13 +316,8 @@ namespace VSManager
 
 			// ---- 主区域：对话 ----
 			_chat.Dock = DockStyle.Fill;
-			_chat.SendRequested += OnChatSend;
-			_chat.BindMentions(_mentionSession, MentionCandidates);
 			_agentPanel.BindMentions(_mentionSession, MentionCandidates);
 			_agentPanel.MentionRequested = (text, files) => SubmitMention(text, files, true);
-			_chat.VoiceBegin += OnVoiceBegin;
-			_chat.VoiceEnd += () => OnVoiceEnd(false);
-			_chat.VoiceCancel += () => OnVoiceEnd(true);
 			_chat.StopRequested += () => InvokeChatButton("CancelButton", "停止 Copilot");
 			_chat.NewThreadRequested += () => InvokeChatButton("createNewThread", "新建对话线程");
 			_chat.OpenInVsRequested += () => { if (Selected != null) ActivateVs(Selected); };
@@ -493,7 +490,8 @@ namespace VSManager
 		/// <summary>一键把所有 VS 的 Copilot 对话窗格切换为停靠的工具窗口。</summary>
 		private async Task<string> DockAllPanes()
 		{
-			if (_docking) return "正在切换中";
+			if (_docking || _arranging) return "正在切换中 / Layout change in progress";
+			if (VsWorkspaceLayout.SavedCount > 0) return "请先还原工作区布局 / First call restore_workspace_layout";
 			var list = _instances.ToList();
 			if (list.Count == 0) { SetStatus("没有正在运行的 VS"); return "没有正在运行的 VS"; }
 			_docking = true;
@@ -534,6 +532,7 @@ namespace VSManager
 		private async Task<string> ArrangePanesAsync(IList<VsInstance> targets, int screenNo, PaneArrangement arrangement, bool minimize)
 		{
 			if (_arranging || _docking) return "正在调整窗格布局，请稍候 / Layout change in progress";
+			if (VsWorkspaceLayout.SavedCount > 0) return "请先还原工作区布局 / First call restore_workspace_layout";
 			var list = (targets ?? _instances).Where(v => v != null && Native.IsWindow(v.MainHwnd)).ToList();
 			if (list.Count == 0) { SetStatus("没有正在运行的 VS"); return "没有正在运行的 VS / No running VS"; }
 			var screens = ScreenHelper.Ordered();
@@ -564,6 +563,7 @@ namespace VSManager
 		private async Task<string> RestorePaneLayoutAsync()
 		{
 			if (_arranging || _docking) return "正在调整窗格布局，请稍候 / Layout change in progress";
+			if (VsWorkspaceLayout.SavedCount > 0) return "请用工作区还原工具 / Use restore_workspace_layout";
 			var live = _instances.ToList();
 			string keyword = _settings.CopilotPaneKeyword;
 			_arranging = true;
@@ -1783,6 +1783,7 @@ namespace VSManager
 			string archiveWarning = Archive.Configure(_settings);
 			if (archiveWarning != null && archiveWarning != _archiveWarning) SetStatus("⚠ " + archiveWarning);
 			_archiveWarning = archiveWarning;
+			VsCadDebug.Enabled = _settings.CadDebugAutoLoad;
 			if (!_settings.MonitorCopilot)
 				foreach (var v in _instances) v.Copilot = CopilotState.Unknown;
 			UpdateChatHint();
@@ -2730,6 +2731,7 @@ namespace VSManager
 					"多 VS 管理工具", MessageBoxButtons.OK, MessageBoxIcon.Warning);
 			_monitor.Stop();
 			_chatSvc.Stop();
+			VsCadDebug.RestoreAll(3000);
 			Archive.Flush(3000, true);
 			_web.Dispose();
 			_voice.Dispose();

@@ -5,12 +5,12 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 ## 功能
 
 - **VS 实例总览**：自动发现正在运行的 Visual Studio，显示解决方案、调试状态与 Copilot 忙碌 / 空闲状态；一键布局到多块屏幕。
-- **应用内 Copilot 对话**：在 VSManager 中向任意 VS 的 Copilot 发送消息（支持图片），实时查看回复（Markdown 渲染）。
+- **应用内 Copilot 对话**：VS 线程页实时查看回复（Markdown 渲染），保留停止 Copilot、打开对话和调试控制；不再显示底部输入栏，文字与附件从 AI 总控助手「直发」发布。
 - **调试控制**：开始 / 停止 / 中断 / 重新启动调试，生成 / 重新生成，读取错误列表。
 - **AI 总控助手**：接入任意 OpenAI 兼容接口（默认 DeepSeek），通过函数调用查看各 VS 状态、分派任务、等待结果。
 - **任务清单**：默认新发布 AI 任务保存后自动按编号调度；手动与恢复任务仍等待「开始流程 / Start」，可在属性改为全部自动。同时显示各 VS 中手动进行的 Copilot 对话。
 - **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，获得自动启动资格或本次会话手动开始后，打开目标才会自动推送。
-- **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换），并支持按住说话输入。
+- **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换）；原 VS 输入栏的按住说话入口已移除。
 - **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
 - **发布到 GitHub**：一键 git init / 提交 / 创建或关联远程仓库 / 推送，发布前自动做敏感信息自检。
@@ -19,8 +19,8 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 
 ## 输入栏 @ 指定 VS / Mention a target VS
 
-- 普通 Copilot 对话与 AI 总控输入框都可输入 `@`：立即列出当前实例的 **编号、名称、职责摘要**，继续输入编号（可带 `#`）、名称或职责关键词筛选；↑/↓ 选择，Enter 确认，鼠标单击也可确认。候选列表打开时 Enter **只选择、不发送**；Esc 只关闭候选，不停止 AI 或触发语音取消。离开输入框、切换面板或调整窗口会关闭列表。
-  Both desktop inputs show current instances with **number, name and responsibility** immediately after `@`. Filter by number (optional `#`), name or responsibility; use ↑/↓ and Enter, or click. While suggestions are open, Enter **selects without sending** and Esc only dismisses suggestions, without stopping AI or cancelling voice. Leaving the input, switching panels or resizing dismisses the list.
+- 在 AI 总控输入框输入 `@`：立即列出当前实例的 **编号、名称、职责摘要**，继续输入编号（可带 `#`）、名称或职责关键词筛选；↑/↓ 选择，Enter 确认，鼠标单击也可确认。候选列表打开时 Enter **只选择、不发送**；Esc 只关闭候选，不停止 AI。离开输入框、切换面板或调整窗口会关闭列表。VS 线程页不再提供输入栏。
+  The manager assistant input shows current instances with **number, name and responsibility** immediately after `@`. Filter by number (optional `#`), name or responsibility; use ↑/↓ and Enter, or click. While suggestions are open, Enter **selects without sending** and Esc only dismisses suggestions without stopping AI. Leaving the input, switching panels or resizing dismisses the list. VS thread pages no longer have a composer.
 - 确认后出现 `@[#编号 名称|会话标识]`，例如选择目标后再输入「修复编译错误」。保留完整标记，再按 Enter / 发送即可直接加入该实例的任务队列；标记本身不会发给 VS。**显式目标覆盖 AI 自动匹配**，总控不调用模型来重新选目标，即使没有配置模型或模型正在运行也能入队。普通输入没有提及时仍走原流程。
   Selection inserts `@[#number name|session-id]`. Keep the complete marker, add the task and press Enter / Send to enqueue directly; the marker is removed from the task body. **Explicit targeting overrides AI matching** without calling a model, even if no model is configured or it is busy. Inputs without mentions retain their previous flow.
 - AI 总控输入栏的发送按钮旁还有 **「⚡ 直发 / Direct」**（快捷键 Ctrl+Enter，仅在输入中包含 @ 目标时可用）：按 @ 指定的目标直接发布任务，AI 只做简单润色让语句通顺，不补充内容、不提问；未配置模型或模型正在运行时按原文直接入队。
@@ -29,10 +29,10 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
   A message allows **one distinct VS**. Repeated mentions of that instance are deduplicated. Multiple distinct targets, unconfirmed queries, unknown/edited markers, or no body without attachments reject the whole message. No-match and save failures retain text and attachments. Input clears only after persistence; identical active tasks are reused.
 - 编号只是显示，目标实际绑定 **进程 ID、启动时间和解决方案/项目**。切换左侧选中项、实例重排或重名不会改目标；同一解决方案的两个 VS 也不会互相替代。实例关闭、重启或切换解决方案后拒绝发送，已排队任务在调度时失败并说明原因，请重新选择后发布。发送边界还核验真实进程和 DTE；无法核验时不会强行发送。
   Numbers are labels; routing pins **process ID, start time and solution/project**. Sidebar selection, reordering and duplicate names cannot retarget a task, including two VS processes opening the same solution. Closed/restarted/changed targets are rejected; queued tasks fail at dispatch with an explanation. Select again and resubmit. The send boundary also verifies the live process and DTE; unverifiable targets are not force-sent.
-- 标记在本次应用会话内可复制、随每个 VS 的草稿恢复；会话标识不要手改。应用重启后，旧输入标记需重新选择（已保存任务仍保留精确目标元数据）。图片与总控附件随提及任务一起持久化、排队；采用现有发布、状态、完成通知和手动对话保护，来源记为「用户」。默认仍需任务清单 **Start**，不会伪装为自动 AI 任务；用户已启用「全部自动」时沿用该设置。
-  Markers can be copied and restored with per-VS drafts within this application session. Do not edit their identifiers; after restarting the app, select input mentions again. Persisted tasks retain exact target metadata. Images and agent attachments join the normal persisted queue, dispatch, status, completion notification and manual-chat protection flow as **user** tasks. The default still requires **Start**; mentions do not masquerade as AI tasks. Explicit all-automatic settings remain respected.
-- 语法边界：行首、空白/标点后及中文句内的 `@` 可提及；拉丁单词中的 `@`、邮箱、`@scope/package`、反引号代码以及常见 C# 声明（例如 `var @class`）保留为普通文字。其他含 `@` 的代码请放在反引号中，或用 `@@` 防止识别；普通文字路径不删改字符（包括 `@@`）。筛选词不含空格；名称有空格时可输入其中一段再选择。此功能仅在上述两个桌面输入框启用，Web 远程接口不解析提及。
-  Syntax: `@` at a line start, after whitespace/punctuation, or within Chinese text can start a mention. Latin-word `@`, emails, `@scope/package`, backtick code and common C# declarations (such as `var @class`) stay literal. Put other `@` code in backticks or use `@@` to prevent recognition; literal input is not rewritten, including `@@`. Queries cannot contain spaces; filter a fragment of a spaced name. Only the two desktop inputs interpret mentions, not Web remote requests.
+- 标记在本次应用会话内可复制；会话标识不要手改。应用重启后，旧输入标记需重新选择（已保存任务仍保留精确目标元数据）。图片与总控附件随提及任务一起持久化、排队；采用现有发布、状态、完成通知和手动对话保护，来源记为「用户」。默认仍需任务清单 **Start**，不会伪装为自动 AI 任务；用户已启用「全部自动」时沿用该设置。
+  Markers can be copied within this application session. Do not edit their identifiers; after restarting the app, select input mentions again. Persisted tasks retain exact target metadata. Images and agent attachments join the normal persisted queue, dispatch, status, completion notification and manual-chat protection flow as **user** tasks. The default still requires **Start**; mentions do not masquerade as AI tasks. Explicit all-automatic settings remain respected.
+- 语法边界：行首、空白/标点后及中文句内的 `@` 可提及；拉丁单词中的 `@`、邮箱、`@scope/package`、反引号代码以及常见 C# 声明（例如 `var @class`）保留为普通文字。其他含 `@` 的代码请放在反引号中，或用 `@@` 防止识别；普通文字路径不删改字符（包括 `@@`）。筛选词不含空格；名称有空格时可输入其中一段再选择。此功能仅在 AI 总控输入框启用，Web 远程接口不解析提及。
+  Syntax: `@` at a line start, after whitespace/punctuation, or within Chinese text can start a mention. Latin-word `@`, emails, `@scope/package`, backtick code and common C# declarations (such as `var @class`) stay literal. Put other `@` code in backticks or use `@@` to prevent recognition; literal input is not rewritten, including `@@`. Queries cannot contain spaces; filter a fragment of a spaced name. Only the manager assistant input interprets mentions, not Web remote requests.
 
 ## Worktree 工作线 / Worktree lanes
 
@@ -187,7 +187,7 @@ VSManager/
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | 每轮定位 Copilot 输入框的轮询超时（秒，1–60）、未找到时重新打开窗格并重试的次数（0–5，`SendAutoRetry=false` 时不重试） |
 | | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | 显式开启后，仅在文档标签数量严格超过阈值（0–1000）时清理已保存文档；未保存、未知状态与调试会话跳过 |
 | | `RecordCompletedTasksInNotebook` | true | 任务成功完成后写入笔记本：按完成日期自动建立「yyyy.M.d 任务记录」页面，页面正文即当天清单，逐条列出时间与题目（检测到的手动对话也会记录并标注「手动对话」），点击进入详情子页面（任务内容或提问、VS、时间、完整回复）；仅保存在本地笔记数据库 `%APPDATA%\VSManager\Notebooks\notebook.db`（SQLite；文件夹与笔记合并为可含子页面的页面，旧 `.md` 首次启动时一次性导入并保留作备份，可「导出 Markdown」） |
-| | `SaveAndCloseDocumentsAfterTask` | true | 任务回复结束后（成功或回执为失败，发送失败除外）、发布下一个任务前，自动保存目标 VS 中已修改且有可写路径的文档，再关闭已保存的文档标签；保存失败的保持打开，调试中不关闭 |
+| | `SaveAndCloseDocumentsAfterTask` | true | 兼容旧字段名；现在仅在 AI 任务已完成或待验证后、同目标下一任务发布前关闭已保存的 `.cs` 标签页，绝不自动保存；未保存文件保留并提示文件名，其他类型不动，调试或状态未知时跳过并提示；手动任务与失败任务不触发 |
 | 解决方案登记 | `SolutionCloseConfirm` | true | AI 关闭 VS 前总是弹窗确认（关闭时仍会检查未保存修改） |
 | | `SolutionOpenWaitSeconds` | 90 | AI 打开解决方案后等待 VS 出现的最长时间（秒，10–600） |
 | | `PendingVsSettleSeconds` | 20 | 暂存任务在目标 VS 出现后再等待的秒数，让解决方案与 Copilot 加载完成（0–300） |
@@ -213,7 +213,7 @@ VSManager/
 | 语音 | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | 完成播报、AI 摘要、按语言翻译、播报 VS 名称 |
 | | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | 语音语言与资源 |
 | | `VoiceSpeaker` / `VoiceSpeakerEn` | 内置中文 / 英文声音描述 | 音色 |
-| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | 按住说话输入 |
+| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | 旧语音输入配置，仅保留兼容；输入入口及设置控件已移除 |
 | | `VoiceKeyProtected` | 空 | 豆包语音 API Key（DPAPI 加密；也可用 `VSMANAGER_DOUBAO_API_KEY`） |
 | Web 远程 | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / 空（自动生成） | 局域网远程控制 |
 | 归档 | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / 空 / 0 | 历史归档 |
@@ -471,6 +471,33 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 | `arrange_copilot_panes` | `screen`（屏幕编号，0 = 自动）、`layout`（`horizontal` / `grid`）、`minimizeVs`（默认 true）、`vs`（可选，如 `"1,3"`） | 一键布局；遵守「AI 操作需要确认」（`AgentConfirm`） |
 | `restore_copilot_layout` | 无 | 还原一键布局之前的窗口布局；同样遵守 `AgentConfirm` |
 
+### 显示器感知的 VS 工作区布局
+
+点击总控助手「屏幕布局 / Layout」，或输入「先看看有几块屏幕，再自动安排所有 VS、Copilot 和输出栏」。助手先读取真实显示器信息，再布局，不需要用户先提供屏幕编号。也可以说「只布局 1、3 号 VS，主窗口放屏幕 1，Copilot、输出和错误列表放屏幕 2」。
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `get_displays` | 无 | 只读返回屏幕数量、编号、分辨率、桌面位置、工作区、主屏、当前前台窗口屏幕、VSManager 与各 VS 所在屏幕；编号与属性一致 |
+| `arrange_workspace_layout` | `vs`（逗号分隔编号/名称，空为全部）、`mainScreen` / `paneScreen`（0 自动）、`includeOutput`（true）、`includeErrorList`（false） | 布局 VS 主窗口、Copilot 和所选附属窗格；遵守 `AgentConfirm` |
+| `restore_workspace_layout` | 无 | 还原这套工作区布局；遵守 `AgentConfirm`，失败项保留供重试 |
+
+自动模式优先把主窗口安排到当前前台窗口所在屏幕（未知时用主屏），Copilot 与附属窗格放到其他屏幕中最大的工作区，其余屏幕分担多个 VS。只有一屏或明确指定同屏时，主窗口占左侧约 65%，窗格占右侧；Copilot 在上，输出与可选错误列表在下。坐标使用桌面像素，保留负坐标并避开任务栏；允许最多 2 像素的 DPI 舍入，更大的位置偏差或最小尺寸限制会如实报告。
+
+布局时不会最小化 VS，会恢复原先最小化的主窗口参与布局；还原时恢复原显示状态。不保存或关闭文件，不处理任意其他工具窗格；无法确认目标、存在模态对话框、DTE 不可用或窗格缺失时跳过并报告，不猜测原状态或强制打开缺失窗格。审批后显示器或目标窗口改变时不执行旧计划。布局快照仅在当前 VSManager 会话内有效，精确停靠组位置由 VS 管理；恢复后再切换到旧 Copilot 单独布局模式，避免互相覆盖。已有只排列 Copilot 的工具与入口保留。
+
+### CAD 插件调试自动加载 DLL
+
+点击「▶ 调试」（或由 AI 助手 / Web 远程触发开始调试）且 VS 处于设计模式时，会检查启动项目的调试启动程序：项目调试属性「启动外部程序」或 `launchSettings.json` 当前配置（`commandName: Executable`）的可执行文件为 `acad.exe`（AutoCAD 及其行业版）、`zwcad.exe`、`gcad.exe` 或 `bricscad.exe` 时，判定为 CAD 调试环境。
+
+- 在 `%TEMP%\VSManager\CadDebug\` 生成启动脚本，内容为 `(command "_.NETLOAD" "启动项目输出 DLL")`，并把 CAD 标准启动参数 `/b "脚本"` 临时加到原参数前；CAD 打开后自动加载要调试的 DLL，调试器从启动开始就已附加，断点正常命中。
+- 调试器进入运行 / 中断状态、生成结束后未启动、VS 断开或 15 分钟超时后，恢复原启动参数（`launchSettings.json` 按原字节写回；期间被改动则只去掉本工具加入的参数）；退出 VSManager 时也会恢复。异常残留的参数在下次调试时自动替换，不会叠加。
+- 原参数已含 `/b` 脚本、启动项目不输出 DLL、已在调试中（继续运行）或不是 CAD 时保持原样，状态栏说明原因。开关位于「属性」的「发送确认」卡片中的「CAD 调试自动加载 DLL」，默认开启。
+- DLL 不在 CAD 可信位置时，AutoCAD 会弹出安全提示，请选择加载（或自行把输出目录加入 `TRUSTEDPATHS`）；本工具不修改 `SECURELOAD` 等安全设置。
+
+### 按 VS 同步 git
+
+总控助手的「🔄 同步 git ▾」是下拉菜单：列出每个打开的 VS 及其仓库当前分支（只读 `.git/HEAD`，支持 worktree），选哪个就只同步该 VS 所在的仓库，不再一次同步全部。非 git 仓库的 VS 不可选；多个 VS 共用一个仓库时标出「与 #N 同仓库」。模型可用时由 AI 用 `send_task` 按编号原样发布给该 VS；未配置模型或模型正忙时按精确目标直接入队（同 @ 提及任务）。同步规则不变：不强推、不 reset --hard、不丢弃修改。
+
 ### 关闭 .cs 文件标签页
 
 一次关闭某个 VS 中所有已打开的 .cs 文件标签页（仅扩展名为 `.cs` 的文件，不含 `.cshtml` / `.csproj` 等）。有未保存修改的文件不会关闭也不会保存，只在结果中列出文件名；其他文件与工具窗口不受影响。
@@ -591,12 +618,12 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 ## Features
 
 - **Instance overview**: discovers running Visual Studio instances and shows the solution, debug state and whether Copilot is busy or idle; one-click layout across monitors.
-- **In-app Copilot chat**: send messages (images supported) to the Copilot of any instance and read the replies live (Markdown rendering).
+- **In-app Copilot chat**: VS thread pages display live Markdown replies and retain Stop Copilot, open-chat and debug controls. There is no bottom composer; send text and attachments through the manager assistant's Direct action.
 - **Debug control**: start / stop / break / restart debugging, build / rebuild, read the error list.
 - **AI assistant**: works with any OpenAI-compatible endpoint (DeepSeek by default) and uses function calling to inspect instances, dispatch tasks and wait for results.
 - **Task list**: newly submitted AI tasks auto-start after saving by default; manual/restored tasks await **Start**, unless Settings explicitly enables all-automatic mode. Dispatch respects IDs and target readiness; manual Copilot chats are listed as well.
 - **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a closed solution are parked, and dispatch once it opens with automatic eligibility or manual Start in this session.
-- **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it), plus push-to-talk input.
+- **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it); the old VS composer's push-to-talk control has been removed.
 - **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents.
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
 - **Publish to GitHub**: one-click git init / commit / create or link the remote / push, with an automatic sensitive-content scan before publishing.
@@ -737,7 +764,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `SendConfirmTimeoutSeconds` / `SendAutoRetry` / `SendRetryCount` | 10 / true / 1 | Confirmation timeout after writing to the Copilot input box (seconds, 2–120), whether an unconfirmed paste or a missing input box is retried automatically, and how often a paste is retried (0–5) |
 | | `SendLocateTimeoutSeconds` / `SendLocateRetryCount` | 6 / 1 | Polling timeout of each round locating the Copilot input box (seconds, 1–60) and how often the pane is reopened and the lookup retried when it is not found (0–5; no retry when `SendAutoRetry=false`) |
 | | `CloseVsDocumentsBeforeSend` / `CloseVsDocumentsThreshold` | false / 10 | After explicit opt-in, close saved documents only when tab count strictly exceeds the threshold (0–1000); skip unsaved, unknown and debugging states |
-| | `SaveAndCloseDocumentsAfterTask` | true | After a task reply ends (success or a failed receipt, not send failures) and before the next is published, save modified documents with a writable path in the target VS, then close saved document tabs; unsaved ones stay open, nothing closes while debugging |
+| | `SaveAndCloseDocumentsAfterTask` | true | Legacy field name retained: now closes only saved `.cs` tabs after an AI task is done or awaiting verification, before the next task for that target. Never auto-saves; unsaved files stay open and their names are reported. Other file types are untouched; debugging and unknown states are skipped and reported. Manual and failed tasks do not trigger cleanup |
 | | `RecordCompletedTasksInNotebook` | true | Record successfully completed tasks in the notebook: a "yyyy.M.d 任务记录" page per completion day whose body lists the day's entries with time and title (detected manual chats are recorded too, marked "Manual chat"), each linking to a detail subpage (task or question, VS, times, full reply); stored only in the local notebook database `%APPDATA%\VSManager\Notebooks\notebook.db` (SQLite; folders and notes are merged into pages that can have subpages; legacy `.md` files are imported once on first start and kept as a backup; use "Export Markdown" for files) |
 | Solution registry | `SolutionCloseConfirm` | true | Always ask before the AI closes a VS (unsaved changes are checked regardless) |
 | | `SolutionOpenWaitSeconds` | 90 | How long the AI waits for VS to appear after opening a solution (seconds, 10–600) |
@@ -766,7 +793,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | Voice | `VoiceAnnounce` / `VoiceAiSummary` / `VoiceTranslate` / `VoiceIncludeName` | true / true / true / true | Completion announcement, AI summary, translate to the voice language, include the VS name |
 | | `VoiceLanguage` / `VoiceResource` | `zh` / `seed-audio-1.0` | Voice language and resource |
 | | `VoiceSpeaker` / `VoiceSpeakerEn` | built-in Chinese / English voice descriptions | Voices |
-| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | Push-to-talk input |
+| | `AsrEnabled` / `AsrResource` | true / `volc.seedasr.sauc.duration` | Legacy speech-input settings retained for compatibility; composer and settings controls removed |
 | | `VoiceKeyProtected` | empty | Doubao speech API key (DPAPI-encrypted; or `VSMANAGER_DOUBAO_API_KEY`) |
 | Web remote | `WebEnabled` / `WebPort` / `WebToken` | false / 8765 / empty (generated) | LAN remote control |
 | Archive | `ArchiveEnabled` / `ArchiveRoot` / `ArchiveRetentionDays` | true / empty / 0 | History archive |
@@ -981,6 +1008,33 @@ Floats the Copilot chat pane of every VS, spreads the panes side by side over th
 |---|---|---|
 | `arrange_copilot_panes` | `screen` (screen number, 0 = auto), `layout` (`horizontal` / `grid`), `minimizeVs` (default true), `vs` (optional, e.g. `"1,3"`) | One-click layout; honors "confirm AI actions" (`AgentConfirm`) |
 | `restore_copilot_layout` | none | Restores the layout from before the one-click layout; also honors `AgentConfirm` |
+
+### Monitor-aware VS workspace layout
+
+Click the manager assistant's **Layout** shortcut or ask: "Read my displays, then automatically arrange all VS windows, Copilot and Output." The assistant reads real display information before arranging; you do not need to supply monitor numbers. For explicit control: "Arrange only VS 1 and 3, main windows on screen 1, Copilot, Output and Error List on screen 2."
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `get_displays` | none | Read-only display count, numbers, resolution, desktop position, work area, primary screen, foreground/VSManager screens and each VS location; numbering matches Settings |
+| `arrange_workspace_layout` | `vs` (comma-separated numbers/names, empty = all), `mainScreen` / `paneScreen` (0 = auto), `includeOutput` (true), `includeErrorList` (false) | Arranges main VS windows, Copilot and selected auxiliary panes; honors `AgentConfirm` |
+| `restore_workspace_layout` | none | Restores this workspace layout; honors `AgentConfirm` and retains failed items for retry |
+
+Auto mode favors the foreground window's screen for main windows (primary screen if unknown), selects the largest other work area for Copilot/auxiliary panes and distributes multiple VS instances across remaining screens. One screen, or explicitly choosing the same screen, partitions roughly 65% left for main windows and the remainder for panes; Copilot sits above Output and optional Error List. Desktop pixel coordinates retain negative origins and exclude taskbars. Up to 2 pixels of DPI rounding are allowed; larger position deviations or minimum-size constraints are reported truthfully.
+
+Arranging does not minimize VS and brings previously minimized main windows back into view; restoring returns their original show state. Files are never saved/closed and arbitrary other tool panes are not manipulated. Unknown targets, modal dialogs, unavailable DTE and missing panes are skipped and reported without inventing their original state or forcibly opening missing panes. Changed displays or target windows after approval prevent the old plan from executing. Snapshots last only for the current VSManager session; exact docking-group positions remain VS-managed. Restore before switching to the legacy Copilot-only mode to avoid overlapping snapshots. Existing Copilot-only tools and entry points remain available.
+
+### Auto-load the DLL when debugging CAD plug-ins
+
+When you press "▶ Debug" (or the AI assistant / Web remote starts debugging) while VS is in design mode, VSManager inspects the startup project's debug target: if the project's "Start external program" or the active `launchSettings.json` profile (`commandName: Executable`) points to `acad.exe` (AutoCAD and its verticals), `zwcad.exe`, `gcad.exe` or `bricscad.exe`, the session is treated as CAD debugging.
+
+- A startup script is written to `%TEMP%\VSManager\CadDebug\` containing `(command "_.NETLOAD" "startup project output DLL")`, and the CAD-standard `/b "script"` argument is temporarily prepended to the original arguments. CAD loads the DLL under test after it opens, with the debugger attached from the start so breakpoints hit normally.
+- The original arguments are restored once the debugger runs or breaks, the build ends without a launch, VS disconnects or 15 minutes pass (`launchSettings.json` is written back byte for byte; if it changed meanwhile only the injected argument is removed). They are also restored when VSManager exits, and any leftover injection is replaced rather than stacked on the next launch.
+- Nothing changes when the arguments already contain a `/b` script, the startup project does not build a DLL, debugging is already running (continue), or the host is not CAD; the status bar explains why. The switch "CAD 调试自动加载 DLL / Auto-load DLL for CAD debugging" lives in the Settings "Send confirmation" card and is on by default.
+- If the DLL is outside CAD's trusted locations, AutoCAD shows a security prompt; choose Load (or add the output folder to `TRUSTEDPATHS` yourself). VSManager never changes `SECURELOAD` or other security settings.
+
+### Sync git per VS
+
+The assistant's "🔄 同步 git ▾" (Sync git) button is a dropdown listing every open VS with its repository's current branch (read from `.git/HEAD` only, worktrees supported). Choosing one syncs only that VS's repository instead of all of them. Non-git solutions are disabled, and VS sharing a repository are marked "same repo as #N". With a model available the AI publishes the task verbatim to that number via `send_task`; without a configured or idle model it is enqueued to the pinned target like an @ mention. The sync rules are unchanged: no force push, no reset --hard, no discarded changes.
 
 ### Close .cs file tabs
 

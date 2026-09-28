@@ -89,14 +89,43 @@ namespace VSManager
             input.Disposed += OnInputDisposed;
             _refresh.Tick += OnRefresh;
             _hook = new PaintHook(this);
-            if (input.IsHandleCreated) _hook.AssignHandle(input.Handle);
+            _wordBreak = WordBreak;
+            if (input.IsHandleCreated) { _hook.AssignHandle(input.Handle); InstallWordBreak(); }
             input.HandleCreated += OnHandleCreated;
             input.HandleDestroyed += OnHandleDestroyed;
             input.MouseMove += OnMouseMoveInput;
             HookAncestors();
         }
 
-        private void OnHandleCreated(object sender, EventArgs e) { if (_hook.Handle == IntPtr.Zero) _hook.AssignHandle(_input.Handle); }
+        private void OnHandleCreated(object sender, EventArgs e) { if (_hook.Handle == IntPtr.Zero) _hook.AssignHandle(_input.Handle); InstallWordBreak(); }
+
+        /// <summary>自定义换行：确认的令牌不被自动换行拆开，气泡始终完整显示。/ Custom word breaking: word wrap never splits a confirmed token, so its chip always renders whole.</summary>
+        private delegate int EditWordBreakProc(IntPtr lpch, int ichCurrent, int cch, int code);
+        private readonly EditWordBreakProc _wordBreak;
+        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SendMessageW")]
+        private static extern IntPtr SendWordBreak(IntPtr hwnd, int msg, IntPtr wParam, EditWordBreakProc lParam);
+        private const int EM_SETWORDBREAKPROC = 0x00D0;
+
+        private void InstallWordBreak()
+        {
+            if (_disposed || !_input.IsHandleCreated) return;
+            SendWordBreak(_input.Handle, EM_SETWORDBREAKPROC, IntPtr.Zero, _wordBreak);
+        }
+
+        private static int WordBreak(IntPtr lpch, int ichCurrent, int cch, int code)
+        {
+            try
+            {
+                if (lpch == IntPtr.Zero || cch <= 0) return code == MentionLineBreak.WbIsDelimiter ? 0 : Math.Max(0, Math.Min(ichCurrent, cch));
+                // 只读取光标附近的窗口，长文本也不会拖慢排版。/ Read only a window around the position so long text stays fast.
+                int ich = Math.Max(0, Math.Min(ichCurrent, cch));
+                int from = Math.Max(0, ich - 256), to = Math.Min(cch, ich + 512);
+                string s = System.Runtime.InteropServices.Marshal.PtrToStringUni(IntPtr.Add(lpch, from * 2), to - from);
+                int r = MentionLineBreak.Evaluate(s, ich - from, code);
+                return code == MentionLineBreak.WbIsDelimiter ? r : r + from;
+            }
+            catch { return code == MentionLineBreak.WbIsDelimiter ? 0 : ichCurrent; }
+        }
         private void OnHandleDestroyed(object sender, EventArgs e) => _hook.ReleaseHandle();
         private void OnMouseMoveInput(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) _input.Invalidate(); }
 
@@ -152,33 +181,55 @@ namespace VSManager
         {
             string text = _input.Text;
             int selStart = _input.SelectionStart, selEnd = selStart + _input.SelectionLength;
+            foreach (var chip in chips)
             {
-                int lineH = _input.Font.Height;
-                foreach (var chip in chips)
+                // 令牌被自动换行拆开时逐行绘制，标签放在最宽的一段，不再露出原始令牌。
+                // When word wrap splits a token, draw each line's segment and put the label in the widest one, so the raw token never shows.
+                var segments = ChipSegments(g, text, chip.Start, chip.Length);
+                if (segments.Count == 0) continue;
+                int labelAt = 0;
+                for (int i = 1; i < segments.Count; i++) if (segments[i].Width > segments[labelAt].Width) labelAt = i;
+                bool selected = selEnd > selStart && selStart < chip.Start + chip.Length && selEnd > chip.Start;
+                for (int i = 0; i < segments.Count; i++)
                 {
-                    var first = _input.GetPositionFromCharIndex(chip.Start);
-                    int lastIndex = chip.Start + chip.Length - 1;
-                    var last = _input.GetPositionFromCharIndex(lastIndex);
-                    if (first.Y != last.Y) continue;
-                    int right = last.X + TextRenderer.MeasureText(g, text[lastIndex].ToString(), _input.Font, Size.Empty, TextFormatFlags.NoPadding).Width;
-                    if (lastIndex + 1 < text.Length)
-                    {
-                        var next = _input.GetPositionFromCharIndex(lastIndex + 1);
-                        if (next.Y == first.Y && next.X > first.X) right = next.X;
-                    }
-                    var cover = new Rectangle(first.X, first.Y, Math.Max(0, right - first.X), lineH);
+                    var cover = segments[i];
                     if (cover.Width <= 0 || !_input.ClientRectangle.IntersectsWith(cover)) continue;
-                    bool selected = selEnd > selStart && selStart < chip.Start + chip.Length && selEnd > chip.Start;
                     using (var b = new SolidBrush(_input.BackColor)) g.FillRectangle(b, cover);
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                     var pill = new RectangleF(cover.X + 0.5f, cover.Y + 0.5f, cover.Width - 2f, cover.Height - 1f);
                     Theme.FillRound(g, selected ? Theme.Accent : Theme.AccentLight, pill, pill.Height / 2);
                     Theme.DrawRound(g, selected ? Theme.AccentHover : Theme.AccentBorder, pill, pill.Height / 2);
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
-                    TextRenderer.DrawText(g, chip.Label, _input.Font, Rectangle.Round(pill), selected ? Color.White : Theme.AccentText,
-                        TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
+                    if (i == labelAt)
+                        TextRenderer.DrawText(g, chip.Label, _input.Font, Rectangle.Round(pill), selected ? Color.White : Theme.AccentText,
+                            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPadding);
                 }
             }
+        }
+
+        /// <summary>令牌在每个可视行上占据的矩形。/ Rectangles the token occupies on each visual line.</summary>
+        private List<Rectangle> ChipSegments(Graphics g, string text, int start, int length)
+        {
+            var result = new List<Rectangle>();
+            int lineH = _input.Font.Height, end = Math.Min(text.Length, start + length);
+            int i = start;
+            while (i < end)
+            {
+                var first = _input.GetPositionFromCharIndex(i);
+                int j = i + 1;
+                while (j < end && _input.GetPositionFromCharIndex(j).Y == first.Y) j++;
+                int lastIndex = j - 1;
+                var last = _input.GetPositionFromCharIndex(lastIndex);
+                int right = last.X + TextRenderer.MeasureText(g, text[lastIndex].ToString(), _input.Font, Size.Empty, TextFormatFlags.NoPadding).Width;
+                if (j < text.Length)
+                {
+                    var next = _input.GetPositionFromCharIndex(j);
+                    if (next.Y == first.Y && next.X > first.X) right = next.X;
+                }
+                result.Add(new Rectangle(first.X, first.Y, Math.Max(0, right - first.X), lineH));
+                i = j;
+            }
+            return result;
         }
 
         /// <summary>光标不停在气泡内部；向左移动时贴到起点，其余贴到末尾。/ Keeps the caret out of chips: snaps to the start when moving left, otherwise to the end.</summary>
@@ -385,6 +436,7 @@ namespace VSManager
             _input.LostFocus -= OnDismiss; _input.VisibleChanged -= OnDismiss; _input.Resize -= OnDismiss;
             _input.ParentChanged -= OnDismiss;
             _input.HandleCreated -= OnHandleCreated; _input.HandleDestroyed -= OnHandleDestroyed; _input.MouseMove -= OnMouseMoveInput;
+            if (_input.IsHandleCreated && !_input.IsDisposed) SendMessage(_input.Handle, EM_SETWORDBREAKPROC, IntPtr.Zero, IntPtr.Zero);
             _hook.ReleaseHandle();
             _input.Disposed -= OnInputDisposed;
             _refresh.Dispose(); _popup.Dispose(); _tips.Dispose();

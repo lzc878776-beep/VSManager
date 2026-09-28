@@ -144,6 +144,25 @@ namespace VSManager
 
         // ---- 读写 / Read and write ----
 
+        /// <summary>批量读取直接子页的元数据头部（最多 8192 字符），供任务表格使用。/ Reads direct-child metadata headers (up to 8192 characters) in one query for task tables.</summary>
+        internal IReadOnlyList<NotebookDocument> ReadChildHeaders(string parent)
+        {
+            ValidateId(parent);
+            return Run(c =>
+            {
+                var result = new List<NotebookDocument>();
+                using var cmd = Command(c, "SELECT id, title, substr(body, 1, 8192) FROM pages WHERE parent_id=@parent AND deleted_at IS NULL", null, ("@parent", parent));
+                using var reader = cmd.ExecuteReader();
+                while (reader.Read())
+                {
+                    string text = reader.GetString(2);
+                    int section = text.IndexOf("\n## ", StringComparison.Ordinal);
+                    result.Add(new NotebookDocument { Path = reader.GetString(0), Title = reader.GetString(1), Text = section < 0 ? text : text.Substring(0, section) });
+                }
+                return result;
+            });
+        }
+
         public NotebookDocument Read(string id)
         {
             ValidateId(id);

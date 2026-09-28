@@ -81,6 +81,8 @@ namespace VSManager
         // 暂存前序未获启动资格时仍按实际目标阻塞；只映射副本，不推进其状态。/ Parked predecessors still block by resolved target; map copies without advancing their state.
         private QueuedTask DispatchBlocker(QueuedTask task)
         {
+            var finishing = _finishing.FirstOrDefault(t => TaskStateMachine.SharesDispatchTarget(t, task));
+            if (finishing != null) return finishing;
             var blocker = _tasks.BlockingTask(task);
             if (blocker != null || !_tasks.Items.Any(t => t.Status == QueueStatus.WaitingVs)) return blocker;
             var mapped = _tasks.Items.Select(t =>
@@ -109,6 +111,9 @@ namespace VSManager
 
         /// <summary>任务成功完成并已保存后触发（例如写入笔记本任务记录）。/ Raised after a task completes successfully and is saved (e.g. to record it in the notebook).</summary>
         public event Action<QueuedTask> TaskCompleted;
+
+        /// <summary>任务失败并提交状态后触发，用于保留失败详情。/ Raised after committing a task failure to retain its details.</summary>
+        public event Action<QueuedTask> TaskFailed;
 
         private void CommitCompletion(QueuedTask task)
         {

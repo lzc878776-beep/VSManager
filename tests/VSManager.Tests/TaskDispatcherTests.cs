@@ -239,6 +239,8 @@ namespace VSManager.Tests
             Assert.AreEqual(QueueStatus.Done, first.Status);
             CollectionAssert.AreEqual(new[] { first.Id }, tidied);
             Assert.AreEqual(QueueStatus.Waiting, next.Status, "整理完成前不发布下一个 / next waits for tidy");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Waiting, next.Status, "定时调度也需等待清理 / Timer dispatch must also wait for cleanup");
             tidy.SetResult(true);
             await finishing;
             await _dispatcher.PumpAsync();
@@ -246,7 +248,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task Finish_FailedReceiptStillTidies_AndExplainsReportedFailure()
+        public async Task Finish_FailedReceiptDoesNotTidy_AndExplainsReportedFailure()
         {
             var v = _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
@@ -256,10 +258,29 @@ namespace VSManager.Tests
             _host.AnswerReader = t => Task.FromResult("需要重启后验证\r\n" + TaskStateMachine.FailureReceipt(t));
             await _dispatcher.FinishAsync(first, v, null);
             Assert.AreEqual(QueueStatus.Failed, first.Status);
-            Assert.AreEqual(1, calls, "Copilot 已结束回复，仍保存文件 / Copilot finished replying; files are still saved");
+            Assert.AreEqual(0, calls, "失败任务不触发完成清理 / Failed tasks do not trigger completion cleanup");
             StringAssert.Contains(first.Error, "Copilot reported the task as not completed");
             StringAssert.Contains(first.Error, "需要重启后验证");
             Assert.IsFalse(first.Error.Contains(":FAILED]"));
+        }
+
+        [DataTestMethod]
+        [DataRow("AI", false, 1)]
+        [DataRow("AI", true, 1)]
+        [DataRow("用户", false, 0)]
+        [DataRow("用户", true, 0)]
+        public async Task Finish_CleansOnlyCompletedAiTasks_Once(string source, bool pending, int expected)
+        {
+            var v = _host.AddVs("A");
+            var task = _queue.Add("A", "A", "task", source);
+            int calls = 0;
+            _host.AfterCompleted = (t, target) => { Assert.AreSame(task, t); Assert.AreSame(v, target); calls++; return Task.CompletedTask; };
+            await _dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult("Implemented\r\n" + (pending ? TaskStateMachine.UnverifiedReceipt(t) : TaskStateMachine.SuccessReceipt(t)));
+            await _dispatcher.FinishAsync(task, v, null);
+            await _dispatcher.FinishAsync(task, v, null);
+            Assert.AreEqual(pending ? QueueStatus.Unverified : QueueStatus.Done, task.Status);
+            Assert.AreEqual(expected, calls);
         }
 
         [TestMethod]
@@ -285,8 +306,10 @@ namespace VSManager.Tests
         {
             var v = _host.AddVs("A");
             var completed = new System.Collections.Generic.List<QueuedTask>();
-            string reply = null;
+            var failed = new System.Collections.Generic.List<QueuedTask>();
+            string reply = null, failedReply = null;
             _dispatcher.TaskCompleted += t => { completed.Add(t); reply = t.FullResult; };
+            _dispatcher.TaskFailed += t => { failed.Add(t); failedReply = t.FullResult; };
             var ok = _queue.Add("A", "A", "ok", "AI");
             await _dispatcher.PumpAsync();
             string longText = new string('x', 3000);
@@ -297,10 +320,15 @@ namespace VSManager.Tests
             StringAssert.Contains(reply, longText, "笔记记录完整回复 / Notebook gets the full reply");
             var bad = _queue.Add("A", "A", "bad", "AI");
             await _dispatcher.PumpAsync();
-            _host.AnswerReader = t => Task.FromResult("no\r\n" + TaskStateMachine.FailureReceipt(t));
+            _host.AnswerReader = t => Task.FromResult(longText + "\r\n" + TaskStateMachine.FailureReceipt(t));
             await _dispatcher.FinishAsync(bad, v, null);
             Assert.AreEqual(QueueStatus.Failed, bad.Status);
             Assert.AreEqual(1, completed.Count);
+            CollectionAssert.AreEqual(new[] { bad }, failed);
+            Assert.AreEqual(longText, failedReply);
+            var delivery = _queue.Add("B", "B", "delivery", "AI");
+            _dispatcher.Fail(delivery, "delivery error", FailureKind.Delivery);
+            CollectionAssert.AreEqual(new[] { bad, delivery }, failed);
         }
 
         [TestMethod]

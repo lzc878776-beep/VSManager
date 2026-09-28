@@ -67,7 +67,7 @@ namespace VSManager
         Task<string> SendTaskAsync(VsInstance v, QueuedTask t);
     }
 
-    /// <summary>可选宿主能力：任务成功后、发布下一个任务前整理目标 VS（如保存并关闭文档）。/ Optional host capability: tidies the target VS (e.g. save and close documents) after success, before the next task is published.</summary>
+    /// <summary>可选宿主能力：AI 任务完成后、发布下一个任务前安全关闭目标 VS 已保存的 .cs 标签页。/ Optional host capability: safely closes saved .cs tabs in the target VS after AI completion, before publishing the next task.</summary>
     public interface ITaskCompletionHost
     {
         Task AfterTaskCompletedAsync(QueuedTask t, VsInstance v);
@@ -255,6 +255,7 @@ namespace VSManager
                                     TaskStateMachine.Complete(t, _clock());
                                     CommitCompletion(t);
                                     _host.NotifyAgent($"工作树合并任务 #{t.Id} 已完成 / Worktree integration completed", t.Result + AutomaticCompletionText(t));
+                                    await TidyAsync(t, v);
                                     continue;
                                 }
                             }
@@ -371,6 +372,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             ClearManualWait(t);
             _yielded.Remove(t);
             _tasks.Commit();
+            TaskFailed?.Invoke(t);
             string diagnostic = $"任务 #{t.Id} 失败即终止 / Failed; automatic retry stopped; " +
                 $"阶段 / Stage={(t.Started.HasValue ? "Result" : "Send")}; 次数 / Attempts={t.Attempts}; " +
                 $"送达待核实 / Uncertain={error?.StartsWith(ManualChatProtection.UncertainPrefix, StringComparison.Ordinal) == true}";
@@ -460,6 +462,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                     return;
                 }
                 var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
+                t.FullResult = result;
                 if (receipt == TaskReceipt.Failed || receipt == TaskReceipt.None)
                 {
                     bool reported = receipt == TaskReceipt.Failed;
@@ -480,8 +483,6 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                         Fail(t, "Copilot 本轮未执行完（网络 / 服务错误或被中断）/ Copilot's run did not finish (network / service error or interrupted): " + TextUtil.Clip(StripReceipt(t, answer), 300), FailureKind.Interrupted);
                     else
                         Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(StripReceipt(t, answer), 300), FailureKind.NoReceipt);
-                    // Copilot 已结束本轮回复，文件同样需要保存。/ Copilot finished this turn, so its edits still need saving.
-                    await TidyAsync(t, v);
                     return;
                 }
                 if (t.Worktree != null)
@@ -537,9 +538,10 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             Pump();
         }
 
-        /// <summary>任务回复结束后整理目标 VS；异常只记录，不影响任务状态。/ Tidies the target VS after the reply ends; errors are logged only.</summary>
+        /// <summary>AI 任务完成或待验证后整理目标 VS；异常只记录，不影响任务状态。/ Tidies the target VS after an AI task is done or awaits verification; errors do not alter its outcome.</summary>
         private async Task TidyAsync(QueuedTask t, VsInstance v)
         {
+            if (!t.FromAgent || (t.Status != QueueStatus.Done && t.Status != QueueStatus.Unverified)) return;
             if (!(_host is ITaskCompletionHost completion) || v == null) return;
             try { await completion.AfterTaskCompletedAsync(t, v); }
             catch (Exception ex) { _host.LogEvent(t.VsName, "任务后整理失败 / Post-task tidy failed: " + ex.Message); }

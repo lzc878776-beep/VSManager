@@ -8,9 +8,9 @@ using System.Text.RegularExpressions;
 namespace VSManager
 {
     /// <summary>
-    /// 把已完成任务与检测到的手动对话写入笔记本：按天建立「yyyy.M.d 任务记录」页面，页面正文就是当天的完成清单，每条记录一个详情子页面。
-    /// Records completed tasks and detected manual chats in the notebook: one "yyyy.M.d 任务记录" page per day whose body is
-    /// the day's completed list, with one detail subpage per record.
+    /// 把已结束任务与手动对话按天写入笔记本，每条记录一个详情子页面；阅读视图将索引展示为按项目分组的表格。
+    /// Records finished tasks and manual chats in daily notebook pages with one detail subpage per record;
+    /// the reading view displays the index as project-grouped tables.
     /// </summary>
     internal sealed class NotebookTaskJournal
     {
@@ -26,7 +26,7 @@ namespace VSManager
 
         private static string DayHeader(string title) => "# " + title + "\n\n点击条目查看任务详情。/ Click an entry to open its details.\n\n";
 
-        /// <summary>写入一条已完成任务，返回详情页面编号。/ Writes one completed task and returns the detail page id.</summary>
+        /// <summary>写入一条已结束任务，返回详情页面编号。/ Writes one finished task and returns the detail page id.</summary>
         public string Record(QueuedTask task, string fullReply = null)
         {
             if (task == null) throw new ArgumentNullException(nameof(task));
@@ -164,7 +164,8 @@ namespace VSManager
             sb.Append("# 任务 #").Append(task.Id).Append(" · ").Append(LinkText(summary)).Append("\r\n\r\n");
             sb.Append(BackLink(day)).Append("\r\n\r\n");
             sb.Append("| 项目 / Field | 内容 / Value |\r\n| --- | --- |\r\n");
-            sb.Append(task.Status == QueueStatus.Unverified ? "| 状态 / Status | 待验证 / Awaiting verification |\r\n" : "| 状态 / Status | 已完成 / Done |\r\n");
+            string status = task.Status == QueueStatus.Failed ? "失败 / Failed" : task.Status == QueueStatus.Unverified ? "待验证 / Awaiting verification" : "已完成 / Done";
+            sb.Append("| 状态 / Status | ").Append(status).Append(" |\r\n");
             sb.Append("| VS | ").Append(Cell(task.VsName)).Append(" |\r\n");
             sb.Append("| 创建 / Created | ").Append(Time(task.Created)).Append(" |\r\n");
             sb.Append("| 开始 / Started | ").Append(Time(task.Started)).Append(" |\r\n");
@@ -173,6 +174,7 @@ namespace VSManager
             sb.Append("| 尝试次数 / Attempts | ").Append(Math.Max(1, task.Attempts)).Append(" |\r\n");
             if (task.HasAttachments) sb.Append("| 附件 / Attachments | ").Append(Cell(string.Join("、", task.Attachments.Select(a => a?.Name ?? "")))).Append(" |\r\n");
             Body(sb, "任务内容 / Task", task.Text);
+            if (task.Status == QueueStatus.Failed) Body(sb, "失败原因 / Failure reason", task.FailureReason ?? task.Error);
             sb.Append("\r\n## Copilot 回复 / Reply\r\n\r\n").Append(Reply(string.IsNullOrWhiteSpace(fullReply) ? task.Result : fullReply)).Append("\r\n");
             return sb.ToString();
         }
