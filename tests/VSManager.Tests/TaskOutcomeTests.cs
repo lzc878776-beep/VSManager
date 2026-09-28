@@ -68,6 +68,39 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void ReadReceipt_IgnoresTrailingNoReplyNote()
+        {
+            var t = Sent();
+            Assert.AreEqual(TaskReceipt.Success, TaskStateMachine.ReadReceipt(t, "done\n" + TaskStateMachine.SuccessReceipt(t) + "\n\n(This turn has no user-facing reply.)", out string r));
+            Assert.AreEqual("done", r);
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "待处理：重启验证\r\n" + TaskStateMachine.UnverifiedReceipt(t) + "\r\n*This turn has no user-facing reply*", out _));
+            Assert.AreEqual(TaskReceipt.NeedsUser, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t) + "\n（本轮没有面向用户的回复）", out _));
+            Assert.AreEqual(TaskReceipt.None, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.SuccessReceipt(t) + "\n还有其他内容", out _));
+            StringAssert.Contains(TaskStateMachine.DispatchText(t), "回执行之后不要再输出任何文字");
+        }
+
+        [TestMethod]
+        public void UnverifiedResult_BlocksAtCompletedAndAwaitingConfirmation()
+        {
+            var t = new QueuedTask { Status = QueueStatus.Unverified };
+            Assert.IsTrue(ReleaseLevels.Blocks(ReleaseLevel.Completed, t));
+            Assert.IsTrue(ReleaseLevels.Blocks(ReleaseLevel.NeedsUser, t));
+            Assert.IsFalse(ReleaseLevels.Blocks(ReleaseLevel.Failed, t));
+            Assert.IsFalse(ReleaseLevels.Blocks(ReleaseLevel.Unlimited, t));
+            Assert.IsTrue(TaskStateMachine.Release(t));
+            Assert.IsTrue(t.Released);
+            Assert.AreEqual(QueueStatus.Unverified, t.Status);
+        }
+
+        [TestMethod]
+        public void ClipboardBusy_IsRetriedLater()
+        {
+            Assert.IsTrue(SendRetryPolicy.IsBlocked(SendRetryPolicy.ClipboardBusyPrefix + "held by another app"));
+            Assert.IsTrue(SendRetryPolicy.IsClipboardBusy(SendRetryPolicy.ClipboardBusyPrefix + "x"));
+            Assert.IsFalse(SendRetryPolicy.IsClipboardBusy("图片发送失败：x"));
+        }
+
+        [TestMethod]
         public async Task NeedsUserReceipt_CompletesAsAwaitingVerification()
         {
             var t = await RunWithAnswer("实现导出功能", q => "改动已完成，请手动测试导出按钮\n" + TaskStateMachine.NeedsUserReceipt(q));

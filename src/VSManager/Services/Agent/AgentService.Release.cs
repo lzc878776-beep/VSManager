@@ -25,7 +25,7 @@ namespace VSManager
     {
         private const string ReleaseUnsupported = "当前宿主不支持接续等级 / Continuation levels are unavailable.";
 
-        [Description("设置任务队列的接续等级（与任务清单顶栏、AI 助手顶栏的四档滑块同步并保存）：completed=已完成（只有成功才自动执行同一 VS 的下一项，待确认或失败都阻塞后续）；" +
+        [Description("设置任务队列的接续等级（与任务清单顶栏的四档滑块同步并保存）：completed=已完成（只有成功才自动执行同一 VS 的下一项，待确认或失败都阻塞后续）；" +
             "needs_user=待确认（待确认阻塞后续，成功与失败放行）；failed=失败（失败阻塞后续，成功与待确认放行）；unlimited=不限（无论结果如何都自动执行下一项，默认）。仅在用户要求调整接续策略时调用。")]
         internal async Task<string> SetReleaseLevel([Description("接续等级：completed / needs_user / failed / unlimited（也可用 已完成 / 待确认 / 失败 / 不限）")] string level)
         {

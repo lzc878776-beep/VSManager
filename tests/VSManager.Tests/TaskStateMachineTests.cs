@@ -197,9 +197,9 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void Cancel_OnlyWaitingOrRunning()
+        public void Cancel_AnyTaskExceptSendingOrCancelled()
         {
-            foreach (var s in new[] { QueueStatus.Waiting, QueueStatus.Running })
+            foreach (var s in new[] { QueueStatus.Waiting, QueueStatus.WaitingVs, QueueStatus.Running })
             {
                 var t = Waiting();
                 t.Status = s;
@@ -207,7 +207,19 @@ namespace VSManager.Tests
                 Assert.AreEqual(QueueStatus.Cancelled, t.Status);
                 Assert.AreEqual(T0, t.Finished);
             }
-            foreach (var s in new[] { QueueStatus.Sending, QueueStatus.Done, QueueStatus.Failed, QueueStatus.Cancelled })
+            // 已结束的任务（含失败）也可取消，保留原结束时间与记录 / Finished tasks (failed included) can be cancelled, keeping their finish time and record
+            foreach (var s in new[] { QueueStatus.Failed, QueueStatus.Done, QueueStatus.Unverified })
+            {
+                var t = Waiting();
+                t.Status = s;
+                t.Finished = T0.AddMinutes(-5);
+                t.Error = "boom";
+                Assert.IsTrue(TaskStateMachine.Cancel(t, T0), s);
+                Assert.AreEqual(QueueStatus.Cancelled, t.Status);
+                Assert.AreEqual(T0.AddMinutes(-5), t.Finished);
+                Assert.AreEqual("boom", t.Error);
+            }
+            foreach (var s in new[] { QueueStatus.Sending, QueueStatus.Cancelled })
             {
                 var t = Waiting();
                 t.Status = s;

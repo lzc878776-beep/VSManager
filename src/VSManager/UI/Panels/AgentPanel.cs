@@ -55,13 +55,12 @@ namespace VSManager
         private readonly List<AttachmentRef> _pending = new List<AttachmentRef>();
         private readonly Label _placeholder = new Label();
         private readonly FlatButton _btnSend, _btnStop, _btnClear, _btnSettings, _btnAttach;
-        private readonly ReleaseLevelSlider _releaseSlider = new ReleaseLevelSlider();
         private readonly Timer _renderTimer = new Timer { Interval = 60 };
         private readonly Timer _pulse = new Timer { Interval = 400 };
         private readonly ToolTip _tips = new ThemedToolTip();
         private AgentService _agent;
         private int _dots;
-        /// <summary>笔记助手模式：隐藏放行滑块与 @ 提及，快捷指令改为笔记操作。/ Note-assistant mode: no release slider or @ mentions; quick prompts work on notes.</summary>
+        /// <summary>笔记助手模式：隐藏 @ 提及，快捷指令改为笔记操作。/ Note-assistant mode: no @ mentions; quick prompts work on notes.</summary>
         private readonly bool _noteMode;
         private readonly FlatButton _btnInsert;
 
@@ -69,8 +68,6 @@ namespace VSManager
         public event Action<string> InsertRequested;
 
         public event Action SettingsRequested;
-        /// <summary>用户拖动顶栏滑块改变放行等级。/ The user changed the release level with the header slider.</summary>
-        public event Action<ReleaseLevel> ReleaseLevelChanged;
         private VsMentionInput _mentions;
         private string _mentionStatus;
         public Func<string, AttachmentRef[], MentionSubmission> MentionRequested { get; set; }
@@ -106,13 +103,6 @@ namespace VSManager
             _tips.SetToolTip(_btnSettings, "服务商 / 模型 / API Key（属性 → AI 总控助手）");
             _tips.SetToolTip(_btnClear, "清空上下文，开始新对话");
             _header.Controls.AddRange(new Control[] { _btnSettings, _btnClear });
-            _releaseSlider.ValueChanged += () =>
-            {
-                _tips.SetToolTip(_releaseSlider, SliderTip(_releaseSlider.Value));
-                ReleaseLevelChanged?.Invoke(_releaseSlider.Value);
-            };
-            _tips.SetToolTip(_releaseSlider, SliderTip(_releaseSlider.Value));
-            _header.Controls.Add(_releaseSlider);
 
             // ---- 快捷指令 ----
             _toolbarRow.Dock = DockStyle.Top;
@@ -269,20 +259,9 @@ namespace VSManager
         public void RefreshConfig()
         {
             var s = _agent?.CurrentSettings;
-            if (s != null) SetReleaseLevel(s.ReleaseLevel);
             RenderNow();
             UpdateUi();
         }
-
-        /// <summary>同步滑块显示的放行等级（不触发 ReleaseLevelChanged）。/ Syncs the slider's release level (does not raise ReleaseLevelChanged).</summary>
-        public void SetReleaseLevel(ReleaseLevel level)
-        {
-            _releaseSlider.SetValueSilently(level);
-            _tips.SetToolTip(_releaseSlider, SliderTip(level));
-        }
-
-        private static string SliderTip(ReleaseLevel level) =>
-            ReleaseLevels.Describe(level) + "\r\n拖动或点击切换（←/→ 键也可）/ Drag or click to switch (←/→ keys work too)";
 
         public void FocusInput()
         {
@@ -312,10 +291,6 @@ namespace VSManager
             int y = (_header.Height - _btnSettings.Height) / 2, right = _header.Width - Dpi.S(28);
             _btnSettings.Location = new Point(right - _btnSettings.Width, y);
             _btnClear.Location = new Point(_btnSettings.Left - Dpi.S(8) - _btnClear.Width, y);
-            _releaseSlider.Size = new Size(Dpi.S(280), Dpi.S(48));
-            _releaseSlider.Location = new Point(_btnClear.Left - Dpi.S(16) - _releaseSlider.Width, (_header.Height - _releaseSlider.Height) / 2);
-            // 窄窗口时为标题让位 / Hide on narrow windows to keep the title readable
-            _releaseSlider.Visible = !_noteMode && _releaseSlider.Left > Dpi.S(260);
         }
 
         private void RenderNow()
@@ -587,7 +562,7 @@ namespace VSManager
             g.Clear(Theme.Background);
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             var flags = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
-            int x = Dpi.S(28), right = (_releaseSlider.Visible ? _releaseSlider.Left : _btnClear.Left) - Dpi.S(16);
+            int x = Dpi.S(28), right = _btnClear.Left - Dpi.S(16);
 
             var badge = new RectangleF(x, Dpi.S(14), Dpi.S(36), Dpi.S(36));
             using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(badge, Theme.Accent, Color.FromArgb(59, 130, 246), 45f))

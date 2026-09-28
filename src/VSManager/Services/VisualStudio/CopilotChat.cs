@@ -1120,9 +1120,12 @@ namespace VSManager
         /// </summary>
         private string SendForeground(VsInstance vs, AutomationElement pane, AutomationElement edit, string text, IntPtr returnTo)
         {
+            // 完整备份剪贴板（包括用户刚截的图），发送后原样恢复 / Back up the whole clipboard (including a fresh screenshot) and restore it after sending
+            ClipboardBackup backup = null;
             string oldClip = null;
             bool clipboardTouched = false, focusAttempted = false;
-            try { if (Clipboard.ContainsText()) oldClip = Clipboard.GetText(); } catch { }
+            try { backup = new ClipboardBackup(); }
+            catch { try { if (Clipboard.ContainsText()) oldClip = Clipboard.GetText(); } catch { } }
             string clip = text.Replace("\n", "\r\n");
 
             try
@@ -1158,7 +1161,7 @@ namespace VSManager
                         if (_queueGuard != null && !SendRetryPolicy.IsBlocked(err)
                             && (err.StartsWith("无法激活", StringComparison.Ordinal) || err.StartsWith("发送前 VS 焦点已改变", StringComparison.Ordinal)))
                             return SendRetryPolicy.UserBusyPrefix + err;
-                        if (last || SendRetryPolicy.IsBlocked(err)) return err;
+                        if (last || (SendRetryPolicy.IsBlocked(err) && !SendRetryPolicy.IsClipboardBusy(err))) return err;
                         Thread.Sleep(300);
                         continue;
                     }
@@ -1210,11 +1213,13 @@ namespace VSManager
                 {
                     if (clipboardTouched)
                     {
-                        if (oldClip != null) Clipboard.SetDataObject(oldClip, true, 10, 50);
-                        else Clipboard.Clear();
+                        if (backup != null) backup.Restore();
+                        else if (oldClip != null) DirectClipboard.SetText(oldClip);
+                        else DirectClipboard.Clear();
                     }
                 }
                 catch { }
+                backup?.Dispose();
                 if (focusAttempted && returnTo != IntPtr.Zero && ForegroundIs(vs)) Native.Activate(returnTo);
                 Poke();
             }

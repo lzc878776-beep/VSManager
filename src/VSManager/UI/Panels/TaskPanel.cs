@@ -574,8 +574,9 @@ if (c != null)
                 release.Visible = has && TaskStateMachine.IsHoldOutcome(t) && _queue != null && ReleaseLevels.Blocks(_queue.ReleaseLevel, t);
                 release.Enabled = release.Visible && !t.Released;
                 release.Text = has && t.Released ? "已放行 / Released" : "放行后续任务 / Release successors";
-                cancel.Visible = cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
-                cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
+                cancel.Visible = cancel.Enabled = has && TaskStateMachine.CanCancel(t);
+                cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）"
+                    : has && (t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status)) ? "取消任务（保留记录）/ Cancel (keep record)" : "取消任务";
                 remove.Visible = has;
                 remove.Enabled = has && t.Status != QueueStatus.Sending;
             };

@@ -28,7 +28,7 @@ namespace VSManager
         /// </summary>
         public const string Unverified = "unverified";
 
-        /// <summary>已产出结果（已完成或未验证），不阻塞后续任务。/ Produced a result (done or unverified); never blocks successors.</summary>
+        /// <summary>已产出结果（已完成或未验证）；是否阻塞后续由接续等级决定。/ Produced a result (done or unverified); whether it blocks successors depends on the continuation level.</summary>
         public static bool Delivered(string s) => s == Done || s == Unverified;
 
         public static bool Known(string s) => Active(s) || s == Done || s == Unverified || s == Failed || s == Cancelled;

@@ -26,7 +26,8 @@ namespace VSManager
             try { backup = new ClipboardBackup(); }
             catch (Exception ex) when (ex is ExternalException || ex is InvalidOperationException || ex is NotSupportedException)
             {
-                return "无法备份剪贴板，未发送图片：" + ex.Message;
+                // 剪贴板暂被占用：尚未改动 VS，稍后带图片重试，而不是退化为只发文字 / Clipboard busy: VS is untouched, so retry later with the images instead of falling back to text only
+                return SendRetryPolicy.ClipboardBusyPrefix + "无法备份剪贴板，未发送图片，稍后自动重试 / Could not back up the clipboard; retrying later: " + ex.Message;
             }
 
             using (backup)
@@ -86,7 +87,12 @@ namespace VSManager
                 string blocked = GuardQueueInput(vs, pane, edit);
                 if (blocked != null) return blocked;
                 string prompt = string.IsNullOrWhiteSpace(text) ? "请分析这些图片。" : text;
-                Clipboard.SetDataObject(prompt.Replace("\n", "\r\n"), true, 10, 50);
+                // 直接写入剪贴板；此时尚未粘贴任何内容，被占用时稍后重试 / Direct write; nothing is pasted yet, so a busy clipboard retries later
+                try { DirectClipboard.SetText(prompt.Replace("\n", "\r\n")); }
+                catch (ExternalException ex)
+                {
+                    return SendRetryPolicy.ClipboardBusyPrefix + "剪贴板被其他程序占用，稍后自动重试，未发送图片 / The clipboard is busy; retrying later, images not sent: " + ex.Message;
+                }
                 clipboardVersion = GetClipboardSequenceNumber();
                 clipboardChanged = true;
                 if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送图片";
@@ -101,7 +107,7 @@ namespace VSManager
                 {
                     if (!ForegroundIs(vs) || !HasFocus(edit) || GetClipboardSequenceNumber() != clipboardVersion)
                         return "焦点或剪贴板已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
-                    using (var bitmap = image.OpenBitmap()) Clipboard.SetImage(bitmap);
+                    using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
                     clipboardVersion = GetClipboardSequenceNumber();
                     if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
                     blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
@@ -218,8 +224,19 @@ namespace VSManager
 
             public void Restore()
             {
-                if (_empty) Clipboard.Clear();
-                else Clipboard.SetDataObject(_data, true, 10, 50);
+                if (_empty) { DirectClipboard.Clear(); return; }
+                var formats = _data.GetFormats(false);
+                // 常见的纯图片 / 纯文字内容直接写回（例如用户刚截的图），其他格式仍按原样恢复
+                // Plain images / text (e.g. a fresh screenshot) are written back directly; other formats are restored as they were
+                bool onlyImageOrText = formats.All(f => f == DataFormats.Bitmap || f == DataFormats.Dib || f == "DeviceIndependentBitmap" || f == "Format17" || f == "PNG"
+                    || f == DataFormats.UnicodeText || f == DataFormats.Text || f == DataFormats.OemText || f == DataFormats.Locale || f == "System.String");
+                if (onlyImageOrText && _data.GetData(DataFormats.Bitmap, false) is Image image) { DirectClipboard.SetImage(image); return; }
+                if (onlyImageOrText && !formats.Any(f => f == DataFormats.Bitmap || f == DataFormats.Dib) && _data.GetData(DataFormats.UnicodeText, false) is string text)
+                {
+                    DirectClipboard.SetText(text);
+                    return;
+                }
+                Clipboard.SetDataObject(_data, true, 30, 100);
             }
 
             public void Dispose()

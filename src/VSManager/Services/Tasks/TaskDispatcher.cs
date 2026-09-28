@@ -462,7 +462,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                         ((needsUser || unverified) && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
                         (unverified ? "\n结论：未验证（不是失败）。Copilot 说明功能已实现，只是尚未在运行中的程序里实际验证；请按「未验证」汇报并列出未验证项，不要判为失败，也不要说成已实测成功。/ Verdict: unverified, not failed. The work is implemented but not yet verified in the running app; report it as unverified with the pending checks, neither as a failure nor as a verified success." : "") +
                         (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
-                        (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
+                        ((needsUser || unverified) && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");

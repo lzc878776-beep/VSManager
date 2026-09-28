@@ -109,11 +109,11 @@ namespace VSManager
             switch (level)
             {
                 case ReleaseLevel.Completed:
-                    return "接续等级「已完成」：只有成功完成才自动执行下一项，待确认或失败都会阻塞同一 VS 的后续任务，等待用户处理 / "
-                        + "Continuation level \"Completed\": only a successful task releases the next one; awaiting confirmation or failure blocks successors on the same VS until the user handles it";
+                    return "接续等级「已完成」：只有成功完成才自动执行下一项，待确认（含未验证）或失败都会阻塞同一 VS 的后续任务，等待用户处理 / "
+                        + "Continuation level \"Completed\": only a successful task releases the next one; awaiting confirmation (unverified included) or failure blocks successors on the same VS until the user handles it";
                 case ReleaseLevel.NeedsUser:
-                    return "接续等级「待确认」：需要用户测试或确认的结果会阻塞同一 VS 的后续任务，等待用户处理；成功与失败自动执行下一项 / "
-                        + "Continuation level \"Awaiting confirmation\": a result that needs user testing or confirmation blocks successors on the same VS until the user handles it; success and failure release the next one";
+                    return "接续等级「待确认」：需要用户测试或确认的结果（待验证、未验证）会阻塞同一 VS 的后续任务，等待用户处理；成功与失败自动执行下一项 / "
+                        + "Continuation level \"Awaiting confirmation\": a result that needs user testing or confirmation (awaiting verification or unverified) blocks successors on the same VS until the user handles it; success and failure release the next one";
                 case ReleaseLevel.Failed:
                     return "接续等级「失败」：失败会阻塞同一 VS 的后续任务，等待用户处理；已完成与待确认自动执行下一项 / "
                         + "Continuation level \"Failed\": a failure blocks successors on the same VS until the user handles it; completed and awaiting-confirmation tasks release the next one";
@@ -140,7 +140,8 @@ namespace VSManager
         {
             if (finished == null) return false;
             if (finished.Status == QueueStatus.Failed) return BlocksFailures(level);
-            if (finished.Status == QueueStatus.Done && finished.NeedsUser) return BlocksNeedsUser(level);
+            // 未验证与待用户验证同属「待确认」/ Unverified counts as awaiting confirmation, like awaiting user verification
+            if ((finished.Status == QueueStatus.Done && finished.NeedsUser) || finished.Status == QueueStatus.Unverified) return BlocksNeedsUser(level);
             return false;
         }
 

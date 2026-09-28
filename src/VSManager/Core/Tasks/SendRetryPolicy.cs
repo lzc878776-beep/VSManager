@@ -34,8 +34,16 @@ namespace VSManager
 
         public static bool IsUserBusy(string result) => result != null && result.StartsWith(UserBusyPrefix, StringComparison.Ordinal);
 
+        /// <summary>
+        /// 剪贴板被其他程序（如剪贴板同步 / 云桌面代理）占用，尚未向 VS 粘贴任何内容；仅在提交前返回，稍后自动重试。
+        /// The clipboard is held by another program (e.g. a clipboard sync / cloud-desktop agent) and nothing has been pasted into VS yet; only returned before submission and retried later.
+        /// </summary>
+        public const string ClipboardBusyPrefix = "等待剪贴板空闲：";
+
+        public static bool IsClipboardBusy(string result) => result != null && result.StartsWith(ClipboardBusyPrefix, StringComparison.Ordinal);
+
         public static bool IsBlocked(string result) =>
-            ManualChatProtection.IsWait(result) || IsUserBusy(result)
+            ManualChatProtection.IsWait(result) || IsUserBusy(result) || IsClipboardBusy(result)
             || (result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal));
 
         /// <summary>最多尝试次数。/ Maximum number of attempts.</summary>

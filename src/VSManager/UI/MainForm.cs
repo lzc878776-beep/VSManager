@@ -293,7 +293,6 @@ namespace VSManager
 			_agentPanel.Bind(_agent);
 			_agentPanel.RefreshConfig();
 			_agentPanel.SettingsRequested += OpenSettings;
-			_agentPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 			_taskPanel.SetReleaseLevel(_settings.ReleaseLevel);
 			_taskPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 

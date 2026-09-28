@@ -8,15 +8,34 @@ namespace VSManager
     /// 任务队列放行等级：顶栏滑块、任务菜单与 AI 工具共用的宿主实现。
     /// Task queue release level: host implementation shared by the header slider, the task menu and the AI tools.
     /// </summary>
-    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost
+    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentTaskControlHost
     {
+        Task<string> IAgentTaskControlHost.DescribeTask(int id) => OnUi(() =>
+        {
+            var t = _tasks.Find(id);
+            if (t == null) return null;
+            string note = t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason) ? "\r\n失败原因 / Reason：" + TextUtil.Clip(t.FailureReason, 300)
+                : TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote) ? "\r\n待处理 / Pending：" + TextUtil.Clip(t.PendingNote, 300) : "";
+            return $"#{t.Id} · {StatusText(t)} · {t.VsName}\r\n{TextUtil.Clip(t.Text, 400)}{note}";
+        });
+
+        Task<string> IAgentTaskControlHost.DeleteTask(int id) => OnUi(() =>
+        {
+            var t = _tasks.Find(id);
+            if (t == null) return "没有任务 #" + id + " / No task #" + id;
+            if (t.Worktree != null) return "Worktree 记录用于批次计数和合并屏障，不能删除，请改用 cancel_task / Worktree ledger entries cannot be deleted; use cancel_task";
+            if (!_tasks.Remove(t.Id)) return $"任务 #{id} 当前{StatusText(t)}，无法删除 / Task #{id} cannot be deleted in its current state";
+            if (TaskHideList.Remove(_settings.HiddenResentTasks, id)) _settings.Save();
+            AppLog.Write(AppLog.TasksFile, $"AI 助手经用户确认删除任务 #{id} / Task #{id} deleted by the assistant after user confirmation");
+            _taskPanel.RefreshItems();
+            return $"已从任务清单删除任务 #{id}（归档保留）/ Task #{id} deleted from the list (archive kept)";
+        });
         /// <summary>切换放行等级：保存设置、同步滑块、刷新任务清单并重新调度。/ Switches the level: saves, syncs the slider, refreshes the list and re-pumps.</summary>
         private string ApplyReleaseLevel(ReleaseLevel level, string by)
         {
             var old = _settings.ReleaseLevel;
             _settings.ReleaseLevel = level;
             _settings.Save();
-            _agentPanel.SetReleaseLevel(level);
             _taskPanel.SetReleaseLevel(level);
             _taskPanel.RefreshItems();
             string text = ReleaseLevels.Describe(level);

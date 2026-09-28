@@ -124,7 +124,7 @@ VSManager/
 
 ### 分层架构
 
-- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 未验证 / 失败 / 已取消；「未验证」`unverified` 表示功能已实现、构建 / 测试通过，仅尚未在运行中的程序里实际验证，不阻塞后续任务，可右键「标记为已验证」或在任务清单旁的「测试清单」逐项勾选（`TaskTestChecklist`，全部勾选即完成）转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
+- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 未验证 / 失败 / 已取消；「未验证」`unverified` 表示功能已实现、构建 / 测试通过，仅尚未在运行中的程序里实际验证，在接续等级中按「待确认」处理（「已完成」「待确认」两挡会暂停后续），可右键「标记为已验证」或在任务清单旁的「测试清单」逐项勾选（`TaskTestChecklist`，全部勾选即完成）转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
 - **Services（服务层）**：VS 管理、Copilot 消息发送、AI 助手、语音、归档、发布。`TaskDispatcher` 负责任务调度，通过 `ITaskDispatchHost` 与主窗口交互；外部依赖通过 `IVsOperations`、`ICopilotChannel`、`IVoiceService`、`IAiClientFactory` 抽象。
 - **Infrastructure（基础设施层）**：Win32 封装、配置与数据目录、文件系统抽象 `IFileSystem` 与原子写入 `AtomicFile`、统一日志 `AppLog`（含未处理异常记录到 crash.log）、HTTP 客户端创建。
 - **UI（界面层）**：窗体与控件，只负责展示与交互，业务动作委托给服务层。
@@ -455,7 +455,7 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 
 ### 接续等级
 
-任务清单顶栏（以及 AI 总控助手顶栏）有一个四档滑块（点击、拖动或 ←/→ 键切换，保存在 settings.json 的 `TaskContinueLevel`），决定同一 VS 的前序任务以什么结果结束时自动执行下一项。挡位名表示「哪种结果会阻塞队列、等你处理」，避免需要你处理的内容被后续任务覆盖对话上下文：
+任务清单顶栏有一个四档滑块（点击、拖动或 ←/→ 键切换，保存在 settings.json 的 `TaskContinueLevel`），决定同一 VS 的前序任务以什么结果结束时自动执行下一项。挡位名表示「哪种结果会阻塞队列、等你处理」，避免需要你处理的内容被后续任务覆盖对话上下文：
 
 | 挡位 | 已完成 | 待确认（待验证） | 失败 |
 | --- | --- | --- | --- |
@@ -644,7 +644,7 @@ All source files still share the single namespace `VSManager`; folders only grou
 
 ### Layered architecture
 
-- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / unverified / failed / cancelled; `unverified` means implemented with build / tests passing but not yet verified in the running app, never blocks successors, and can be turned into done via "Mark as verified" or by checking off every item in the "Test checklist" beside the task list (`TaskTestChecklist`); older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
+- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / unverified / failed / cancelled; `unverified` means implemented with build / tests passing but not yet verified in the running app, counts as awaiting confirmation for the continuation level (the Completed and Awaiting confirmation levels pause successors), and can be turned into done via "Mark as verified" or by checking off every item in the "Test checklist" beside the task list (`TaskTestChecklist`); older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
 - **Services**: VS management, Copilot messaging, AI assistant, voice, archive and publishing. `TaskDispatcher` dispatches tasks and talks to the main window through `ITaskDispatchHost`; external dependencies are abstracted by `IVsOperations`, `ICopilotChannel`, `IVoiceService` and `IAiClientFactory`.
 - **Infrastructure**: Win32 wrappers, settings and data folder, the file-system abstraction `IFileSystem` with atomic writes `AtomicFile`, the unified log `AppLog` (unhandled exceptions go to crash.log) and HTTP client creation.
 - **UI**: forms and controls only handle display and interaction; business actions are delegated to the service layer.
@@ -934,7 +934,7 @@ The receipt rules are appended to the end of every task message. The VS 2026 Cop
 
 ### Continuation level
 
-The task list header (and the AI assistant header) has a four-stop slider (click, drag or use ←/→; saved as `TaskContinueLevel` in settings.json). It decides which predecessor outcomes let the next task on the same VS run automatically. Each stop names the outcome that blocks the queue until you handle it, so content that needs you is not buried by later tasks in the conversation:
+The task list header has a four-stop slider (click, drag or use ←/→; saved as `TaskContinueLevel` in settings.json). It decides which predecessor outcomes let the next task on the same VS run automatically. Each stop names the outcome that blocks the queue until you handle it, so content that needs you is not buried by later tasks in the conversation:
 
 | Level | Completed | Awaiting confirmation | Failed |
 | --- | --- | --- | --- |

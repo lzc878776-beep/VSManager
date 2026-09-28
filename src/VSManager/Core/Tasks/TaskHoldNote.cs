@@ -71,7 +71,7 @@ namespace VSManager
             string pending = !string.IsNullOrEmpty(t.PendingNote) ? t.PendingNote : Pending(t.Result);
             if (t.Status == QueueStatus.Unverified)
                 return pending
-                    + "\n\n处理 / Next：在运行环境中验证后，在测试清单勾选或右键标记已验证；未验证不阻塞后续任务 / verify in the running app, then check the test checklist or mark it verified; unverified never blocks successors";
+                    + "\n\n处理 / Next：在运行环境中验证后，在测试清单勾选或右键标记已验证；接续等级为「已完成」或「待确认」时未验证会暂停后续任务，可右键「放行后续任务」/ verify in the running app, then check the test checklist or mark it verified; at the \"Completed\" or \"Awaiting confirmation\" level an unverified task pauses successors until released";
             return pending
                 + "\n\n处理 / Next：验证通过后右键「放行后续任务」；有问题时右键「补充信息后重试…」/ once verified, right-click \"Release successors\"; if not, \"Retry with info…\"";
         }

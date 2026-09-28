@@ -115,7 +115,7 @@ namespace VSManager
             + "；改动已完成，但需要用户手动测试、运行或确认（你无法自行验证）时，以「" + TaskHoldNote.PendingTag + "」开头单独成段，列出需要用户测试、确认或处理的内容后输出 " + NeedsUserReceipt(t)
             + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，以「" + TaskHoldNote.ReasonTag + "」开头单独成段说明失败原因，再说明已完成的部分与建议的下一步，然后输出 " + FailureReceipt(t)
             + "。输出未验证或需要用户验证的回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式。"
-            + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执。";
+            + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执；回执行之后不要再输出任何文字（包括括号内的补充说明）。";
 
         public static bool TryReadSuccess(QueuedTask t, string answer, out string result) =>
             ReadReceipt(t, answer, out result) == TaskReceipt.Success;
@@ -127,7 +127,7 @@ namespace VSManager
         /// </summary>
         public static TaskReceipt ReadReceipt(QueuedTask t, string answer, out string result)
         {
-            result = answer?.Trim();
+            result = StripTrailingNoReplyNote(answer)?.Trim();
             if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return TaskReceipt.None;
             string text = result;
             bool EndsWith(string receipt, out string body)
@@ -171,6 +171,31 @@ namespace VSManager
             }
             return TaskReceipt.None;
         }
+
+        /// <summary>
+        /// Copilot 有时在回执之后自动追加「(This turn has no user-facing reply.)」一类的占位说明（最后一次输出没有正文时生成），
+        /// 它不是任务内容；读取回执前去掉末尾的这类行，回执仍须是其余内容的最后一行。
+        /// Copilot sometimes appends a placeholder such as "(This turn has no user-facing reply.)" after the receipt (generated when
+        /// its last output has no text). It is not task content, so such trailing lines are dropped before reading the receipt;
+        /// the receipt must still be the last line of what remains.
+        /// </summary>
+        internal static string StripTrailingNoReplyNote(string answer)
+        {
+            if (string.IsNullOrEmpty(answer)) return answer;
+            string text = answer.TrimEnd();
+            while (true)
+            {
+                int nl = text.LastIndexOf('\n');
+                string last = text.Substring(nl + 1);
+                if (!NoReplyNote.IsMatch(last)) return text;
+                if (nl < 0) return "";
+                text = text.Substring(0, nl).TrimEnd();
+            }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex NoReplyNote = new System.Text.RegularExpressions.Regex(
+            @"^\s*[\(（\[【_*]*\s*(this\s+turn\s+has\s+no\s+user[-\s]?facing\s+(reply|response|output|message)|no\s+user[-\s]?facing\s+(reply|response|output|message)|本轮(对话)?(没有|无)(面向用户的)?(回复|输出|消息))[^\n]{0,40}?[\)）\]】_*\s\.。]*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
         /// <summary>把回执归并为成功 / 未验证 / 失败三类。/ Collapses the receipt into succeeded / unverified / failed.</summary>
         public static TaskReplyOutcome ReadOutcome(QueuedTask t, string answer, out string result)
@@ -268,14 +293,25 @@ namespace VSManager
             return true;
         }
 
-        /// <summary>排队 / 等待目标 VS / 执行中 → 已取消。/ waiting / waiting_vs / running → cancelled.</summary>
+        /// <summary>
+        /// 取消任务：排队
+        /// 发送中的任务可能已送达，不能取消；已取消的不重复取消。
+        /// Cancels a task: waiting / waiting for target / running (tracking stops), and finished failed / unverified / done tasks
+        /// (their result and failure record are kept; they no longer block successors). Sending tasks may already be delivered and
+        /// cannot be cancelled; cancelled tasks are not cancelled again.
+        /// </summary>
         public static bool Cancel(QueuedTask t, DateTime now)
         {
-            if (t == null || (t.Status != QueueStatus.Waiting && t.Status != QueueStatus.WaitingVs && t.Status != QueueStatus.Running)) return false;
+            if (!CanCancel(t)) return false;
+            bool finished = t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status);
             t.Status = QueueStatus.Cancelled;
-            t.Finished = now;
+            if (!finished || t.Finished == null) t.Finished = now;
             return true;
         }
+
+        /// <summary>是否可以取消（发送中与已取消除外）。/ Whether the task can be cancelled (not while sending or already cancelled).</summary>
+        public static bool CanCancel(QueuedTask t) => t != null && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs
+            || t.Status == QueueStatus.Running || t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status));
 
         /// <summary>
         /// 等待目标 VS → 排队：改用已打开 VS 的键与名称，并在 <paramref name="notBefore"/> 之后才发布（等待解决方案加载）。
@@ -311,9 +347,9 @@ namespace VSManager
             t.TestItems = null;
         }
 
-        /// <summary>是否为可放行 / 可补充的结束结果：失败，或已完成但待验证。/ Whether the outcome can be released / supplemented: failed, or done but awaiting verification.</summary>
+        /// <summary>是否为可放行 / 可补充的结束结果：失败、未验证，或已完成但待验证。/ Whether the outcome can be released / supplemented: failed, unverified, or done but awaiting verification.</summary>
         public static bool IsHoldOutcome(QueuedTask t) =>
-            t != null && (t.Status == QueueStatus.Failed || (t.Status == QueueStatus.Done && t.NeedsUser));
+            t != null && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Unverified || (t.Status == QueueStatus.Done && t.NeedsUser));
 
         /// <summary>
         /// 放行：失败或待验证的任务不再暂停后续，结果保持不变。

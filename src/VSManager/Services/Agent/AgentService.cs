@@ -287,6 +287,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetVsNote, "set_vs_note"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)DeleteTask, "delete_task"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
@@ -709,7 +710,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "open_copilot": return "打开" + target + "的对话助手 / Open Copilot chat";
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
-                case "cancel_task": return "取消任务 #" + Arg("id");
+                case "cancel_task": return "取消任务 #" + Arg("id") + "（需用户确认）/ Cancel task (confirmation required)";
+                case "delete_task": return "删除任务 #" + Arg("id") + "（需用户确认）/ Delete task (confirmation required)";
                 case "set_release_level":
                 {
                     var level = ReleaseLevels.TryParse(Arg("level"));
@@ -893,9 +895,6 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
 
         [Description("查看任务清单：各任务的编号、目标 VS、状态（排队 / 执行中 / 已完成 / 失败 / 已取消）与结果摘要。")]
         private async Task<string> ListTasks() => Truncate(await _host.ListTasks(), MaxToolText);
-
-        [Description("取消任务清单中排队的任务（执行中的任务只停止跟踪，不会停止 Copilot；需要停止请用 stop_copilot）。")]
-        private Task<string> CancelTask([Description("任务编号，如 3")] int id) => _host.CancelTask(id);
 
         [Description("等待指定 VS 的 Copilot 完成当前任务，返回其最后一条回复。")]
         private async Task<string> WaitForVs(

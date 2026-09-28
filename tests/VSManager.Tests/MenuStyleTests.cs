@@ -248,22 +248,24 @@ namespace VSManager.Tests
                     list.SelectedItem = task;
                     var menu = (GroupedContextMenuStrip)list.ContextMenuStrip;
                     Prepare(menu);
-                    string cancelText = status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
+                    bool finished = status == QueueStatus.Done || status == QueueStatus.Failed || status == QueueStatus.Unverified;
+                    string cancelText = status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : finished ? "取消任务（保留记录）/ Cancel (keep record)" : "取消任务";
                     bool waiting = status == QueueStatus.Waiting || status == QueueStatus.WaitingVs;
                     bool ended = status == QueueStatus.Failed || status == QueueStatus.Cancelled || status == QueueStatus.Unverified;
+                    bool cancellable = waiting || status == QueueStatus.Running || finished;
                     var expected = new List<string>();
                     if (waiting) expected.Add("重新检查并推送 / Recheck and send");
                     if (ended) expected.Add("手动重新排队 / Requeue manually");
-                    if (status == QueueStatus.Failed) expected.Add("补充信息后重试… / Retry with info…");
+                    if (status == QueueStatus.Failed || status == QueueStatus.Unverified) expected.Add("补充信息后重试… / Retry with info…");
                     if (status == QueueStatus.Unverified) expected.Add("标记为已验证 / Mark as verified");
-                    if (waiting || status == QueueStatus.Running) expected.Add(cancelText);
+                    if (cancellable) expected.Add(cancelText);
                     expected.AddRange(new[] { "查看该 VS 的对话", "复制任务内容", "从清单中删除" });
                     CollectionAssert.AreEqual(expected, AvailableText(menu));
                     foreach (var removed in new[] { "清除已完成（仅界面）", "显示已清除的历史", "撤销清除（恢复显示全部历史）", "清除全部手动显示顺序 / Reset all manual display ordering" })
                         Assert.IsFalse(menu.Items.Cast<ToolStripItem>().Any(i => i.Text == removed), removed);
                     Assert.AreEqual(waiting, Find(menu, "重新检查并推送 / Recheck and send").Enabled);
                     Assert.AreEqual(ended, Find(menu, "手动重新排队 / Requeue manually").Enabled);
-                    Assert.AreEqual(status == QueueStatus.Waiting || status == QueueStatus.WaitingVs || status == QueueStatus.Running, Find(menu, cancelText).Enabled);
+                    Assert.AreEqual(cancellable, Find(menu, cancelText).Enabled);
                     Assert.AreEqual(status != QueueStatus.Sending, Find(menu, "从清单中删除").Enabled);
                     var actions = new List<string>();
                     panel.ActionRequested += (t, action) => { Assert.AreSame(task, t); actions.Add(action); };

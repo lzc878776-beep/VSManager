@@ -74,11 +74,13 @@ namespace VSManager
         /// <summary>写入剪贴板（带重试，剪贴板可能被其他程序短暂占用）。/ Writes the clipboard with retries (another program may hold it briefly).</summary>
         private static string SetClipboardText(string text)
         {
-            try { Clipboard.SetDataObject(text, true, 20, 100); return null; }
-            catch (Exception ex) when (ex is ExternalException || ex is ThreadStateException)
+            // 直接写入，避免 OLE 延迟渲染被剪贴板监听程序长时间占住 / Write directly so clipboard listeners cannot hold OLE delayed rendering for long
+            try { DirectClipboard.SetText(text); return null; }
+            catch (Exception ex) when (ex is ExternalException || ex is ThreadStateException || ex is OutOfMemoryException)
             {
                 T("前台：写入剪贴板失败 / clipboard write failed：" + ex.Message);
-                return "写入剪贴板失败（可能被其他程序占用）/ Could not write the clipboard (it may be in use by another program): " + ex.Message;
+                // 尚未粘贴任何内容，可以稍后安全重试 / Nothing has been pasted yet, so a later retry is safe
+                return SendRetryPolicy.ClipboardBusyPrefix + "写入剪贴板失败（可能被其他程序占用），稍后自动重试 / Could not write the clipboard (it may be in use by another program); retrying later: " + ex.Message;
             }
         }
 
