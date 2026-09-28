@@ -268,9 +268,11 @@ namespace VSManager
         }
 
         private string FailurePolicyText => "Worktree 合并失败或取消始终阻塞该工作线，请处理后重试同一任务 / Failed or cancelled worktree integration always blocks its lane; resolve and retry the same task. "
-            + (_tasks.ReleaseLevel == ReleaseLevel.Failed
-                ? "放行等级「失败」：后续排队任务可继续；失败记录保留 / Release level \"Failed\": queued successors may continue and failure history is retained"
-                : $"放行等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：未被取代、未放行的失败会暂停该目标后续任务；失败记录保留 / Release level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": unsuperseded, unreleased failures pause this target's successors; failure history is retained");
+            + (_tasks.ReleaseLevel == ReleaseLevel.Unlimited
+                ? "接续等级「不限」：后续排队任务可继续；失败记录保留 / Continuation level \"Unlimited\": queued successors may continue and failure history is retained"
+                : !ReleaseLevels.BlocksFailures(_tasks.ReleaseLevel)
+                    ? $"接续等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：失败不阻塞，后续排队任务可继续；失败记录保留 / Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": failures do not block, queued successors may continue and failure history is retained"
+                    : $"接续等级「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：未被取代、未放行的失败会暂停该目标后续任务，等待用户处理；失败记录保留 / Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": unsuperseded, unreleased failures pause this target's successors until the user handles them; failure history is retained");
 
         /// <summary>当前等级下该任务结果是否正在暂停同一目标的后续任务。/ Whether this outcome currently pauses successors on the same target.</summary>
         private bool HoldsSuccessors(QueuedTask t) =>
@@ -304,14 +306,20 @@ namespace VSManager
             _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
             if (t.FromAgent)
             {
-                string reply = FailureKind.IsContent(t.FailureKind) && !string.IsNullOrWhiteSpace(t.Result)
+                bool content = FailureKind.IsContent(t.FailureKind);
+                string reply = (content || t.FailureKind == FailureKind.Interrupted) && !string.IsNullOrWhiteSpace(t.Result)
                     ? "\nCopilot 回复 / Copilot reply：" + TextUtil.Clip(t.Result, 1200) : "";
+                string advice = FailureKind.IsRecoverable(t.FailureKind)
+                    ? TaskFailureAnalyzer.RecoveryNote(t) + "\n"
+                        + (HoldsSuccessors(t) ? "该失败正在暂停同一 VS 的后续任务 / This failure is pausing successors on the same VS. " : "")
+                        + "不要重复发布已排队任务 / Do not duplicate queued tasks."
+                    : (content ? TaskFailureAnalyzer.AttemptsNote(_tasks.Items, t) + "\n" : "") + (ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) ? BlockedFailureAdvice(t) :
+                        "不要重复发布已排队任务；未经用户同意不要重试 / Do not duplicate queued tasks; do not retry without the user's consent.");
                 _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName} / Task #{t.Id} failed",
                     $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」失败 / failed（{FailureKind.Label(t.FailureKind)}）：{TextUtil.Clip(error, 300)}。" +
-                    $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" + reply + "\n" +
-                    TaskFailureAnalyzer.Guidance(t) + "\n" +
-                    (ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) ? BlockedFailureAdvice(t) :
-                    "不要重复发布已排队任务；未经用户同意不要重试 / Do not duplicate queued tasks; do not retry without the user's consent."));
+                    $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" +
+                    (string.IsNullOrEmpty(t.FailureReason) ? "" : "\n失败原因 / Failure reason：" + t.FailureReason) + reply + "\n" +
+                    TaskFailureAnalyzer.Guidance(t) + "\n" + advice);
             }
         }
 
@@ -321,7 +329,8 @@ namespace VSManager
         /// </summary>
         private string BlockedFailureAdvice(QueuedTask t)
         {
-            int left = TaskStateMachine.MaxSupplements - t.SupplementCount;
+            int left = Math.Min(TaskStateMachine.MaxSupplements - t.SupplementCount,
+                TaskFailureAnalyzer.MaxAiAttempts - TaskFailureAnalyzer.LineageAttempts(_tasks.Items, new[] { t }));
             string waiting = HoldsSuccessors(t) ? "该失败正在暂停同一 VS 的后续任务 / This failure is pausing successors on the same VS. " : "";
             return waiting +
                 "请根据 Copilot 回复判断：① 若失败原因明确且你能从已有信息（回复、对话、目录、常识）补齐所需内容，" +
@@ -374,7 +383,11 @@ namespace VSManager
                 if (receipt == TaskReceipt.None)
                 {
                     t.Result = TextUtil.Clip(answer, 1500);
-                    Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300), FailureKind.NoReceipt);
+                    // 空回复或 Copilot 自身的错误 / 中断提示：本轮没执行完，不算任务内容失败 / Empty reply or Copilot's own error notice: the run did not finish; not a content failure
+                    if (TaskFailureAnalyzer.LooksInterrupted(answer))
+                        Fail(t, "Copilot 本轮未执行完（网络 / 服务错误或被中断）/ Copilot's run did not finish (network / service error or interrupted): " + TextUtil.Clip(answer, 300), FailureKind.Interrupted);
+                    else
+                        Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300), FailureKind.NoReceipt);
                     return;
                 }
                 if (t.Worktree != null)
@@ -412,9 +425,10 @@ namespace VSManager
                     _host.NotifyAgent($"📋 任务 #{t.Id} 已完成{(needsUser ? "（待用户验证）" : "")} · {t.VsName}（{took}）/ Task completed{(needsUser ? " (awaiting verification)" : "")}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
+                        (needsUser && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
                         (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
                         (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
-                            ? "\n放行等级为「已完成」：同一 VS 的后续任务已暂停，用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Release level \"Completed\": successors on the same VS are paused; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
+                            ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
                 }

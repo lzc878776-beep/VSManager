@@ -98,6 +98,8 @@ namespace VSManager
 
 		public MainForm()
 		{
+			// AI 自主执行次数上限随设置实时生效 / The AI self-run limit follows the setting live
+			TaskFailureAnalyzer.AttemptsLimitSource = () => _settings.AiRetryLimit;
 			Text = "多 VS 管理工具";
 			Font = Theme.Regular;
 			BackColor = Theme.Background;
@@ -290,6 +292,8 @@ namespace VSManager
 			_agentPanel.RefreshConfig();
 			_agentPanel.SettingsRequested += OpenSettings;
 			_agentPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
+			_taskPanel.SetReleaseLevel(_settings.ReleaseLevel);
+			_taskPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 
 			_sidebar.Controls.Add(_list);
 			_sidebar.Controls.Add(sideHint);
@@ -1375,12 +1379,12 @@ namespace VSManager
 		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null)
 		{
 			if (v == null || string.IsNullOrWhiteSpace(text)) return "目标或任务内容无效 / Invalid target or task text";
-			if (source == "AI" && TaskFailureAnalyzer.FindVerbatimResend(_tasks.Items, v.Key, text) is QueuedTask same)
-				return $"未入队：任务 #{same.Id} 曾以相同内容失败（{FailureKind.Label(same.FailureKind)}），原样重发大概率仍会失败。"
-					+ $"请先根据其 Copilot 回复判断原因：遗留问题或需用户测试时向用户说明；确需重试时以「重发 @{same.Id}：」发布针对失败原因修正后的任务，或让用户在任务清单中重新排队。"
-					+ $"Copilot 回复：{Clip(same.Result ?? same.Error, 400)} / "
-					+ $"Not queued: task #{same.Id} already failed with the same text; a verbatim resend would likely fail again. Analyze its Copilot reply first: "
-					+ $"report pre-existing issues or needed user tests to the user; if a retry is needed, publish a revised task prefixed 'resend @{same.Id}:' that addresses the cause, or let the user requeue it.";
+			// AI 重发：拒绝近似原样的重复与超过自主重试上限的需求 / AI resends: refuse near-verbatim repeats and requests over the self-retry limit
+			if (source == "AI" && TaskFailureAnalyzer.CheckAiResend(_tasks.Items, v.Key, text) is string refused)
+			{
+				AppLog.Write(AppLog.TasksFile, "拒绝 AI 重发 / Refused AI resend: " + Clip(refused, 200));
+				return refused;
+			}
 			string name = NameOf(v);
 			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
 			var q = duplicate ?? (attachments != null && attachments.Length > 0
@@ -1394,11 +1398,7 @@ namespace VSManager
 			string result = $"已加入任务清单：@{q.Id}「{name}」（{StatusText(q)}，前面 {_tasks.Ahead(q)} 个）；按编号调度 / "
 				+ $"Accepted into task list: @{q.Id}; {_tasks.Ahead(q)} ahead, dispatched in ID order";
 			result += "；" + startNote;
-			result += _settings.ReleaseLevel == ReleaseLevel.Failed
-				? "；前序结束后自动推送，失败跳过 / Dispatch after predecessors finish, skipping failures"
-				: _settings.ReleaseLevel == ReleaseLevel.NeedsUser
-					? "；失败前序会暂停后续 / Failed predecessors pause successors"
-					: "；失败或待验证的前序会暂停后续 / Failed or awaiting-verification predecessors pause successors";
+			result += "；" + ReleaseLevels.QueuedNote(_settings.ReleaseLevel);
 			if (duplicate != null) result += "；已有相同任务，未重复添加 / Existing task reused; no duplicate added";
 			if (q.HasAttachments) result += "\n" + AttachmentQueuedNote(q);
 			if (hidden != null) result += "\n" + hidden;
@@ -1417,7 +1417,7 @@ namespace VSManager
 				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).Distinct().ToList();
 			if (items.Count == 0) return "任务清单为空。";
 			var sb = new System.Text.StringBuilder();
-			sb.Append("放行等级 / Release level: ").Append(ReleaseLevels.Key(_settings.ReleaseLevel)).Append("（").Append(ReleaseLevels.ShortName(_settings.ReleaseLevel)).AppendLine("）");
+			sb.Append("接续等级 / Continuation level: ").Append(ReleaseLevels.Key(_settings.ReleaseLevel)).Append("（").Append(ReleaseLevels.ShortName(_settings.ReleaseLevel)).AppendLine("）");
 			sb.AppendLine(_dispatcher.StartModeText);
 			foreach (var lane in _tasks.Items.Where(t => t.Worktree != null).GroupBy(t => t.Worktree.Root, StringComparer.OrdinalIgnoreCase))
 				sb.Append("Worktree ").Append(lane.Key).Append(" | 成功开发任务 / Successful development tasks: ")
@@ -1428,6 +1428,8 @@ namespace VSManager
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(_dispatcher.StartStateText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
 				if (!string.IsNullOrEmpty(t.Result) && t.Status == QueueStatus.Done) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
 				if (!string.IsNullOrEmpty(t.Error) && t.Status != QueueStatus.Done) sb.Append(" | 错误：").Append(t.Error);
+				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason)) sb.Append(" | 失败原因 / Reason：").Append(Clip(t.FailureReason, 400));
+				if (t.Status == QueueStatus.Done && t.NeedsUser && !string.IsNullOrEmpty(t.PendingNote)) sb.Append(" | 待处理 / Pending：").Append(Clip(t.PendingNote, 400));
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureKind)) sb.Append(" | 类别：").Append(FailureKind.Label(t.FailureKind));
 				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append('/').Append(TaskStateMachine.MaxSupplements).Append(" 次：").Append(Clip(t.Supplement, 200));
 				if (!string.IsNullOrEmpty(t.PredecessorNotice)) sb.Append(" | ").Append(t.PredecessorNotice);

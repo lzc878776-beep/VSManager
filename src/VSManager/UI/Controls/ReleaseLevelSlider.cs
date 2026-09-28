@@ -6,8 +6,8 @@ using System.Windows.Forms;
 namespace VSManager
 {
     /// <summary>
-    /// 放行等级三刻度滑块（已完成 / 待验证 / 失败）：点击、拖动或方向键切换，吸附到刻度。
-    /// Three-stop release level slider (Completed / Awaiting verification / Failed): click, drag or arrow keys; snaps to stops.
+    /// 接续等级四刻度滑块（已完成 / 待确认 / 失败 / 不限）：点击、拖动或方向键切换，吸附到刻度。
+    /// Four-stop continuation level slider (Completed / Awaiting confirmation / Failed / Unlimited): click, drag or arrow keys; snaps to stops.
     /// </summary>
     public sealed class ReleaseLevelSlider : Control
     {
@@ -26,7 +26,7 @@ namespace VSManager
             Cursor = Cursors.Hand;
             TabStop = true;
             AccessibleRole = AccessibleRole.Slider;
-            AccessibleName = "放行等级 / Release level";
+            AccessibleName = "接续等级 / Continuation level";
             UpdateAccessibleValue();
         }
 
@@ -50,19 +50,23 @@ namespace VSManager
         private void UpdateAccessibleValue() =>
             AccessibleDescription = ReleaseLevels.ShortName(_value) + " / " + ReleaseLevels.ShortNameEn(_value);
 
-        private int Pad => Dpi.S(26);
+        private int Pad => Dpi.S(30);
         private int TrackY => Dpi.S(24);
 
-        private int TickX(int index) => Pad + (Width - 2 * Pad) * index / 2;
+        private static int Last => ReleaseLevels.All.Length - 1;
+
+        private int TickX(int index) => Pad + (Width - 2 * Pad) * index / Last;
 
         private ReleaseLevel LevelAt(int x)
         {
-            float step = Math.Max(1, Width - 2 * Pad) / 2f;
+            float step = Math.Max(1, Width - 2 * Pad) / (float)Last;
             return ReleaseLevels.Clamp((int)Math.Round((x - Pad) / step));
         }
 
         private static Color LevelColor(ReleaseLevel level) =>
-            level == ReleaseLevel.Completed ? Theme.Success : level == ReleaseLevel.NeedsUser ? Theme.Warning : Theme.Danger;
+            level == ReleaseLevel.Completed ? Theme.Success
+            : level == ReleaseLevel.NeedsUser || level == ReleaseLevel.Failed ? Theme.Warning
+            : Theme.Danger;
 
         protected override void OnPaint(PaintEventArgs e)
         {
@@ -71,10 +75,10 @@ namespace VSManager
             g.SmoothingMode = SmoothingMode.AntiAlias;
             var flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix;
 
-            TextRenderer.DrawText(g, "放行等级", Theme.Small, new Rectangle(0, 0, Width, Dpi.S(16)), Theme.TextMuted,
+            TextRenderer.DrawText(g, "接续等级", Theme.Small, new Rectangle(0, 0, Width, Dpi.S(16)), Theme.TextMuted,
                 flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
 
-            int y = TrackY, left = TickX(0), right = TickX(2), cur = TickX((int)_value);
+            int y = TrackY, left = TickX(0), right = TickX(Last), cur = TickX((int)_value);
             Color color = LevelColor(_value);
             Theme.FillRound(g, Theme.Border, new RectangleF(left, y - Dpi.S(2), right - left, Dpi.S(4)), Dpi.S(2));
             if (cur > left)
@@ -85,7 +89,7 @@ namespace VSManager
                 int i = (int)level, x = TickX(i);
                 bool on = level == _value;
                 if (!on) Theme.FillCircle(g, i < (int)_value ? Color.FromArgb(200, color) : Theme.TextMuted, x, y, Dpi.S(3));
-                var box = new Rectangle(x - Dpi.S(34), y + Dpi.S(8), Dpi.S(68), Dpi.S(16));
+                var box = new Rectangle(x - Dpi.S(30), y + Dpi.S(8), Dpi.S(60), Dpi.S(16));
                 TextRenderer.DrawText(g, ReleaseLevels.ShortName(level), on ? Theme.SemiBold : Theme.Small, box,
                     on ? color : Theme.TextSecondary, flags | TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
             }
@@ -159,7 +163,7 @@ namespace VSManager
                 case Keys.Left: case Keys.Down: v--; break;
                 case Keys.Right: case Keys.Up: v++; break;
                 case Keys.Home: v = 0; break;
-                case Keys.End: v = 2; break;
+                case Keys.End: v = Last; break;
                 default: return;
             }
             e.Handled = true;

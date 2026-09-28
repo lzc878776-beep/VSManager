@@ -171,25 +171,34 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void ReleaseLevel_DefaultsFailed_MigratesLegacySwitch_AndPersists()
+        public void ReleaseLevel_DefaultsUnlimited_MigratesLegacySwitch_AndPersists()
         {
-            Assert.AreEqual(ReleaseLevel.Failed, new AppSettings().ReleaseLevel);
+            Assert.AreEqual(ReleaseLevel.Unlimited, new AppSettings().ReleaseLevel);
             File.WriteAllText(AppSettings.FilePath, "{\"SkipFailedPredecessors\":false}");
-            Assert.AreEqual(ReleaseLevel.NeedsUser, AppSettings.Load().ReleaseLevel, "旧版关闭跳过 → 待验证 / legacy opt-out → needs_user");
+            Assert.AreEqual(ReleaseLevel.Failed, AppSettings.Load().ReleaseLevel, "旧版关闭跳过 → 失败阻塞 / legacy opt-out → failed");
             File.WriteAllText(AppSettings.FilePath, "{\"PollMs\":2000}");
             var settings = AppSettings.Load();
-            Assert.AreEqual(ReleaseLevel.Failed, settings.ReleaseLevel);
+            Assert.AreEqual(ReleaseLevel.Unlimited, settings.ReleaseLevel);
 
             settings.ReleaseLevel = ReleaseLevel.Completed;
             Assert.IsFalse(settings.SkipFailedPredecessors);
             settings.SkipFailedPredecessors = false;
             Assert.AreEqual(ReleaseLevel.Completed, settings.ReleaseLevel, "关闭旧开关不改变已完成级 / legacy off keeps Completed");
             Assert.IsTrue(settings.Save());
-            StringAssert.Matches(File.ReadAllText(AppSettings.FilePath), new System.Text.RegularExpressions.Regex("\"TaskReleaseLevel\"\\s*:\\s*\"completed\""));
-            Assert.AreEqual(ReleaseLevel.Completed, AppSettings.Load().ReleaseLevel);
+            StringAssert.Matches(File.ReadAllText(AppSettings.FilePath), new System.Text.RegularExpressions.            Regex("\"TaskContinueLevel\"\\s*:\\s*\"completed\""));
+                        Assert.IsFalse(File.ReadAllText(AppSettings.FilePath).Contains("TaskReleaseLevel"), "旧键不再写入 / legacy key is no longer written");
+                        Assert.AreEqual(ReleaseLevel.Completed, AppSettings.Load().ReleaseLevel);
 
-            File.WriteAllText(AppSettings.FilePath, "{\"TaskReleaseLevel\":\"bogus\"}");
-            Assert.AreEqual(ReleaseLevel.Failed, AppSettings.Load().ReleaseLevel, "无法识别时回到默认 / unknown falls back to default");
+                        settings.ReleaseLevel = ReleaseLevel.NeedsUser;
+                        Assert.IsTrue(settings.Save());
+                        Assert.AreEqual(ReleaseLevel.NeedsUser, AppSettings.Load().ReleaseLevel, "待确认档往返 / awaiting-confirmation round-trips");
+
+                        File.WriteAllText(AppSettings.FilePath, "{\"TaskReleaseLevel\":\"needs_user\"}");
+                        Assert.AreEqual(ReleaseLevel.Failed, AppSettings.Load().ReleaseLevel, "旧版待验证按行为迁移为失败档 / legacy needs_user migrates to failed");
+                        File.WriteAllText(AppSettings.FilePath, "{\"TaskReleaseLevel\":\"failed\"}");
+                        Assert.AreEqual(ReleaseLevel.Unlimited, AppSettings.Load().ReleaseLevel, "旧版失败按行为迁移为不限 / legacy failed migrates to unlimited");
+                        File.WriteAllText(AppSettings.FilePath, "{\"TaskReleaseLevel\":\"bogus\"}");
+                        Assert.AreEqual(ReleaseLevel.Unlimited, AppSettings.Load().ReleaseLevel, "无法识别时回到默认 / unknown falls back to default");
         }
 
         [TestMethod]

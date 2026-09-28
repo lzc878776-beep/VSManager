@@ -17,6 +17,7 @@ namespace VSManager
             _settings.ReleaseLevel = level;
             _settings.Save();
             _agentPanel.SetReleaseLevel(level);
+            _taskPanel.SetReleaseLevel(level);
             _taskPanel.RefreshItems();
             string text = ReleaseLevels.Describe(level);
             if (old != level)
@@ -47,9 +48,38 @@ namespace VSManager
         {
             var t = _tasks.Find(id);
             if (t == null) return "没有任务 #" + id + " / No task #" + id;
+            // AI 自主重试：限制次数并要求有新信息 / AI self-retries: capped and must carry new information
+            if (TaskFailureAnalyzer.CheckAiRetry(_tasks.Items, t, info) is string refused)
+            {
+                AppLog.Write(AppLog.TasksFile, $"拒绝 AI 补充重试 #{id} / Refused AI retry: " + TextUtil.Clip(refused, 200));
+                return refused;
+            }
             if (!RetryWithInfo(t, info, out string error)) return $"任务 #{id} 当前{StatusText(t)}：{error}";
             return $"已为任务 #{id} 插入补充信息并重新排队（第 {t.SupplementCount}/{TaskStateMachine.MaxSupplements} 次），完成后会再通知你 / "
                 + $"Task #{id} requeued with info ({t.SupplementCount}/{TaskStateMachine.MaxSupplements}); you will be notified";
+        });
+
+        Task<string> IAgentReleaseHost.RetryTask(int id) => OnUi(() =>
+        {
+            var t = _tasks.Find(id);
+            if (t == null) return "没有任务 #" + id + " / No task #" + id;
+            // 只允许非内容类失败，且每个任务有直接重试上限 / Non-content failures only, with a per-task direct-retry cap
+            if (TaskFailureAnalyzer.CheckRecoveryRetry(t) is string refused)
+            {
+                AppLog.Write(AppLog.TasksFile, $"拒绝 AI 直接重试 #{id} / Refused AI retry: " + TextUtil.Clip(refused, 200));
+                return refused;
+            }
+            if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
+            t.RecoveryRetries++;
+            _dispatcher.Retry(t);
+            _taskPanel.RefreshItems();
+            if (t.Status == QueueStatus.Failed)
+            {
+                t.RecoveryRetries--;
+                return $"任务 #{id} 暂时不能重新排队（任务清单未开始或正在处理），请稍后再试或交给用户 / Task #{id} cannot be requeued right now (task list not started or busy); try later or hand it to the user.";
+            }
+            return $"已原样重新排队任务 #{id}（直接重试第 {t.RecoveryRetries}/{TaskFailureAnalyzer.MaxRecoveryRetries} 次，不计入执行次数），完成后会再通知你 / "
+                + $"Task #{id} requeued unchanged (direct retry {t.RecoveryRetries}/{TaskFailureAnalyzer.MaxRecoveryRetries}, not counted as a run); you will be notified";
         });
 
         private bool RetryWithInfo(QueuedTask t, string info, out string error)

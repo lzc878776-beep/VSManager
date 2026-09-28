@@ -258,9 +258,9 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public async Task NeedsUserLevel_FailureBlocks_ReleaseLetsSuccessorRun()
+        public async Task FailedLevel_FailureBlocks_ReleaseLetsSuccessorRun()
         {
-            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            _queue.ReleaseLevel = ReleaseLevel.Failed;
             _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
             var next = _queue.Add("A", "A", "next", "AI");
@@ -281,7 +281,7 @@ namespace VSManager.Tests
         [TestMethod]
         public async Task RetryWithInfo_RequeuesFailedTask_WithSupplementBeforeSuccessor()
         {
-            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            _queue.ReleaseLevel = ReleaseLevel.Failed;
             var v = _host.AddVs("A");
             var first = _queue.Add("A", "A", "first", "AI");
             var next = _queue.Add("A", "A", "next", "AI");
@@ -312,9 +312,37 @@ namespace VSManager.Tests
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
             StringAssert.Contains(_host.NoticeBodies.Last(), "release_task");
 
-            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            _queue.ReleaseLevel = ReleaseLevel.Failed;
             await _dispatcher.PumpAsync();
             Assert.AreEqual(QueueStatus.Running, next.Status);
+        }
+
+        [TestMethod]
+        public async Task NeedsUserLevel_NeedsUserBlocks_FailureReleases()
+        {
+            _queue.ReleaseLevel = ReleaseLevel.NeedsUser;
+            var a = _host.AddVs("A");
+            var verify = _queue.Add("A", "A", "verify", "AI");
+            var afterVerify = _queue.Add("A", "A", "after verify", "AI");
+            _host.AnswerReader = t => Task.FromResult("please test the UI\r\n" + TaskStateMachine.NeedsUserReceipt(t));
+            await _dispatcher.PumpAsync();
+            await _dispatcher.FinishAsync(verify, a, null);
+            await _dispatcher.PumpAsync();
+            Assert.IsTrue(verify.NeedsUser);
+            Assert.AreEqual(QueueStatus.Waiting, afterVerify.Status, "待确认阻塞后续 / awaiting confirmation blocks");
+            StringAssert.Contains(_host.NoticeBodies.Last(), "release_task");
+
+            _host.AddVs("B");
+            var failed = _queue.Add("B", "B", "fails", "AI");
+            var afterFailed = _queue.Add("B", "B", "after fail", "AI");
+            await _dispatcher.PumpAsync();
+            _dispatcher.Fail(failed, "execution failed");
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, afterFailed.Status, "失败放行 / failures release");
+
+            Assert.IsTrue(_dispatcher.Release(verify, out string error), error);
+            await _dispatcher.PumpAsync();
+            Assert.AreEqual(QueueStatus.Running, afterVerify.Status);
         }
 
         [TestMethod]
@@ -377,7 +405,7 @@ namespace VSManager.Tests
             failed.Started = _clock.Now.AddMinutes(-1);
             _dispatcher.Fail(failed, "original error");
             var snapshot = failed.Clone();
-            StringAssert.Contains(_host.NoticeBodies.Single(), "Release level \"Failed\": queued successors may continue");
+            StringAssert.Contains(_host.NoticeBodies.Single(), "Continuation level \"Unlimited\": queued successors may continue");
             StringAssert.Contains(_host.NoticeBodies.Single(), "Do not duplicate queued tasks; do not retry without the user's consent");
             Assert.IsFalse(_host.NoticeBodies.Single().Contains("后续任务已暂停"));
 

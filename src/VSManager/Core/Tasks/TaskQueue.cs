@@ -204,6 +204,7 @@ namespace VSManager
                 Log($"任务 #{t.Id} 保留失败任务 #{kept.Task.Id} / Task #{t.Id} retains failed task #{kept.Task.Id}: {kept.Reason}");
             if (matches.Hide.Count == 0) return false;
             t.Replaces = (t.Replaces ?? new int[0]).Concat(matches.Hide.Select(x => x.Id)).Distinct().ToArray();
+            t.PriorRuns = TaskFailureAnalyzer.LineageAttempts(_items, matches.Hide);
             // 重发任务附带最近一次失败的反馈，让 Copilot 针对原因调整 / A resend carries the latest failure feedback so Copilot can adjust to the cause
             if (t.PriorFailure == null)
                 t.PriorFailure = matches.Hide.OrderByDescending(x => x.Id).Select(TaskFailureAnalyzer.PriorFailureSummary).FirstOrDefault(s => s != null);

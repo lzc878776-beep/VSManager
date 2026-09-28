@@ -413,19 +413,22 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 
 回执规则附在每条任务消息的末尾。VS 2026 的 Copilot 代理（内置 Copilot CLI）不会加载 `copilot-instructions.md` 等自定义指令文件，所以规则不能靠指令文件下发，每条任务都会带上完整规则。
 
-### 放行等级
+### 接续等级
 
-AI 总控助手顶栏有一个三刻度滑块（点击、拖动或 ←/→ 键切换，保存在 settings.json 的 `TaskReleaseLevel`），决定同一 VS 的前序任务以什么结果结束时自动发送下一项：
+任务清单顶栏（以及 AI 总控助手顶栏）有一个四档滑块（点击、拖动或 ←/→ 键切换，保存在 settings.json 的 `TaskContinueLevel`），决定同一 VS 的前序任务以什么结果结束时自动执行下一项。挡位名表示「哪种结果会阻塞队列、等你处理」，避免需要你处理的内容被后续任务覆盖对话上下文：
 
-| 等级 | 已完成 | 待验证 | 失败 |
+| 挡位 | 已完成 | 待确认（待验证） | 失败 |
 | --- | --- | --- | --- |
-| 「已完成」`completed` | 放行 | 暂停后续 | 暂停后续 |
-| 「待验证」`needs_user` | 放行 | 放行 | 暂停后续 |
-| 「失败」`failed`（默认） | 放行 | 放行 | 放行（失败记录保留） |
+| 「已完成」`completed` | 放行 | 阻塞 | 阻塞 |
+| 「待确认」`needs_user` | 放行 | 阻塞 | 放行 |
+| 「失败」`failed` | 放行 | 放行 | 阻塞 |
+| 「不限」`unlimited`（默认） | 放行 | 放行 | 放行（失败记录保留） |
 
-- 排队中 / 发送中 / 执行中的前序始终阻塞后续；已取消的不阻塞。旧版「跳过失败前序任务」开关仍可用：开启 = 「失败」，关闭 = 「待验证」，旧配置会自动迁移。
+- 排队中 / 发送中 / 执行中的前序始终阻塞后续；已取消的不阻塞。旧版「跳过失败前序任务」开关仍可用：开启 = 「不限」，关闭 = 「失败」。旧配置（`TaskReleaseLevel` 三档）会按原行为自动迁移：旧「失败」→「不限」，旧「待验证」→「失败」，旧「已完成」不变。
+- 待确认与失败的任务会分别记录「待处理内容」与「失败原因」（回执规则要求 Copilot 以「待处理：」「失败原因：」开头单独成段，没有时取回复最后一段；投递、读取失败等按失败类别记录），卡片上直接显示摘要；点击该条目时，任务清单底部会展开详情区显示全文与处理方式，可选中复制，点 × 关闭。AI 助手收到的通知与任务列表中也包含这两项。
 - 被暂停时，在任务清单右键失败 / 待验证的条目：「补充信息后重试…」把补充内容连同前次反馈发回原 VS（每个任务最多 3 次）；「放行后续任务」保留该条结果，让后续继续执行。
-- AI 助手收到失败通知后自行判断：能从 VS 返回的信息补齐时调用 `retry_task_with_info` 补充重试；需要用户决定或补充时，把失败原因与所需信息告诉你，由你补充、放行（`release_task`）或取消。也可以让它用 `set_release_level` 调整等级。开启「AgentConfirm 审批」时这三个工具都需要确认。
+- AI 助手收到失败通知后自行判断：能从 VS 返回的信息补齐时调用 `retry_task_with_info` 补充重试；需要用户决定或补充时，把失败原因与所需信息告诉你，由你补充、放行（`release_task`）或取消。也可以让它用 `set_release_level` 调整等级。开启「AgentConfirm 审批」时这些工具都需要确认。
+- 防止循环消耗用量：同一需求（重发链 + 补充重试）由 AI 自主触发的 Copilot 执行次数有上限，在「设置 → 发送确认 → AI 重试上限」调整（默认 3，范围 1–10）；原样或只加「请再试一次」的重发会被拒绝。投递失败、VS 关闭、读取失败和「Copilot 本轮未执行完」（网络 / 服务错误、被中断）不计入次数，AI 可用 `retry_task` 原样重试或发送「继续」，每个任务最多 5 次。你在任务清单里手动重试不受限制。
 
 ## 发布到 GitHub
 
@@ -868,19 +871,22 @@ Every task dispatched from the task list has a receipt ID (GUID) for the round. 
 
 The receipt rules are appended to the end of every task message. The VS 2026 Copilot agent (a bundled Copilot CLI) does not load custom instructions files such as `copilot-instructions.md`, so the rules cannot be delivered that way; every task carries the full rules.
 
-### Release level
+### Continuation level
 
-The AI assistant header has a three-stop slider (click, drag or use ←/→; saved as `TaskReleaseLevel` in settings.json). It decides which predecessor outcomes let the next task on the same VS be sent automatically:
+The task list header (and the AI assistant header) has a four-stop slider (click, drag or use ←/→; saved as `TaskContinueLevel` in settings.json). It decides which predecessor outcomes let the next task on the same VS run automatically. Each stop names the outcome that blocks the queue until you handle it, so content that needs you is not buried by later tasks in the conversation:
 
-| Level | Completed | Awaiting verification | Failed |
+| Level | Completed | Awaiting confirmation | Failed |
 | --- | --- | --- | --- |
-| "已完成" `completed` | releases | pauses successors | pauses successors |
-| "待验证" `needs_user` | releases | releases | pauses successors |
-| "失败" `failed` (default) | releases | releases | releases (failure kept) |
+| "已完成" `completed` | releases | blocks | blocks |
+| "待确认" `needs_user` | releases | blocks | releases |
+| "失败" `failed` | releases | releases | blocks |
+| "不限" `unlimited` (default) | releases | releases | releases (failure kept) |
 
-- Waiting / sending / running predecessors always block successors; cancelled ones do not. The legacy "Skip failed predecessors" switch still works: on = `failed`, off = `needs_user`; old settings migrate automatically.
+- Waiting / sending / running predecessors always block successors; cancelled ones do not. The legacy "Skip failed predecessors" switch still works: on = `unlimited`, off = `failed`. Old three-level settings (`TaskReleaseLevel`) migrate by behavior: old `failed` → `unlimited`, old `needs_user` → `failed`, `completed` unchanged.
+- Awaiting-confirmation and failed tasks record "pending items" and a "failure reason" separately (the receipt rules ask Copilot for a paragraph starting with `待处理：` / `失败原因：`, falling back to the reply's last paragraph; delivery, read and similar failures record their category). The card shows a summary; clicking the entry opens a detail area at the bottom of the task list with the full text and next steps, selectable for copying; × closes it. Notices to the AI assistant and its task list include both.
 - While paused, right-click the failed / awaiting-verification entry in the task list: "Retry with info…" sends your extra info plus the previous feedback back to the same VS (at most 3 times per task); "Release successors" keeps that outcome and lets the successors run.
-- On a failure notice the AI assistant decides by itself: if the VS reply gives enough to fill the gap it calls `retry_task_with_info`; if it needs your decision or input it tells you the cause and what is needed, and you supplement, release (`release_task`) or cancel. You can also ask it to change the level with `set_release_level`. With AgentConfirm approval on, all three tools ask for confirmation.
+- On a failure notice the AI assistant decides by itself: if the VS reply gives enough to fill the gap it calls `retry_task_with_info`; if it needs your decision or input it tells you the cause and what is needed, and you supplement, release (`release_task`) or cancel. You can also ask it to change the level with `set_release_level`. With AgentConfirm approval on, these tools ask for confirmation.
+- Usage protection: the Copilot runs the AI may trigger on its own for one request (resend chain plus retries with info) are capped under Settings → Send confirmation → "AI retry limit" (default 3, range 1–10); verbatim resends or ones that only add "try again" are refused. Delivery failures, VS closed, read failures and "Copilot run interrupted" (network / service error, cut-off) do not count; the AI may retry those unchanged with `retry_task` or send "continue", at most 5 times per task. Manual retries from the task list are not limited.
 
 ## Publish to GitHub
 

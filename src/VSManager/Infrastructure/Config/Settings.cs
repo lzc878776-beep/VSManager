@@ -231,26 +231,38 @@ namespace VSManager
         [DataMember] public int ManualChatWaitTimeoutSeconds;
         /// <summary>普通已结束任务保留上限；失败及维护重发关系所需记录除外，0 或负数保留全部。/ Completed history limit, excluding failures and required resend links; zero or negative keeps all.</summary>
         [DataMember] public int TaskHistoryLimit;
+        /// <summary>同一需求 AI 自主触发 Copilot 执行的次数上限（1–10，默认 3）；投递失败与本轮中断不计。/ Copilot runs the AI may trigger on its own per request (1–10, default 3); delivery failures and interrupted runs are excluded.</summary>
+        [DataMember] public int AiRetryLimit;
         /// <summary>
-        /// 旧版开关（兼容保留）：等价于放行等级是否为「失败」。设为 true → 失败级；在失败级时设为 false → 待验证级。
-        /// Legacy switch (kept for compatibility): whether the release level is Failed. true → Failed; false while Failed → NeedsUser.
+        /// 旧版开关（兼容保留）：等价于接续等级是否为「不限」。设为 true → 不限；在不限时设为 false → 失败级。
+        /// Legacy switch (kept for compatibility): whether the continuation level is Unlimited. true → Unlimited; false while Unlimited → Failed.
         /// </summary>
         [DataMember]
         public bool SkipFailedPredecessors
         {
-            get => _releaseLevel == VSManager.ReleaseLevel.Failed;
+            get => _releaseLevel == VSManager.ReleaseLevel.Unlimited;
             set
             {
-                if (value) _releaseLevel = VSManager.ReleaseLevel.Failed;
-                else if (_releaseLevel == VSManager.ReleaseLevel.Failed) _releaseLevel = VSManager.ReleaseLevel.NeedsUser;
+                if (value) _releaseLevel = VSManager.ReleaseLevel.Unlimited;
+                else if (_releaseLevel == VSManager.ReleaseLevel.Unlimited) _releaseLevel = VSManager.ReleaseLevel.Failed;
             }
         }
-        /// <summary>任务队列放行等级（completed / needs_user / failed）。/ Task queue release level (completed / needs_user / failed).</summary>
+        /// <summary>任务队列接续等级（completed / needs_user / failed / unlimited）。/ Task queue continuation level (completed / needs_user / failed / unlimited).</summary>
         [DataMember]
-        public string TaskReleaseLevel
+        public string TaskContinueLevel
         {
             get => ReleaseLevels.Key(_releaseLevel);
             set => _releaseLevel = ReleaseLevels.TryParse(value) ?? _releaseLevel;
+        }
+        /// <summary>
+        /// 三档时代的旧键，只读不写：按原行为迁移（needs_user → 失败，failed → 不限）；新文件中不再出现。
+        /// Key from the three-stop era, read only: migrated by behavior (needs_user → Failed, failed → Unlimited); never written again.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)]
+        public string TaskReleaseLevel
+        {
+            get => null;
+            set => _releaseLevel = ReleaseLevels.TryParseLegacy(value) ?? _releaseLevel;
         }
         private ReleaseLevel _releaseLevel = ReleaseLevels.Default;
         /// <summary>放行等级：前序结束到哪一档仍自动发送后续任务。/ Release level: up to which outcome successors still dispatch automatically.</summary>
@@ -546,6 +558,7 @@ namespace VSManager
             TaskListGroupOrder = new List<string>();
             WatchConversations = true;
             TaskHistoryLimit = 0;
+            AiRetryLimit = TaskFailureAnalyzer.DefaultAiAttempts;
             _releaseLevel = ReleaseLevels.Default;
             AutoStartAiTasks = true;
             AutoStartAllTasks = false;
@@ -639,6 +652,7 @@ namespace VSManager
                 s.ClampRestart();
                 s.ClampSend();
                 s.ManualChatWaitTimeoutSeconds = ManualChatProtection.ClampTimeout(s.ManualChatWaitTimeoutSeconds);
+                s.AiRetryLimit = TaskFailureAnalyzer.ClampAttempts(s.AiRetryLimit);
                 s.ClampSolutions();
                 // 非法或缺失的语言值按中文处理 / Invalid or missing language values fall back to Chinese
                 s.VoiceLanguage = VoiceLanguages.Normalize(s.VoiceLanguage);

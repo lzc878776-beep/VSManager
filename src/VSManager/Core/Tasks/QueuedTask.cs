@@ -84,6 +84,16 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public string Supplement;
         /// <summary>已插入补充信息重试的次数。/ Number of retries with supplementary info.</summary>
         [DataMember(EmitDefaultValue = false)] public int SupplementCount;
+        /// <summary>本任务以内容失败或待验证结束的 Copilot 执行次数（投递、读取失败与本轮中断不计）。/ Copilot runs of this task that ended as content failures or awaiting verification (delivery, read failures and interrupted runs excluded).</summary>
+        [DataMember(EmitDefaultValue = false)] public int ContentRuns;
+        /// <summary>AI 助手对非内容类失败直接重试的次数。/ Direct AI retries after non-content failures.</summary>
+        [DataMember(EmitDefaultValue = false)] public int RecoveryRetries;
+        /// <summary>创建时所取代的重发链已用掉的执行次数，用于告诉 Copilot 当前是第几轮。/ Runs already spent by the replaced resend chain at creation; tells Copilot which round this is.</summary>
+        [DataMember(EmitDefaultValue = false)] public int PriorRuns;
+        /// <summary>待确认时需要用户处理 / 验证的内容，其他状态为 null。/ What the user must handle or verify when awaiting confirmation; null otherwise.</summary>
+        [DataMember(EmitDefaultValue = false)] public string PendingNote;
+        /// <summary>失败时的原因说明，其他状态为 null。/ Why the task failed; null otherwise.</summary>
+        [DataMember(EmitDefaultValue = false)] public string FailureReason;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -108,7 +118,9 @@ namespace VSManager
             WorktreeCounted = WorktreeCounted, WorktreeBatch = WorktreeBatch,
             Attachments = Attachments?.Select(a => a?.Clone()).ToArray(), AttachmentNote = AttachmentNote,
             FailureKind = FailureKind, NeedsUser = NeedsUser, PriorFailure = PriorFailure,
-            Released = Released, Supplement = Supplement, SupplementCount = SupplementCount
+            Released = Released, Supplement = Supplement, SupplementCount = SupplementCount,
+            ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
+            PendingNote = PendingNote, FailureReason = FailureReason
         };
     }
 }

@@ -279,6 +279,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)RetryTask, "retry_task"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
@@ -687,10 +688,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "set_release_level":
                 {
                     var level = ReleaseLevels.TryParse(Arg("level"));
-                    return "设置放行等级：" + (level.HasValue ? ReleaseLevels.ShortName(level.Value) : OneLine(Arg("level"), 20)) + " / Set release level";
+                    return "设置接续等级：" + (level.HasValue ? ReleaseLevels.ShortName(level.Value) : OneLine(Arg("level"), 20)) + " / Set continuation level";
                 }
                 case "release_task": return "放行任务 #" + Arg("id") + "，后续继续执行 / Release task";
                 case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + "：" + OneLine(Arg("info"), 50);
+                case "retry_task": return "原样重试任务 #" + Arg("id") + " / Retry task";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
                 case "read_vs_file":
                 case "read_file": return "读取并脱敏授权文件 / Read and redact granted file";

@@ -295,17 +295,21 @@ namespace VSManager.Tests
         public void QueuePrompts_DescribeCurrentPolicy_AndForbidBypasses(bool english)
         {
             string defaultPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "");
-            string strictPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.NeedsUser);
+            string strictPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.Failed);
+            string confirmPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.NeedsUser);
             string completedPolicy = Prompts.AgentSystem(english, DateTime.Now, "VS", "", releaseLevel: ReleaseLevel.Completed);
-            StringAssert.Contains(defaultPolicy, english ? "release level=failed" : "放行等级=failed");
-            StringAssert.Contains(strictPolicy, english ? "release level=needs_user" : "放行等级=needs_user");
-            StringAssert.Contains(completedPolicy, english ? "release level=completed" : "放行等级=completed");
+            StringAssert.Contains(defaultPolicy, english ? "continuation level=unlimited" : "接续等级=unlimited");
+            StringAssert.Contains(strictPolicy, english ? "continuation level=failed" : "接续等级=failed");
+            StringAssert.Contains(confirmPolicy, english ? "continuation level=needs_user" : "接续等级=needs_user");
+            StringAssert.Contains(completedPolicy, english ? "continuation level=completed" : "接续等级=completed");
             StringAssert.Contains(strictPolicy, "retry_task_with_info");
+            StringAssert.Contains(confirmPolicy, "release_task");
             StringAssert.Contains(completedPolicy, "release_task");
             StringAssert.Contains(defaultPolicy, english ? "never writes directly" : "不直接写入");
             StringAssert.Contains(defaultPolicy, english ? "never deleted" : "历史不删除");
             StringAssert.Contains(defaultPolicy, english ? "scripts, UI typing" : "脚本、UI 输入");
-            StringAssert.Contains(strictPolicy, english ? "pause successors" : "暂停同一 VS");
+            StringAssert.Contains(strictPolicy, english ? "blocks successors" : "阻塞同一 VS");
+            StringAssert.Contains(confirmPolicy, english ? "four-stop" : "四档");
         }
 
         [DataTestMethod]
