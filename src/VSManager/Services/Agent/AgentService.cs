@@ -272,7 +272,7 @@ namespace VSManager
             {
                 AIFunctionFactory.Create((Func<string>)ListVs, "list_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)ReadVsChat, "read_vs_chat"),
-                AIFunctionFactory.Create((Func<string, string, string, string, Task<string>>)SendTask, "send_task"),
+                AIFunctionFactory.Create((Func<string, string, string, string, bool, Task<string>>)SendTask, "send_task"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)WaitForVs, "wait_for_vs"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)DebugVs, "debug_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)GetErrors, "get_errors"),
@@ -288,9 +288,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
                 AIFunctionFactory.Create((Func<Task<string>>)StartTaskWorkflow, "start_task_workflow"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)DeleteTask, "delete_task"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
-                AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
+                AIFunctionFactory.Create((Func<int, string, bool, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)EditTaskResult, "edit_task_result"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)RetryTask, "retry_task"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
@@ -718,15 +719,16 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "open_copilot": return "打开" + target + "的对话助手 / Open Copilot chat";
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
-                case "cancel_task": return "取消任务 #" + Arg("id");
+                case "cancel_task": return "取消任务 #" + Arg("id") + "（需用户确认）/ Cancel task (confirmation required)";
                 case "start_task_workflow": return "启动任务流程 / Start task workflow";
+                case "delete_task": return "删除任务 #" + Arg("id") + "（需用户确认）/ Delete task (confirmation required)";
                 case "set_release_level":
                 {
                     var level = ReleaseLevels.TryParse(Arg("level"));
                     return "设置接续等级：" + (level.HasValue ? ReleaseLevels.ShortName(level.Value) : OneLine(Arg("level"), 20)) + " / Set continuation level";
                 }
                 case "release_task": return "放行任务 #" + Arg("id") + "，后续继续执行 / Release task";
-                case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + "：" + OneLine(Arg("info"), 50);
+                case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
                 case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
                 case "retry_task": return "原样重试任务 #" + Arg("id") + " / Retry task";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
@@ -852,7 +854,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,
             [Description("先为任务总结的中文题目，概括要做的事，不超过 20 字、单行、不加标点结尾，用于任务记录。A short Chinese title summarizing the task, at most 20 characters, one line, for task records.")] string title = null,
-            [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null)
+            [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null,
+            [Description("目标 VS 正被失败 / 待验证任务阻塞时默认不入队，并提示改用 retry_task_with_info 向阻塞任务补充信息；仅当这是与阻塞任务无关、愿意排在其后的新任务时设为 true。When the target VS is blocked by a failed / awaiting-verification task the task is not queued by default and you are told to supplement the blocker via retry_task_with_info; set true only for an unrelated task that may wait behind it.")] bool queue_behind_blocked = false)
         {
             var files = ResolveTaskAttachments(attachments, out string attachmentError);
             if (attachmentError != null) return attachmentError;
@@ -888,6 +891,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (isVsManager && task.IndexOf("【开源约束】", StringComparison.Ordinal) < 0 && task.IndexOf("[Open-source constraint]", StringComparison.Ordinal) < 0)
                 task += _settings().IsEnglishVoice ? OpenSourceTaskSuffixEn : OpenSourceTaskSuffix;
             string targetName = parkFor != null ? parkFor.Alias : _host.NameOf(v);
+            // 阻塞中的目标：引导向阻塞任务补充信息，而不是另起一条排在它后面的新任务 / Blocked target: steer to supplementing the blocker rather than a new task stuck behind it
+            if (!queue_behind_blocked && _host is IAgentBlockedTaskHost blockedHost
+                && await blockedHost.CheckBlockedTarget(v, parkFor, task) is string blocked)
+                return blocked;
             string attachmentNote = files.Length == 0 ? "" : "\n\n" + TaskAttachmentNotice(files);
             if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task + attachmentNote))
                 return "用户拒绝了该操作。";
@@ -906,9 +913,6 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
 
         [Description("查看任务清单：各任务的编号、目标 VS、状态（排队 / 执行中 / 已完成 / 失败 / 已取消）与结果摘要。")]
         private async Task<string> ListTasks() => Truncate(await _host.ListTasks(), MaxToolText);
-
-        [Description("取消任务清单中排队的任务（执行中的任务只停止跟踪，不会停止 Copilot；需要停止请用 stop_copilot）。")]
-        private Task<string> CancelTask([Description("任务编号，如 3")] int id) => _host.CancelTask(id);
 
         [Description("等待指定 VS 的 Copilot 完成当前任务，返回其最后一条回复。")]
         private async Task<string> WaitForVs(

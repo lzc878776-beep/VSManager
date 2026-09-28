@@ -164,7 +164,7 @@ namespace VSManager
             sb.Append("# 任务 #").Append(task.Id).Append(" · ").Append(LinkText(summary)).Append("\r\n\r\n");
             sb.Append(BackLink(day)).Append("\r\n\r\n");
             sb.Append("| 项目 / Field | 内容 / Value |\r\n| --- | --- |\r\n");
-            sb.Append(task.Status == QueueStatus.Unverified ? "| 状态 / Status | 未验证 / Unverified |\r\n" : "| 状态 / Status | 已完成 / Done |\r\n");
+            sb.Append(task.Status == QueueStatus.Unverified ? "| 状态 / Status | 待验证 / Awaiting verification |\r\n" : "| 状态 / Status | 已完成 / Done |\r\n");
             sb.Append("| VS | ").Append(Cell(task.VsName)).Append(" |\r\n");
             sb.Append("| 创建 / Created | ").Append(Time(task.Created)).Append(" |\r\n");
             sb.Append("| 开始 / Started | ").Append(Time(task.Started)).Append(" |\r\n");

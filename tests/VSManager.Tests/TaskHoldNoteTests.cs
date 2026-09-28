@@ -25,7 +25,7 @@ namespace VSManager.Tests
         public void Pending_FallsBackToLastParagraph_OrDefault()
         {
             Assert.AreEqual("请重启 VS 后确认菜单出现。", TaskHoldNote.Pending("改好了。\n\n请重启 VS 后确认菜单出现。"));
-            StringAssert.Contains(TaskHoldNote.Pending(null), "待用户验证");
+            StringAssert.Contains(TaskHoldNote.Pending(null), "待验证");
         }
 
         [TestMethod]
@@ -40,10 +40,10 @@ namespace VSManager.Tests
         {
             var t = Running();
             t.Result = "改完了\n\n待处理：请运行并检查托盘图标";
-            Assert.IsTrue(TaskStateMachine.Complete(t, T0, needsUser: true));
+            Assert.IsTrue(TaskStateMachine.Complete(t, T0, pending: true));
             Assert.AreEqual("请运行并检查托盘图标", t.PendingNote);
             Assert.IsNull(t.FailureReason);
-            StringAssert.Contains(TaskHoldNote.DetailTitle(t), "待处理");
+            StringAssert.Contains(TaskHoldNote.DetailTitle(t), "待验证");
             StringAssert.Contains(TaskHoldNote.DetailText(t), "请运行并检查托盘图标");
 
             TaskStateMachine.Requeue(t);
@@ -83,7 +83,7 @@ namespace VSManager.Tests
             Assert.AreEqual("旧错误", failed.FailureReason);
             Assert.IsNull(failed.PendingNote);
 
-            var verify = new QueuedTask { Id = 2, Status = QueueStatus.Done, NeedsUser = true, Result = "a\n\n请确认按钮位置" };
+            var verify = new QueuedTask { Id = 2, Status = QueueStatus.Unverified, Result = "a\n\n请确认按钮位置" };
             TaskStateMachine.FillHoldNote(verify);
             Assert.AreEqual("请确认按钮位置", verify.PendingNote);
 
@@ -119,6 +119,9 @@ namespace VSManager.Tests
                 var loaded = store.Load(new System.Collections.Generic.List<string>());
                 Assert.AreEqual("r", loaded.Find(t => t.Id == 5).FailureReason);
                 Assert.AreEqual("p", loaded.Find(t => t.Id == 6).PendingNote);
+                // 旧的「已完成（待用户验证）」加载后并入待验证 / Legacy done-awaiting-verification loads as awaiting verification
+                Assert.AreEqual(QueueStatus.Unverified, loaded.Find(t => t.Id == 6).Status);
+                Assert.IsFalse(loaded.Find(t => t.Id == 6).NeedsUser);
                 Assert.AreEqual("r", items[0].Clone().FailureReason);
                 Assert.AreEqual("p", items[1].Clone().PendingNote);
             }

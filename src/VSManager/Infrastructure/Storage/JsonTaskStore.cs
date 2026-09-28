@@ -191,6 +191,7 @@ namespace VSManager
             }
             if (!QueueStatus.Active(t.Status) && !t.Finished.HasValue) t.Finished = t.Started ?? t.Created;
             // 旧记录没有待处理 / 失败说明时按结果补齐 / Older records without hold notes get them derived from the outcome
+            TaskStateMachine.MigrateLegacy(t);
             TaskStateMachine.FillHoldNote(t);
             return t;
         }

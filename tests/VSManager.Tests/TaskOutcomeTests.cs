@@ -30,6 +30,39 @@ namespace VSManager.Tests
         [TestCleanup]
         public void Cleanup() => _data.Dispose();
 
+        [TestMethod]
+        public void HeldBlockers_FindsFailedOrPendingBlockerOnSameTarget()
+        {
+            var failed = new QueuedTask { Id = 3, VsKey = "A", VsName = "A", Text = "实现导出功能并写入文件", Status = QueueStatus.Failed, FailureKind = FailureKind.Reported, FailureReason = "缺少导出路径" };
+            var other = new QueuedTask { Id = 4, VsKey = "B", VsName = "B", Text = "别的任务", Status = QueueStatus.Unverified };
+            var items = new List<QueuedTask> { failed, other };
+            var blockers = TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Failed);
+            CollectionAssert.AreEqual(new[] { 3 }, blockers.Select(x => x.Id).ToArray());
+            string text = TaskFailureAnalyzer.BlockedSendText(blockers, "A");
+            StringAssert.Contains(text, "retry_task_with_info(id=3");
+            StringAssert.Contains(text, "from_user=true");
+            StringAssert.Contains(text, "queue_behind_blocked=true");
+            StringAssert.Contains(text, "缺少导出路径");
+
+            // 不阻塞的等级、已放行、或以「重发 @3」取代时都不拦截 / No interception when the level does not block, when released, or when superseded by "resend @3"
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Unlimited).Count);
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "重发 @3：导出到桌面的指定目录", ReleaseLevel.Failed).Count);
+            failed.Released = true;
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Failed).Count);
+            Assert.IsNull(TaskFailureAnalyzer.BlockedSendText(new List<QueuedTask>(), "A"));
+        }
+
+        [TestMethod]
+        public void Supplement_UserInfoIsNotCappedButAiIs()
+        {
+            var t = new QueuedTask { Id = 5, VsKey = "A", Text = "x", Status = QueueStatus.Failed, FailureKind = FailureKind.Reported, SupplementCount = TaskStateMachine.MaxSupplements };
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "新的路径是 D 盘", out string error));
+            Assert.IsNotNull(error);
+            Assert.IsTrue(TaskStateMachine.Supplement(t, "新的路径是 D 盘", out error, enforceLimit: false));
+            Assert.AreEqual(QueueStatus.Waiting, t.Status);
+            Assert.AreEqual(TaskStateMachine.MaxSupplements + 1, t.SupplementCount);
+        }
+
         private static QueuedTask Sent()
         {
             var t = new QueuedTask { Id = 1, VsKey = "A", VsName = "A", Text = "实现导出功能", Status = QueueStatus.Waiting, Created = new DateTime(2026, 1, 1, 8, 0, 0) };
@@ -49,12 +82,15 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void ReadReceipt_DistinguishesSuccessNeedsUserFailedAndNone()
+        public void ReadReceipt_DistinguishesSuccessUnverifiedFailedAndNone()
         {
             var t = Sent();
             Assert.AreEqual(TaskReceipt.Success, TaskStateMachine.ReadReceipt(t, "ok\n" + TaskStateMachine.SuccessReceipt(t), out string r));
             Assert.AreEqual("ok", r);
-            Assert.AreEqual(TaskReceipt.NeedsUser, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.NeedsUserReceipt(t), out r));
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.UnverifiedReceipt(t), out r));
+            Assert.AreEqual("请手动运行验证", r);
+            // 旧回执 NEEDS_USER 仍识别为待验证 / The legacy NEEDS_USER receipt still reads as awaiting verification
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.NeedsUserReceipt(t), out r));
             Assert.AreEqual("请手动运行验证", r);
             Assert.AreEqual(TaskReceipt.Failed, TaskStateMachine.ReadReceipt(t, "无法实现\n" + TaskStateMachine.FailureReceipt(t), out r));
             Assert.AreEqual("无法实现", r);
@@ -63,18 +99,53 @@ namespace VSManager.Tests
             Assert.AreEqual(TaskReceipt.None, TaskStateMachine.ReadReceipt(t, "x " + TaskStateMachine.NeedsUserReceipt(t), out _));
             Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t), out _));
             string text = TaskStateMachine.DispatchText(t);
-            StringAssert.Contains(text, TaskStateMachine.NeedsUserReceipt(t));
+            StringAssert.Contains(text, TaskStateMachine.UnverifiedReceipt(t));
+            Assert.IsFalse(text.Contains(TaskStateMachine.NeedsUserReceipt(t)), "规则只保留三种回执 / Rules list three receipts only");
+            StringAssert.Contains(text, "三选一");
             StringAssert.Contains(text, "无关的遗留");
+        }
+
+        [TestMethod]
+        public void ReadReceipt_IgnoresTrailingNoReplyNote()
+        {
+            var t = Sent();
+            Assert.AreEqual(TaskReceipt.Success, TaskStateMachine.ReadReceipt(t, "done\n" + TaskStateMachine.SuccessReceipt(t) + "\n\n(This turn has no user-facing reply.)", out string r));
+            Assert.AreEqual("done", r);
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "待处理：重启验证\r\n" + TaskStateMachine.UnverifiedReceipt(t) + "\r\n*This turn has no user-facing reply*", out _));
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t) + "\n（本轮没有面向用户的回复）", out _));
+            Assert.AreEqual(TaskReceipt.None, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.SuccessReceipt(t) + "\n还有其他内容", out _));
+            StringAssert.Contains(TaskStateMachine.DispatchText(t), "回执行之后不要再输出任何文字");
+        }
+
+        [TestMethod]
+        public void UnverifiedResult_BlocksAtCompletedAndAwaitingConfirmation()
+        {
+            var t = new QueuedTask { Status = QueueStatus.Unverified };
+            Assert.IsTrue(ReleaseLevels.Blocks(ReleaseLevel.Completed, t));
+            Assert.IsTrue(ReleaseLevels.Blocks(ReleaseLevel.NeedsUser, t));
+            Assert.IsFalse(ReleaseLevels.Blocks(ReleaseLevel.Failed, t));
+            Assert.IsFalse(ReleaseLevels.Blocks(ReleaseLevel.Unlimited, t));
+            Assert.IsTrue(TaskStateMachine.Release(t));
+            Assert.IsTrue(t.Released);
+            Assert.AreEqual(QueueStatus.Unverified, t.Status);
+        }
+
+        [TestMethod]
+        public void ClipboardBusy_IsRetriedLater()
+        {
+            Assert.IsTrue(SendRetryPolicy.IsBlocked(SendRetryPolicy.ClipboardBusyPrefix + "held by another app"));
+            Assert.IsTrue(SendRetryPolicy.IsClipboardBusy(SendRetryPolicy.ClipboardBusyPrefix + "x"));
+            Assert.IsFalse(SendRetryPolicy.IsClipboardBusy("图片发送失败：x"));
         }
 
         [TestMethod]
         public async Task NeedsUserReceipt_CompletesAsAwaitingVerification()
         {
             var t = await RunWithAnswer("实现导出功能", q => "改动已完成，请手动测试导出按钮\n" + TaskStateMachine.NeedsUserReceipt(q));
-            Assert.AreEqual(QueueStatus.Done, t.Status);
-            Assert.IsTrue(t.NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, t.Status);
+            Assert.IsFalse(t.NeedsUser);
             Assert.IsNull(t.FailureKind);
-            Assert.AreEqual("已完成（待用户验证）", TaskStateMachine.StatusText(t, _clock.Now));
+            Assert.AreEqual("待验证", TaskStateMachine.StatusText(t, _clock.Now));
             StringAssert.Contains(_host.NoticeBodies.Last(), "do not resend");
         }
 
@@ -205,7 +276,8 @@ namespace VSManager.Tests
             var store = new JsonTaskStore(path);
             Assert.IsNull(store.Save(new[] { t, f }));
             var back = store.Load(new List<string>());
-            Assert.IsTrue(back[0].NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, back[0].Status, "旧记录迁移为待验证 / Legacy record migrates to awaiting verification");
+            Assert.IsFalse(back[0].NeedsUser);
             Assert.AreEqual("#0：x", back[0].PriorFailure);
             Assert.AreEqual(FailureKind.NoReceipt, back[1].FailureKind);
             Assert.IsFalse(back[1].NeedsUser);

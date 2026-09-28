@@ -24,9 +24,9 @@ namespace VSManager
             @"未验证|待验证|需要验证|需验证|验证项|测试项|测试清单|手动测试|需要用户|需要你|请你?(?:测试|验证|确认)|unverified|to verify|verification|test checklist|manual(?:ly)? test|please (?:test|verify|check)",
             RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
-        /// <summary>任务是否等待用户测试（未验证，或已完成但待用户验证）。/ Whether the task awaits user testing (unverified, or done but awaiting verification).</summary>
+        /// <summary>任务是否待验证（等待用户测试）。/ Whether the task awaits verification (user testing).</summary>
         public static bool Pending(QueuedTask t) =>
-            t != null && (t.Status == QueueStatus.Unverified || (t.Status == QueueStatus.Done && t.NeedsUser));
+            t != null && t.Status == QueueStatus.Unverified;
 
         /// <summary>
         /// 解析测试项：优先「- [ ] 项目」复选框行；否则取「未验证 / 需要验证…」等标题之后的列表；都没有时返回一个通用项。

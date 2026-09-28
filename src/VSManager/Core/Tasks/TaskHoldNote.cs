@@ -24,7 +24,7 @@ namespace VSManager
 
         /// <summary>提取待处理内容；找不到标记时取回复最后一段。/ Extracts the pending items; falls back to the reply's last paragraph.</summary>
         public static string Pending(string reply) =>
-            Extract(reply, PendingTags) ?? "改动已完成，待用户验证 / Changes done; awaiting user verification";
+            Extract(reply, PendingTags) ?? "改动已完成，待验证 / Changes done; awaiting verification";
 
         /// <summary>提取失败原因；找不到标记时取回复最后一段。/ Extracts the failure reason; falls back to the reply's last paragraph.</summary>
         public static string Reason(string reply) => Extract(reply, ReasonTags);
@@ -42,18 +42,17 @@ namespace VSManager
             return label == null ? (text.Length == 0 ? null : text) : "【" + label + "】" + text;
         }
 
-        /// <summary>是否处于待用户处理的完成状态：待用户验证或未验证。/ Whether the task is finished but awaiting the user: needs-user or unverified.</summary>
+        /// <summary>是否处于待验证状态。/ Whether the task is awaiting verification.</summary>
         public static bool IsPending(QueuedTask t) =>
-            t != null && (t.Status == QueueStatus.Unverified || (t.Status == QueueStatus.Done && t.NeedsUser));
+            t != null && t.Status == QueueStatus.Unverified;
 
-        /// <summary>详情区标题；不是待确认或失败的任务时为 null。/ Detail title; null unless the task awaits confirmation or failed.</summary>
+        /// <summary>详情区标题；不是待验证或失败的任务时为 null。/ Detail title; null unless the task awaits verification or failed.</summary>
         public static string DetailTitle(QueuedTask t)
         {
             if (t == null) return null;
             string released = t.Released ? "（已放行 / released）" : "";
             if (t.Status == QueueStatus.Failed) return $"#{t.Id} 失败原因 / Failure reason{released}";
-            if (t.Status == QueueStatus.Unverified) return $"#{t.Id} 待验证 / Unverified";
-            if (t.Status == QueueStatus.Done && t.NeedsUser) return $"#{t.Id} 待处理 / Pending{released}";
+            if (t.Status == QueueStatus.Unverified) return $"#{t.Id} 待验证 / Awaiting verification{released}";
             return null;
         }
 
@@ -69,11 +68,9 @@ namespace VSManager
                     + "\n处理 / Next：右键「补充信息后重试…」「重新排队」或「放行后续任务」/ right-click for \"Retry with info…\", \"Requeue\" or \"Release successors\"";
             }
             string pending = !string.IsNullOrEmpty(t.PendingNote) ? t.PendingNote : Pending(t.Result);
-            if (t.Status == QueueStatus.Unverified)
-                return pending
-                    + "\n\n处理 / Next：在运行环境中验证后，在测试清单勾选或右键标记已验证；未验证不阻塞后续任务 / verify in the running app, then check the test checklist or mark it verified; unverified never blocks successors";
             return pending
-                + "\n\n处理 / Next：验证通过后右键「放行后续任务」；有问题时右键「补充信息后重试…」/ once verified, right-click \"Release successors\"; if not, \"Retry with info…\"";
+                + "\n\n处理 / Next：验证通过后在测试清单勾选或右键「标记为已验证」；有问题时右键「补充信息后重试…」；接续等级为「已完成」或「待确认」时会暂停后续任务，可右键「放行后续任务」"
+                + " / once verified, check the test checklist or right-click \"Mark as verified\"; if not, \"Retry with info…\"; at the \"Completed\" or \"Awaiting confirmation\" level it pauses successors until you right-click \"Release successors\"";
         }
 
         private static string Extract(string reply, string[] tags)

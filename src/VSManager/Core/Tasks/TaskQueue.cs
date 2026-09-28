@@ -100,7 +100,7 @@ namespace VSManager
             _items.AddRange(_store.Load(problems));
 
             _interrupted.AddRange(_items.Where(t => t.Status == QueueStatus.Sending));
-            foreach (var t in _items) TaskStateMachine.RecoverAfterRestart(t);
+            foreach (var t in _items) { TaskStateMachine.MigrateLegacy(t); TaskStateMachine.RecoverAfterRestart(t); }
 
             // 编号去重：缺失或重复的编号重新分配，保证之后新建的任务编号不与历史重复
             // De-duplicate ids: missing or repeated ids are renumbered so that new tasks never reuse a historical id

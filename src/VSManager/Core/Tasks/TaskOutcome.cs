@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text;
 
 namespace VSManager
 {
@@ -11,9 +12,11 @@ namespace VSManager
         None,
         /// <summary>本任务已完成。/ The task is complete.</summary>
         Success,
-        /// <summary>改动已完成，但需要用户测试或确认（VS 无法自行验证）。/ Changes are done but need user testing or confirmation.</summary>
-        NeedsUser,
-        /// <summary>功能已实现且构建 / 测试通过，仅未在运行中的程序里实际验证。/ Implemented with build / tests passing; only not verified in the running app.</summary>
+        /// <summary>
+        /// 待验证：改动已完成，但尚未在运行环境中验证，或需要用户测试、运行或确认（旧回执 NEEDS_USER 也归入此类）。
+        /// Awaiting verification: changes are done but not yet verified at runtime, or need user testing, running or confirmation
+        /// (the legacy NEEDS_USER receipt maps here too).
+        /// </summary>
         Unverified,
         /// <summary>本任务本身未能完成。/ The task itself could not be completed.</summary>
         Failed
@@ -288,7 +291,7 @@ namespace VSManager
             {
                 var t = stack.Pop();
                 if (!seen.Add(t.Id)) continue;
-                bool ran = (t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)) || (t.Status == QueueStatus.Done && t.NeedsUser);
+                bool ran = (t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)) || t.Status == QueueStatus.Unverified || (t.Status == QueueStatus.Done && t.NeedsUser);
                 // 旧数据没有计数时至少计最近一次 / Older records without the counter count at least the latest run
                 n += Math.Max(Math.Max(0, t.ContentRuns), ran ? 1 : 0);
                 if (t.Replaces == null) continue;
@@ -340,6 +343,47 @@ namespace VSManager
                     + $"Copilot 回复：{TextUtil.Clip(t.Result ?? t.Error, 400)}"
                     + " / The info adds nothing new (repeats the task or earlier info, or only says 'try again'): state concrete new information or changes from the Copilot reply, or hand over to the user.";
             return null;
+        }
+
+        /// <summary>
+        /// 新任务的目标 VS 上正在阻塞后续的失败 / 待验证任务（按接续等级；未放行、未被该文本以「重发 @编号」取代）。
+        /// Failed / awaiting-verification tasks that currently block successors on the new task's target (per continuation level;
+        /// not released and not superseded by this text as a "resend @id").
+        /// </summary>
+        public static List<QueuedTask> HeldBlockers(IEnumerable<QueuedTask> items, string vsKey, string text, ReleaseLevel level)
+        {
+            var list = items?.Where(x => x != null).ToList() ?? new List<QueuedTask>();
+            var probe = new QueuedTask { Id = int.MaxValue, VsKey = vsKey ?? "", Text = text ?? "" };
+            var superseded = new HashSet<int>(ResentTaskMatcher.Find(list, probe).Hide.Select(x => x.Id));
+            return TaskStateMachine.BlockingTasks(list, probe, level)
+                .Where(x => TaskStateMachine.IsHoldOutcome(x) && !superseded.Contains(x.Id)).ToList();
+        }
+
+        /// <summary>
+        /// AI 向被失败 / 待验证任务阻塞的 VS 发布新任务时的提示：应向阻塞任务补充信息，而不是另起新任务。
+        /// Notice when the AI publishes to a VS blocked by a failed / awaiting-verification task: supplement the blocker instead of
+        /// adding a new task.
+        /// </summary>
+        public static string BlockedSendText(IReadOnlyList<QueuedTask> blockers, string targetName)
+        {
+            if (blockers == null || blockers.Count == 0) return null;
+            var sb = new StringBuilder();
+            sb.Append($"未入队：「{targetName}」的后续任务正被以下任务按接续等级暂停，新任务只会排在它后面继续等待，无法解决阻塞 / "
+                + $"Not queued: successors on \"{targetName}\" are paused by the tasks below; a new task would only wait behind them and cannot clear the block:");
+            foreach (var b in blockers)
+            {
+                string note = b.Status == QueueStatus.Failed ? b.FailureReason ?? b.Error : b.PendingNote;
+                sb.Append($"\n#{b.Id}（{TaskStateMachine.StatusText(b, DateTime.Now)}）{TextUtil.Clip(b.Text, 120)}");
+                if (!string.IsNullOrWhiteSpace(note)) sb.Append(" ｜ ").Append(TextUtil.Clip(note, 200));
+            }
+            int id = blockers[0].Id;
+            sb.Append($"\n若这条内容是对 #{id} 的补充、修正、追加要求或验证反馈，请改用 retry_task_with_info(id={id}, info=…) 发给该任务，它会带着前次反馈在原 VS 重试；"
+                + "内容来自用户本轮消息时设 from_user=true（不受 AI 自主重试次数限制）。用户确认验证通过或忽略它时用 release_task 放行，不再需要时用 cancel_task 取消。"
+                + "只有确实与阻塞任务无关、且愿意排在其后等待的新任务，才再次调用 send_task 并设 queue_behind_blocked=true。 / "
+                + $"If this content supplements, corrects, extends or gives verification feedback on #{id}, call retry_task_with_info(id={id}, info=…) instead; it retries on the same VS with the previous feedback. "
+                + "Set from_user=true when the content comes from the user's message (not capped by the AI self-retry limit). Use release_task when the user confirms or waives it, or cancel_task when it is no longer needed. "
+                + "Only for a genuinely unrelated task that may wait behind the blocker, call send_task again with queue_behind_blocked=true.");
+            return sb.ToString();
         }
 
         private static string LimitText(int id, int spent) =>

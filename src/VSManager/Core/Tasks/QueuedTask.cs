@@ -23,12 +23,12 @@ namespace VSManager
         public static bool Active(string s) => s == Waiting || s == WaitingVs || s == Sending || s == Running;
 
         /// <summary>
-        /// 未验证：功能已实现（构建 / 测试通过），仅尚未在运行中的程序里实际验证；与「已完成」「失败」并列的结束状态。
-        /// Unverified: implemented (build / tests pass) but not yet verified in the running app; a terminal status alongside done and failed.
+        /// 待验证：改动已完成，但尚未在运行环境中验证，或需要用户测试、运行或确认；与「已完成」「失败」并列的结束状态。
+        /// Awaiting verification: changes are done but not yet verified at runtime, or need user testing, running or confirmation; a terminal status alongside done and failed.
         /// </summary>
         public const string Unverified = "unverified";
 
-        /// <summary>已产出结果（已完成或未验证），不阻塞后续任务。/ Produced a result (done or unverified); never blocks successors.</summary>
+        /// <summary>已产出结果（已完成或未验证）；是否阻塞后续由接续等级决定。/ Produced a result (done or unverified); whether it blocks successors depends on the continuation level.</summary>
         public static bool Delivered(string s) => s == Done || s == Unverified;
 
         public static bool Known(string s) => Active(s) || s == Done || s == Unverified || s == Failed || s == Cancelled;
@@ -104,7 +104,7 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public string AttachmentNote;
         /// <summary>失败类别（见 <see cref="VSManager.FailureKind"/>），未失败时为 null。/ Failure category (see <see cref="VSManager.FailureKind"/>); null unless failed.</summary>
         [DataMember(EmitDefaultValue = false)] public string FailureKind;
-        /// <summary>已完成，但需要用户测试或确认。/ Completed, but needs user testing or confirmation.</summary>
+        /// <summary>旧字段：已完成但需要用户验证；加载时并入「待验证」状态，新记录不再使用。/ Legacy field: done but awaiting user verification; migrated to the awaiting-verification status on load and no longer set.</summary>
         [DataMember(EmitDefaultValue = false)] public bool NeedsUser;
         /// <summary>前一次失败尝试的反馈摘要，随下一次发送附给 Copilot。/ Feedback summary of the previous failed attempt, sent to Copilot with the next attempt.</summary>
         [DataMember(EmitDefaultValue = false)] public string PriorFailure;

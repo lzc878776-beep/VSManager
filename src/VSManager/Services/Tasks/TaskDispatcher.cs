@@ -363,12 +363,12 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 "请根据 Copilot 回复判断：① 若失败原因明确且你能从已有信息（回复、对话、目录、常识）补齐所需内容，" +
                 $"调用 retry_task_with_info 插入补充信息重试该任务（还可补充 {Math.Max(0, left)} 次）；" +
                 "② 若需要用户决定、需要只有用户知道的信息、涉及取舍或风险，或补充次数已用完，就把失败原因和需要的信息告诉用户，" +
-                "由用户补充（之后用 retry_task_with_info 带上）、放行（release_task）或取消。不要重复发布已排队任务。 / " +
+                "由用户补充（之后用 retry_task_with_info 带上并设 from_user=true）、放行（release_task）或取消。对该任务的补充不要用 send_task 另起新任务，新任务只会排在它后面。 / " +
                 "Judge from the Copilot reply: (1) if the cause is clear and you can supply what is missing from existing information, " +
                 $"call retry_task_with_info to retry the task with supplementary info ({Math.Max(0, left)} left); " +
                 "(2) if it needs a user decision, information only the user has, involves trade-offs or risk, or the supplement limit is used up, " +
-                "tell the user the cause and what is needed; the user may supplement (then pass it via retry_task_with_info), release (release_task) or cancel. " +
-                "Do not duplicate queued tasks.";
+                "tell the user the cause and what is needed; the user may supplement (then pass it via retry_task_with_info with from_user=true), release (release_task) or cancel. " +
+                "Never add a new task with send_task for this task's supplement; it would only wait behind it.";
         }
 
         /// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task: stores the latest Copilot answer and notifies the AI assistant.</summary>
@@ -446,27 +446,25 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                     }
                     if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
                 }
-                bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
                 t.FullResult = result;
-                bool unverified = receipt == TaskReceipt.Unverified;
-                if (unverified) _host.LogEvent(t.VsName, $"任务 #{t.Id} 已实现但未实际验证 / Task implemented but not verified at runtime");
-                TaskStateMachine.Complete(t, _clock(), needsUser, unverified);
-                if (needsUser || unverified) t.TestItems = TaskTestChecklist.Parse(result);
+                bool pending = receipt == TaskReceipt.Unverified;
+                if (pending) _host.LogEvent(t.VsName, $"任务 #{t.Id} 改动已完成，待验证 / Task done, awaiting verification");
+                TaskStateMachine.Complete(t, _clock(), pending);
+                if (pending) t.TestItems = TaskTestChecklist.Parse(result);
                 CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    string label = unverified ? "未验证" : needsUser ? "已完成（待用户验证）" : "已完成";
-                    string labelEn = unverified ? "unverified" : needsUser ? "completed (awaiting verification)" : "completed";
+                    string label = pending ? "待验证" : "已完成";
+                    string labelEn = pending ? "awaiting verification" : "completed";
                     _host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
-                        ((needsUser || unverified) && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
-                        (unverified ? "\n结论：未验证（不是失败）。Copilot 说明功能已实现，只是尚未在运行中的程序里实际验证；请按「未验证」汇报并列出未验证项，不要判为失败，也不要说成已实测成功。/ Verdict: unverified, not failed. The work is implemented but not yet verified in the running app; report it as unverified with the pending checks, neither as a failure nor as a verified success." : "") +
-                        (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
-                        (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
+                        (pending && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
+                        (pending ? "\n结论：待验证（不是失败）。改动已完成，但尚未在运行环境中验证或需要用户测试、确认：请按「待验证」汇报，把测试清单转告用户并等待反馈；不要判为失败，不要说成已实测成功，不要重发，也不要把它当作已验证的依赖。/ Verdict: awaiting verification, not failed. The changes are done but not yet verified at runtime or need user testing or confirmation: report it as awaiting verification, relay the test checklist and wait for feedback; do not call it a failure or a verified success, do not resend, and do not treat it as a verified dependency." : "") +
+                        (pending && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
@@ -555,12 +553,12 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             return true;
         }
 
-        /// <summary>插入补充信息后重试失败 / 待验证的任务。/ Retries a failed / awaiting-verification task with supplementary info.</summary>
-        public bool RetryWithInfo(QueuedTask t, string info, out string error)
+        /// <summary>插入补充信息后重试失败 / 待验证的任务（用户补充时 <paramref name="enforceLimit"/> 为 false）。/ Retries a failed / awaiting-verification task with supplementary info (<paramref name="enforceLimit"/> is false for user supplements).</summary>
+        public bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit = true)
         {
             error = null;
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)) { error = "任务已被替换或正在处理 / Task was replaced or is being processed"; return false; }
-            if (!TaskStateMachine.Supplement(t, info, out error)) return false;
+            if (!TaskStateMachine.Supplement(t, info, out error, enforceLimit)) return false;
             _tasks.Commit();
             _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 补充信息后重新排队（第 {t.SupplementCount} 次）/ Task #{t.Id} requeued with info");
             Pump();

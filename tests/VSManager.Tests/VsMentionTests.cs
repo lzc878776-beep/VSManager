@@ -611,6 +611,26 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void ChatUi_BusyTargetStillSendsTextToQueue()
+        {
+            Sta(() =>
+            {
+                using (var panel = new ChatPanel())
+                {
+                    int sends = 0;
+                    panel.SendRequested += _ => sends++;
+                    panel.SetTarget("VS", "");
+                    panel.SetState("忙碌 / Busy", Color.White, Color.Black, Color.Red, true);
+                    panel.InputText = "编辑后的消息";
+                    // 忙碌时文字排入任务清单，发送按钮与回车都不能静默失效 / Busy targets queue text; neither the button nor Enter may silently do nothing
+                    Assert.IsTrue(Field<FlatButton>(panel, "_btnSend").Enabled);
+                    Key(panel, Keys.Enter);
+                    Assert.AreEqual(1, sends);
+                }
+            });
+        }
+
+        [TestMethod]
         public void AgentUi_ExplicitSendWorksWithoutModelAndFailureKeepsAttachments()
         {
             Sta(() =>

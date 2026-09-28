@@ -45,7 +45,7 @@ namespace VSManager
                 UseMnemonic = false,
                 Padding = new Padding(Dpi.S(10), Dpi.S(8), Dpi.S(10), 0),
                 Text = $"「{t.VsName}」任务：{TextUtil.Clip(t.Text, 120)}\r\n{reason}\r\n"
-                    + $"补充信息会与前次反馈一起发给原 VS 的 Copilot（已补充 {t.SupplementCount}/{TaskStateMachine.MaxSupplements} 次，Ctrl+Enter 确认）"
+                    + $"补充信息会与前次反馈一起发给原 VS 的 Copilot（已补充 {t.SupplementCount} 次，Ctrl+Enter 确认）"
                     + " / Sent to the same Copilot with the previous feedback (Ctrl+Enter to confirm)"
             };
 

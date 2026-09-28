@@ -78,15 +78,17 @@ namespace VSManager
         }
 
         public static string SuccessReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":SUCCESS]";
+        /// <summary>旧版「需要用户验证」回执，仍按待验证识别（新规则只使用 UNVERIFIED）。/ Legacy needs-user receipt, still read as awaiting verification (new rules only use UNVERIFIED).</summary>
         public static string NeedsUserReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":NEEDS_USER]";
         public static string FailureReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":FAILED]";
+        /// <summary>待验证回执。/ Awaiting-verification receipt.</summary>
         public static string UnverifiedReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":UNVERIFIED]";
 
         /// <summary>
         /// 发给 Copilot 的正文：任务 + 前次失败反馈（如有）+ 补充信息（如有）+ 完整回执规则。FAILED 只用于本任务本身未完成，
-        /// 需用户测试用 NEEDS_USER，无关的遗留问题不算失败。
+        /// 尚未验证或需用户测试用 UNVERIFIED，无关的遗留问题不算失败。
         /// Text sent to Copilot: task + previous failure feedback (if any) + supplementary info (if any) + the full receipt rules.
-        /// FAILED only means the task itself was not completed; NEEDS_USER covers user testing; unrelated pre-existing issues are not failures.
+        /// FAILED only means the task itself was not completed; UNVERIFIED covers pending verification and user testing; unrelated pre-existing issues are not failures.
         /// </summary>
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
@@ -106,16 +108,15 @@ namespace VSManager
             return round <= 1 ? "" : "【第 " + round + " 轮】本需求此前已执行 " + (round - 1) + " 次未通过，请参考前次反馈调整做法。 ";
         }
 
-        /// <summary>每个任务最多插入补充信息重试的次数。/ Maximum retries with supplementary info per task.</summary>
+        /// <summary>AI 助手自主为每个任务补充信息重试的次数上限；用户提供的补充不受此限。/ Cap on AI-initiated retries with info per task; supplements provided by the user are not capped.</summary>
         public const int MaxSupplements = 3;
 
         private static string FullRules(QueuedTask t) =>
-            "任务队列回执（仅用于确认本次结果，四选一，在最终回复最后单独一行输出）：本任务要求的内容已完成时输出 " + SuccessReceipt(t)
-            + "；功能已实现且构建 / 测试通过、仅尚未在运行中的程序里实际验证时，以「" + TaskHoldNote.PendingTag + "」开头单独成段列出未验证项后输出 " + UnverifiedReceipt(t)
-            + "；改动已完成，但需要用户手动测试、运行或确认（你无法自行验证）时，以「" + TaskHoldNote.PendingTag + "」开头单独成段，列出需要用户测试、确认或处理的内容后输出 " + NeedsUserReceipt(t)
+            "任务队列回执（仅用于确认本次结果，三选一，在最终回复最后单独一行输出）：本任务要求的内容已完成且已验证时输出 " + SuccessReceipt(t)
+            + "；改动已完成，但尚未在运行中的程序里实际验证，或需要用户手动测试、运行或确认（你无法自行验证）时，以「" + TaskHoldNote.PendingTag + "」开头单独成段，列出需要用户验证或处理的内容后输出 " + UnverifiedReceipt(t)
             + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，以「" + TaskHoldNote.ReasonTag + "」开头单独成段说明失败原因，再说明已完成的部分与建议的下一步，然后输出 " + FailureReceipt(t)
-            + "。输出未验证或需要用户验证的回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式。"
-            + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执。";
+            + "。输出待验证回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式。"
+            + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执；回执行之后不要再输出任何文字（包括括号内的补充说明）。";
 
         public static bool TryReadSuccess(QueuedTask t, string answer, out string result) =>
             ReadReceipt(t, answer, out result) == TaskReceipt.Success;
@@ -127,7 +128,7 @@ namespace VSManager
         /// </summary>
         public static TaskReceipt ReadReceipt(QueuedTask t, string answer, out string result)
         {
-            result = answer?.Trim();
+            result = StripTrailingNoReplyNote(answer)?.Trim();
             if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return TaskReceipt.None;
             string text = result;
             bool EndsWith(string receipt, out string body)
@@ -156,13 +157,14 @@ namespace VSManager
             }
             if (Only(UnverifiedReceipt(t), out string unverified))
             {
-                result = unverified.Length == 0 ? "功能已实现，尚未实际验证" : unverified;
+                result = unverified.Length == 0 ? "改动已完成，待验证" : unverified;
                 return TaskReceipt.Unverified;
             }
+            // 旧规则的 NEEDS_USER 与 UNVERIFIED 已合并为待验证 / The legacy NEEDS_USER receipt is merged into awaiting verification
             if (Only(NeedsUserReceipt(t), out string needs))
             {
-                result = needs.Length == 0 ? "改动已完成，待用户验证" : needs;
-                return TaskReceipt.NeedsUser;
+                result = needs.Length == 0 ? "改动已完成，待验证" : needs;
+                return TaskReceipt.Unverified;
             }
             if (Only(SuccessReceipt(t), out string ok))
             {
@@ -172,13 +174,37 @@ namespace VSManager
             return TaskReceipt.None;
         }
 
-        /// <summary>把回执归并为成功 / 未验证 / 失败三类。/ Collapses the receipt into succeeded / unverified / failed.</summary>
+        /// <summary>
+        /// Copilot 有时在回执之后自动追加「(This turn has no user-facing reply.)」一类的占位说明（最后一次输出没有正文时生成），
+        /// 它不是任务内容；读取回执前去掉末尾的这类行，回执仍须是其余内容的最后一行。
+        /// Copilot sometimes appends a placeholder such as "(This turn has no user-facing reply.)" after the receipt (generated when
+        /// its last output has no text). It is not task content, so such trailing lines are dropped before reading the receipt;
+        /// the receipt must still be the last line of what remains.
+        /// </summary>
+        internal static string StripTrailingNoReplyNote(string answer)
+        {
+            if (string.IsNullOrEmpty(answer)) return answer;
+            string text = answer.TrimEnd();
+            while (true)
+            {
+                int nl = text.LastIndexOf('\n');
+                string last = text.Substring(nl + 1);
+                if (!NoReplyNote.IsMatch(last)) return text;
+                if (nl < 0) return "";
+                text = text.Substring(0, nl).TrimEnd();
+            }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex NoReplyNote = new System.Text.RegularExpressions.Regex(
+            @"^\s*[\(（\[【_*]*\s*(this\s+turn\s+has\s+no\s+user[-\s]?facing\s+(reply|response|output|message)|no\s+user[-\s]?facing\s+(reply|response|output|message)|本轮(对话)?(没有|无)(面向用户的)?(回复|输出|消息))[^\n]{0,40}?[\)）\]】_*\s\.。]*$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+        /// <summary>把回执归并为成功 / 待验证 / 失败三类。/ Collapses the receipt into succeeded / awaiting verification / failed.</summary>
         public static TaskReplyOutcome ReadOutcome(QueuedTask t, string answer, out string result)
         {
             switch (ReadReceipt(t, answer, out result))
             {
-                case TaskReceipt.Success:
-                case TaskReceipt.NeedsUser: return TaskReplyOutcome.Succeeded;
+                case TaskReceipt.Success: return TaskReplyOutcome.Succeeded;
                 case TaskReceipt.Unverified: return TaskReplyOutcome.Unverified;
                 default: return TaskReplyOutcome.Failed;
             }
@@ -221,27 +247,38 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 执行中 → 已完成（<paramref name="needsUser"/> 表示待用户验证），或已实现但未实际运行验证时 → 未验证。
-        /// running → done (<paramref name="needsUser"/> marks awaiting user verification), or → unverified when implemented but not verified at runtime.
+        /// 旧记录迁移：「已完成（待用户验证）」并入「待验证」状态，放行标记保留。
+        /// Legacy migration: "done, awaiting user verification" becomes the awaiting-verification status; the released flag is kept.
         /// </summary>
-        public static bool Complete(QueuedTask t, DateTime now, bool needsUser = false, bool unverified = false)
+        public static void MigrateLegacy(QueuedTask t)
+        {
+            if (t == null || !t.NeedsUser) return;
+            if (t.Status == QueueStatus.Done) t.Status = QueueStatus.Unverified;
+            t.NeedsUser = false;
+        }
+
+        /// <summary>
+        /// 执行中 → 已完成，或（<paramref name="pending"/>）改动已完成但待验证 → 待验证。
+        /// running → done, or (<paramref name="pending"/>) changes done but awaiting verification → unverified.
+        /// </summary>
+        public static bool Complete(QueuedTask t, DateTime now, bool pending = false)
         {
             if (t == null || t.Status != QueueStatus.Running) return false;
-            t.Status = unverified ? QueueStatus.Unverified : QueueStatus.Done;
+            t.Status = pending ? QueueStatus.Unverified : QueueStatus.Done;
             t.Finished = now;
-            t.NeedsUser = needsUser && !unverified;
+            t.NeedsUser = false;
             t.FailureKind = null;
             t.Released = false;
             t.TestItems = null;
             t.FailureReason = null;
-            t.PendingNote = needsUser || unverified ? TaskHoldNote.Pending(t.Result) : null;
-            if (t.NeedsUser) t.ContentRuns++;
+            t.PendingNote = pending ? TaskHoldNote.Pending(t.Result) : null;
+            if (pending) t.ContentRuns++;
             return true;
         }
 
         /// <summary>
-        /// 未验证 / 待用户验证 → 已完成：用户确认已在运行环境中测试，测试清单全部勾选。
-        /// unverified / awaiting user verification → done: the user confirms testing; every checklist item is checked.
+        /// 待验证 → 已完成：用户确认已在运行环境中测试，测试清单全部勾选。
+        /// awaiting verification → done: the user confirms testing; every checklist item is checked.
         /// </summary>
         public static bool MarkVerified(QueuedTask t)
         {
@@ -268,14 +305,25 @@ namespace VSManager
             return true;
         }
 
-        /// <summary>排队 / 等待目标 VS / 执行中 → 已取消。/ waiting / waiting_vs / running → cancelled.</summary>
+        /// <summary>
+        /// 取消任务：排队
+        /// 发送中的任务可能已送达，不能取消；已取消的不重复取消。
+        /// Cancels a task: waiting / waiting for target / running (tracking stops), and finished failed / unverified / done tasks
+        /// (their result and failure record are kept; they no longer block successors). Sending tasks may already be delivered and
+        /// cannot be cancelled; cancelled tasks are not cancelled again.
+        /// </summary>
         public static bool Cancel(QueuedTask t, DateTime now)
         {
-            if (t == null || (t.Status != QueueStatus.Waiting && t.Status != QueueStatus.WaitingVs && t.Status != QueueStatus.Running)) return false;
+            if (!CanCancel(t)) return false;
+            bool finished = t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status);
             t.Status = QueueStatus.Cancelled;
-            t.Finished = now;
+            if (!finished || t.Finished == null) t.Finished = now;
             return true;
         }
+
+        /// <summary>是否可以取消（发送中与已取消除外）。/ Whether the task can be cancelled (not while sending or already cancelled).</summary>
+        public static bool CanCancel(QueuedTask t) => t != null && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs
+            || t.Status == QueueStatus.Running || t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status));
 
         /// <summary>
         /// 等待目标 VS → 排队：改用已打开 VS 的键与名称，并在 <paramref name="notBefore"/> 之后才发布（等待解决方案加载）。
@@ -311,9 +359,9 @@ namespace VSManager
             t.TestItems = null;
         }
 
-        /// <summary>是否为可放行 / 可补充的结束结果：失败，或已完成但待验证。/ Whether the outcome can be released / supplemented: failed, or done but awaiting verification.</summary>
+        /// <summary>是否为可放行 / 可补充的结束结果：失败或待验证。/ Whether the outcome can be released / supplemented: failed or awaiting verification.</summary>
         public static bool IsHoldOutcome(QueuedTask t) =>
-            t != null && (t.Status == QueueStatus.Failed || (t.Status == QueueStatus.Done && t.NeedsUser));
+            t != null && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Unverified);
 
         /// <summary>
         /// 放行：失败或待验证的任务不再暂停后续，结果保持不变。
@@ -327,17 +375,17 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 插入补充信息并重新排队（失败或待验证，最多 <see cref="MaxSupplements"/> 次）；前次反馈一并带上。
-        /// Adds supplementary info and requeues (failed or awaiting verification, at most <see cref="MaxSupplements"/> times);
-        /// the previous feedback is carried along.
+        /// 插入补充信息并重新排队（失败或待验证；<paramref name="enforceLimit"/> 为 true 时最多 <see cref="MaxSupplements"/> 次，用户补充不限）；前次反馈一并带上。
+        /// Adds supplementary info and requeues (failed or awaiting verification; at most <see cref="MaxSupplements"/> times when
+        /// <paramref name="enforceLimit"/> is true, unlimited for user supplements); the previous feedback is carried along.
         /// </summary>
-        public static bool Supplement(QueuedTask t, string info, out string error)
+        public static bool Supplement(QueuedTask t, string info, out string error, bool enforceLimit = true)
         {
             error = null;
             info = info?.Trim();
             if (string.IsNullOrEmpty(info)) { error = "补充信息不能为空 / Supplementary info is empty"; return false; }
             if (!IsHoldOutcome(t)) { error = "只有失败或待验证的任务可以补充信息重试 / Only failed or awaiting-verification tasks can be retried with info"; return false; }
-            if (t.SupplementCount >= MaxSupplements)
+            if (enforceLimit && t.SupplementCount >= MaxSupplements)
             {
                 error = $"已补充 {t.SupplementCount} 次，达到上限，请把情况告诉用户由用户决定 / Supplement limit reached ({t.SupplementCount}); hand over to the user";
                 return false;
@@ -455,7 +503,7 @@ namespace VSManager
         {
             if (blocker?.Status == QueueStatus.Failed)
                 return $"已暂停（前序 #{blocker.Id} 失败）/ Paused (predecessor #{blocker.Id} failed)";
-            if (blocker?.Status == QueueStatus.Done && blocker.NeedsUser)
+            if (blocker?.Status == QueueStatus.Unverified)
                 return $"已暂停（前序 #{blocker.Id} 待验证）/ Paused (predecessor #{blocker.Id} awaiting verification)";
             return null;
         }
@@ -470,8 +518,8 @@ namespace VSManager
                 case QueueStatus.WaitingVs: return "等待目标 VS（等待打开「" + (t.Target ?? t.VsName) + "」）";
                 case QueueStatus.Sending: return "发送中";
                 case QueueStatus.Running: return "执行中（" + TextUtil.FormatDuration(now - (t.Started ?? now)) + "）";
-case QueueStatus.Done: return (t.NeedsUser ? "已完成（待用户验证）" : "已完成") + (t.Released ? "·已放行" : "");
-case QueueStatus.Unverified: return "未验证";
+case QueueStatus.Done: return "已完成" + (t.Released ? "·已放行" : "");
+case QueueStatus.Unverified: return "待验证" + (t.Released ? "·已放行" : "");
 case QueueStatus.Failed: return t.Released ? "失败·已放行" : "失败";
                 default: return "已取消";
             }

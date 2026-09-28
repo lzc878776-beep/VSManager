@@ -566,16 +566,17 @@ if (c != null)
                 retry.Visible = retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled || t.Status == QueueStatus.Unverified);
                 verify.Visible = verify.Enabled = has && TaskTestChecklist.Pending(t);
                 supplement.Visible = has && TaskStateMachine.IsHoldOutcome(t);
-                supplement.Enabled = supplement.Visible && t.SupplementCount < TaskStateMachine.MaxSupplements;
+                supplement.Enabled = supplement.Visible;
                 supplement.Text = has && t.SupplementCount > 0
-                    ? $"补充信息后重试…（{t.SupplementCount}/{TaskStateMachine.MaxSupplements}）/ Retry with info…"
+                    ? $"补充信息后重试…（已补充 {t.SupplementCount} 次）/ Retry with info… ({t.SupplementCount} so far)"
                     : "补充信息后重试… / Retry with info…";
                 // 仅当前等级下会阻塞后续的结果才需要放行 / Release only matters for outcomes that block at the current level
                 release.Visible = has && TaskStateMachine.IsHoldOutcome(t) && _queue != null && ReleaseLevels.Blocks(_queue.ReleaseLevel, t);
                 release.Enabled = release.Visible && !t.Released;
                 release.Text = has && t.Released ? "已放行 / Released" : "放行后续任务 / Release successors";
-                cancel.Visible = cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
-                cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
+                cancel.Visible = cancel.Enabled = has && TaskStateMachine.CanCancel(t);
+                cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）"
+                    : has && (t.Status == QueueStatus.Failed || QueueStatus.Delivered(t.Status)) ? "取消任务（保留记录）/ Cancel (keep record)" : "取消任务";
                 remove.Visible = has;
                 remove.Enabled = has && t.Status != QueueStatus.Sending;
             };
@@ -786,10 +787,10 @@ if (c != null)
                 case QueueStatus.Running:
                     text = "执行中 · " + Dur(DateTime.Now - (t.Started ?? DateTime.Now)); fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Done:
-    text = (t.NeedsUser ? "✓ 待验证" : "✓ 已完成") + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
-    fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
+    text = "✓ 已完成" + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+    fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; break;
 case QueueStatus.Unverified:
-                    text = "◐ 未验证" + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+                    text = "◐ 待验证" + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
                     fg = Theme.UnverifiedFg; bg = Theme.UnverifiedBg; dot = Theme.UnverifiedDot; break;
                 case QueueStatus.Failed:
                     text = t.Released ? "失败 · 已放行" : "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;
