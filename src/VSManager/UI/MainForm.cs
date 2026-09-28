@@ -2148,8 +2148,16 @@ namespace VSManager
 
 		async Task<string> ITaskRoundHost.ReadRoundAsync(VsInstance v)
 		{
-			var chat = await DteWorker.RunSta(() => _chatSvc.Read(v, 12));
-			return chat != null && chat.PaneFound ? TaskReply.Round(chat) : null;
+			// 失败时额外展开步骤读取日志开头，失败的主要原因通常在日志最顶层 / On failure also expand steps to read log heads; the main cause usually sits at the top of the log
+			return await DteWorker.RunSta(() =>
+			{
+				var chat = _chatSvc.Read(v, 12);
+				if (chat == null || !chat.PaneFound) return null;
+				TurnLog log = null;
+				try { log = _chatSvc.ReadTurnLog(v); }
+				catch (Exception ex) { AppLog.Write(AppLog.TasksFile, "读取步骤日志失败 / Failed to read step logs: " + ex.Message); }
+				return TaskReply.Round(chat, log);
+			});
 		}
 
 		void ITaskDispatchHost.SetStatus(string text) => SetStatus(text);

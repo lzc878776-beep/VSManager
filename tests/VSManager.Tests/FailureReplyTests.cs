@@ -64,6 +64,38 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Round_AddsTopOfStepLogsAndVisibleNotices()
+        {
+            var chat = new ChatTranscript();
+            chat.Messages.Add(Msg(ChatRole.User, (false, "任务")));
+            chat.Messages.Add(Msg(ChatRole.Assistant, (true, "Run command: dotnet build"), (false, "构建中")));
+            string buildLog = "error CS0103: 当前上下文中不存在名称“Foo”\n" + string.Join("\n", Enumerable.Range(1, 50).Select(i => "detail " + i));
+            var log = new TurnLog();
+            log.Steps.Add(new StepLog { Header = "Run command: dotnet build", Detail = buildLog });
+            log.Steps.Add(new StepLog { Header = "正在使用 Autopilot 重试请求...", Detail = "Request failed: 413 Payload Too Large\n\n以下省略" });
+            log.Notices.Add("此响应被截断，因为它太长了。请尝试重新描述你的问题。");
+            string round = TaskReply.Round(chat, log);
+            var lines = round.Split('\n');
+            Assert.AreEqual(TaskReply.StepPrefix + "Run command: dotnet build", lines[0]);
+            Assert.AreEqual(TaskReply.DetailPrefix + "error CS0103: 当前上下文中不存在名称“Foo”", lines[1], "the top of the log comes first");
+            Assert.IsFalse(round.Contains("detail 30"), "only the head of each log is kept");
+            StringAssert.Contains(round, "构建中");
+            StringAssert.Contains(round, TaskReply.StepPrefix + "正在使用 Autopilot 重试请求...\n" + TaskReply.DetailPrefix + "Request failed: 413 Payload Too Large");
+            Assert.IsTrue(round.EndsWith(TaskReply.NoticePrefix + "此响应被截断，因为它太长了。请尝试重新描述你的问题。", StringComparison.Ordinal));
+            Assert.AreEqual(RunIssue.TooLarge, RunIssue.Detect(round));
+        }
+
+        [TestMethod]
+        public void LogHead_LimitsLinesAndCharacters()
+        {
+            Assert.IsNull(TaskReply.LogHead("  \n "));
+            Assert.AreEqual("a\nb", TaskReply.LogHead("a\r\n\r\nb"));
+            string head = TaskReply.LogHead(string.Join("\n", Enumerable.Range(1, 40)), 3, 1000);
+            Assert.AreEqual("1\n2\n3\n…", head);
+            Assert.IsTrue(TaskReply.LogHead(new string('x', 5000)).Length <= TaskReply.LogHeadChars + 2);
+        }
+
+        [TestMethod]
         public void Detect_FindsRunIssuesAtTheEndOfLongReplies()
         {
             string work = new string('改', 2000) + "\n";

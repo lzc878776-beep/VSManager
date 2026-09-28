@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -28,20 +29,77 @@ namespace VSManager
         /// Collects the whole turn (after the last user message): answer text verbatim, steps prefixed with <see cref="StepPrefix"/>;
         /// null when empty.
         /// </summary>
-        public static string Round(ChatTranscript chat)
+        public static string Round(ChatTranscript chat, TurnLog log = null)
         {
-            if (chat?.Messages == null || chat.Messages.Count == 0) return null;
-            int start = chat.Messages.FindLastIndex(m => m.Role == ChatRole.User) + 1;
             var sb = new StringBuilder();
-            foreach (var m in chat.Messages.Skip(start).Where(m => m.Role == ChatRole.Assistant))
-                foreach (var p in m.Parts)
-                {
-                    string text = p?.Text?.Trim();
-                    if (string.IsNullOrEmpty(text)) continue;
-                    if (sb.Length > 0) sb.Append('\n');
-                    sb.Append(p.IsStep ? StepPrefix + Regex.Replace(text, @"\s*\n\s*", " ") : text);
-                }
+            var steps = log?.Steps?.Where(x => x != null && !string.IsNullOrWhiteSpace(x.Header)).ToList() ?? new List<StepLog>();
+            var used = new bool[steps.Count];
+            void Line(string s) { if (sb.Length > 0) sb.Append('\n'); sb.Append(s); }
+            void Step(string header, string detail)
+            {
+                Line(StepPrefix + OneLine(header));
+                foreach (string d in (LogHead(detail) ?? "").Split('\n').Where(x => x.Trim().Length > 0)) Line(DetailPrefix + d.TrimEnd());
+            }
+            if (chat?.Messages != null)
+            {
+                int start = chat.Messages.FindLastIndex(m => m.Role == ChatRole.User) + 1;
+                foreach (var m in chat.Messages.Skip(start).Where(m => m.Role == ChatRole.Assistant))
+                    foreach (var p in m.Parts)
+                    {
+                        string text = p?.Text?.Trim();
+                        if (string.IsNullOrEmpty(text)) continue;
+                        if (!p.IsStep) { Line(text); continue; }
+                        // 按顺序把展开读取到的日志开头配到同名步骤 / Pair the expanded log heads with same-named steps in order
+                        int i = -1;
+                        for (int k = 0; k < steps.Count && i < 0; k++)
+                            if (!used[k] && SameHeader(steps[k].Header, text)) i = k;
+                        if (i >= 0) used[i] = true;
+                        Step(text, i >= 0 ? steps[i].Detail : null);
+                    }
+            }
+            for (int k = 0; k < steps.Count; k++)
+                if (!used[k]) Step(steps[k].Header, steps[k].Detail);
+            foreach (string n in log?.Notices ?? Enumerable.Empty<string>())
+                if (!string.IsNullOrWhiteSpace(n)) Line(NoticePrefix + OneLine(n));
             return sb.Length == 0 ? null : sb.ToString();
+        }
+
+        /// <summary>步骤日志内容行的前缀。/ Prefix of step log lines.</summary>
+        public const string DetailPrefix = "  │ ";
+        /// <summary>Copilot 界面提示（如「此响应被截断」）的前缀。/ Prefix of Copilot UI notices (such as "the response was truncated").</summary>
+        public const string NoticePrefix = "⚠ ";
+        /// <summary>每个步骤日志只取开头的行数与字数：失败的主要原因通常在日志最顶层。/ Only the first lines and characters of each step log are kept: the main cause usually sits at the top of the log.</summary>
+        public const int LogHeadLines = 20, LogHeadChars = 1500;
+
+        /// <summary>取日志开头（最顶层内容）：去掉空行，最多 <see cref="LogHeadLines"/> 行、<see cref="LogHeadChars"/> 字。/ Takes the head (top-level content) of a log: blank lines dropped, at most <see cref="LogHeadLines"/> lines and <see cref="LogHeadChars"/> characters.</summary>
+        public static string LogHead(string log, int maxLines = LogHeadLines, int maxChars = LogHeadChars)
+        {
+            if (string.IsNullOrWhiteSpace(log)) return null;
+            var lines = log.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').Select(x => x.TrimEnd()).Where(x => x.Trim().Length > 0).ToList();
+            var sb = new StringBuilder();
+            int taken = 0;
+            foreach (string line in lines)
+            {
+                if (taken == maxLines || sb.Length + line.Length > maxChars)
+                {
+                    if (sb.Length == 0) sb.Append(line.Substring(0, Math.Min(line.Length, maxChars)));
+                    sb.Append("\n…");
+                    break;
+                }
+                if (sb.Length > 0) sb.Append('\n');
+                sb.Append(line);
+                taken++;
+            }
+            return sb.ToString();
+        }
+
+        private static string OneLine(string s) => Regex.Replace(s ?? "", @"\s*\n\s*", " ").Trim();
+
+        private static bool SameHeader(string a, string b)
+        {
+            a = Regex.Replace(a ?? "", @"\s+", " ").Trim();
+            b = Regex.Replace(b ?? "", @"\s+", " ").Trim();
+            return a.Length > 0 && (a == b || b.StartsWith(a, StringComparison.Ordinal) || a.StartsWith(b, StringComparison.Ordinal));
         }
 
         /// <summary>保存前裁剪：过长时保留开头与结尾并注明省略字数。/ Trims before storing: keeps head and tail and notes the omitted length.</summary>
@@ -84,6 +142,23 @@ namespace VSManager
     }
 
     /// <summary>
+    /// 本轮日志：展开读取到的步骤日志开头与 Copilot 界面提示（仅失败时读取）。
+    /// Turn log: heads of expanded step logs and Copilot UI notices (read only on failure).
+    /// </summary>
+    public sealed class TurnLog
+    {
+        public List<StepLog> Steps = new List<StepLog>();
+        public List<string> Notices = new List<string>();
+    }
+
+    /// <summary>一个步骤的标题与日志内容。/ One step's header and log content.</summary>
+    public sealed class StepLog
+    {
+        public string Header;
+        public string Detail;
+    }
+
+    /// <summary>
     /// Copilot 本轮执行异常（不是任务内容问题）：返回中断、未预期的 EOF、返回体过大、达到单轮迭代上限、网络 / 服务错误。
     /// Copilot run problems that are not task-content problems: interrupted responses, unexpected EOF, oversized payloads,
     /// the per-turn iteration limit, network / service errors.
@@ -96,7 +171,7 @@ namespace VSManager
         private static readonly (string Code, Regex Pattern)[] Specific =
         {
             (Eof, new Regex(@"unexpected\s+(EOF|end\s+of\s+(file|stream|input|JSON))|\bEOF\b|意外的\s*EOF|未预期的\s*EOF|意外结束|流意外终止|stream\s+(ended|closed)\s+unexpectedly|premature\s+end", RegexOptions.IgnoreCase)),
-            (TooLarge, new Regex(@"(payload|request|response|body|entity|message|input|prompt)\s+(is\s+|was\s+)?too\s+(large|long|big)|\b413\b|context\s+(length|window)|maximum\s+context|token\s+limit|too\s+many\s+tokens|exceed(s|ed)?\s+(the\s+)?(maximum|max|limit)|返回体过大|响应过大|请求过大|内容过长|超出上下文|上下文长度|超过.{0,6}(token|令牌)|令牌上限", RegexOptions.IgnoreCase)),
+            (TooLarge, new Regex(@"(payload|request|response|body|entity|message|input|prompt)\s+(is\s+|was\s+)?too\s+(large|long|big)|\b413\b|context\s+(length|window)|maximum\s+context|token\s+limit|too\s+many\s+tokens|exceed(s|ed)?\s+(the\s+)?(maximum|max|limit)|truncated\s+because\s+it\s+(was|is)\s+too\s+long|返回体过大|响应过大|响应被截断|回复被截断|因为它太长|请求过大|内容过长|超出上下文|上下文长度|超过.{0,6}(token|令牌)|令牌上限", RegexOptions.IgnoreCase)),
             (IterationLimit, new Regex(@"(maximum|max)\s+(number\s+of\s+)?(iterations|tool\s+calls|requests|steps)|iteration\s+limit|tool[-\s]call\s+limit|been\s+working\s+on\s+this\s+(problem|task)\s+for\s+a\s+while|continue\s+to\s+iterate|迭代(上限|次数上限|次数已达)|达到.{0,8}(迭代|工具调用|请求).{0,4}上限|单轮.{0,6}上限|是否继续迭代|要继续吗", RegexOptions.IgnoreCase)),
         };
 
