@@ -534,7 +534,7 @@ namespace VSManager.Tests
                     input.SelectedText = "@";
                     var mentions = Field<VsMentionInput>(panel, "_mentions");
                     Assert.IsTrue(mentions.IsOpen);
-                    Assert.AreEqual(2, mentions.CandidateCount);
+                    Assert.AreEqual(3, mentions.CandidateCount, "两个 VS 加 @小维 / Two VS plus @小维");
                     Key(panel, Keys.Down); Key(panel, Keys.Enter);
                     Assert.AreEqual(0, sends);
                     Assert.IsFalse(mentions.IsOpen);
@@ -868,6 +868,61 @@ namespace VSManager.Tests
                             StringAssert.StartsWith(shown, "@#3 ");
                             Assert.IsFalse(shown.Contains("|"));
                             StringAssert.Contains(shown, "笔记本的三个按键能移除吗");
+                        }
+                    });
+                }
+
+                [TestMethod]
+                [TestCategory(TestKind.Ui)]
+                public void AgentUi_AssistantMention_GoesToAiEvenWithVsMention()
+                {
+                    Sta(() =>
+                    {
+                        using (var data = new TempDataFolder())
+                        using (var panel = new AgentPanel())
+                        {
+                            var settings = new AppSettings { AgentEndpoint = "http://127.0.0.1:1/v1", AgentModel = "test" };
+                            var agent = new AgentService(null, () => settings);
+                            panel.Bind(agent);
+                            var v = Vs(); var session = new VsMentionSession();
+                            panel.BindMentions(session, () => new[] { Target(v, 3) });
+                            var input = Field<TextBox>(panel, "_input");
+                            int calls = 0;
+                            panel.MentionRequested = (text, files) => { calls++; return new MentionSubmission(new QueuedTask(), "已接纳 / Accepted"); };
+                            input.Text = session.Select(VsMentionTarget.Assistant()) + " 让 " + session.Select(Target(v, 3)) + " 修复编译错误";
+                            Key(panel, Keys.Enter);
+                            Assert.AreEqual(0, calls, "@小维 不直接入队 / @小维 never enqueues directly");
+                            Assert.AreEqual("", input.Text);
+                            var shown = agent.Transcript.Messages.First().Parts.First().Text;
+                            StringAssert.StartsWith(shown, "@小维 让 @#3 ");
+                            Assert.IsFalse(shown.Contains("|"));
+                        }
+                    });
+                }
+
+                [TestMethod]
+                [TestCategory(TestKind.Ui)]
+                public void AgentUi_AssistantCandidateIsListedLast()
+                {
+                    Sta(() =>
+                    {
+                        using (var form = new QuietForm { Width = 950, Height = 650, ShowInTaskbar = false })
+                        using (var panel = new AgentPanel { Dock = DockStyle.Fill })
+                        {
+                            Field<TranscriptView>(panel, "_transcript").Visible = false;
+                            var session = new VsMentionSession(); var v = Vs();
+                            panel.BindMentions(session, () => new[] { Target(v, 1) });
+                            form.Controls.Add(panel); form.Show();
+                            var input = Field<TextBox>(panel, "_input"); input.Focus();
+                            input.SelectedText = "@小";
+                            var mentions = Field<VsMentionInput>(panel, "_mentions");
+                            Assert.IsTrue(mentions.IsOpen);
+                            Assert.AreEqual(1, mentions.CandidateCount);
+                            Key(panel, Keys.Enter);
+                            StringAssert.StartsWith(input.Text, "@[小维|");
+                            Assert.IsTrue(VsMentionSession.AddressesAssistant(input.Text));
+                            Assert.AreEqual("@小维", session.Chips(input.Text).Single().Label);
+                            form.Close();
                         }
                     });
                 }

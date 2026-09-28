@@ -374,7 +374,7 @@ namespace VSManager
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             if (selected) Theme.FillRound(g, Theme.RowSelected, row, Dpi.S(6));
             var flags = TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
-            string number = "#" + t.Number;
+            string number = t.IsAssistant ? "AI" : "#" + t.Number;
             int badgeW = TextRenderer.MeasureText(g, number, Theme.Small, Size.Empty, TextFormatFlags.NoPadding).Width + Dpi.S(12);
             var badge = new RectangleF(row.X + Dpi.S(8), row.Y + (row.Height - Dpi.S(20)) / 2, badgeW, Dpi.S(20));
             Theme.FillRound(g, selected ? Theme.Accent : Theme.AccentLight, badge, Dpi.S(10));

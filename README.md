@@ -1,4 +1,4 @@
-# VSManager · 多 VS 管理工具
+﻿# VSManager · 多 VS 管理工具
 
 VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），用于同时管理本机上多个 Visual Studio 实例及其中的 GitHub Copilot 对话。
 
@@ -7,11 +7,25 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 - **VS 实例总览**：自动发现正在运行的 Visual Studio，显示解决方案、调试状态与 Copilot 忙碌 / 空闲状态；一键布局到多块屏幕。
 - **应用内 Copilot 对话**：VS 线程页实时查看回复（Markdown 渲染），保留停止 Copilot、打开对话和调试控制；不再显示底部输入栏，文字与附件从 AI 总控助手「直发」发布。
 - **调试控制**：开始 / 停止 / 中断 / 重新启动调试，生成 / 重新生成，读取错误列表。
-- **AI 总控助手**：接入任意 OpenAI 兼容接口（默认 DeepSeek），通过函数调用查看各 VS 状态、分派任务、等待结果。
+- **AI 总控助手**：接入任意 OpenAI 兼容接口（默认 DeepSeek），通过函数调用查看各 VS 状态、分派任务、等待结果。快捷按钮「🗂 关闭 .cs 标签页 / Close .cs tabs」一键关闭各 VS 中已打开的 .cs 标签页，有未保存修改的文件保留不关闭、不保存并列出。
+  The "Close .cs tabs" quick button closes the open .cs tabs in every VS; files with unsaved changes stay open, are not saved, and are listed.
+  工具按需加载（「属性 → AI 助手 → 按需加载工具组」，默认开启）：每轮只向模型提供核心工具（VS 状态、发布 / 等待任务、任务清单与重试接续、测试清单、解决方案开关等），屏幕布局、VSManager 自测与界面探针、代码 / 文件检查与截图、worktree、笔记、CAD 验证、MCP 管理等工具组只在本轮文字相关（关键词或提到工具名）、近 8 轮用过，或 AI 调用 `load_tools` 时才加入；未列出的工具仍可按名调用。普通一轮的工具定义约减少三分之二，请求更小、模型更专注；关闭后每轮提供全部工具。
+  On-demand tools ("Properties → AI assistant → Load tool groups on demand", on by default): each round gives the model only the core tools (VS status, publishing / waiting for tasks, task list with retry and continuation, test checklists, opening / closing solutions…); the groups for screen layout, VSManager self-test and UI probes, code / file inspection and screenshots, worktrees, notes, CAD verification and MCP management join only when the round's text is related (keywords or a tool name), they were used in the last 8 rounds, or the AI calls `load_tools`. Unlisted tools can still be called by name. A plain round sends about two-thirds less tool definition text, so requests are smaller and the model stays focused; turning it off offers every tool each round.
+- **MCP 外部工具**：可选挂载 MCP（Model Context Protocol）服务器（本地命令或 Streamable HTTP 地址），把其工具注册给 AI 总控助手；默认关闭，不预装任何服务器。
+- **CAD 动作执行器**：独立的 ai.exe 按动作序列驱动调试启动的 CAD（打开图纸、执行命令、截图、抓日志等），结果回传给 AI 总控助手用于执行「待验证」项；每个项目一份适配包。目标项目也可嵌入 `sdk\VsmVerify.cs` 提供验证接口，由 ai.exe 经本机命名管道调用。
+  Target projects can also embed `sdk\VsmVerify.cs` to expose a verification interface that ai.exe calls over a local named pipe.
+  向 CAD 测试环境项目（CAD 插件项目）发布任务时，AI 总控助手会在任务文字中注明「不需要启动 CAD 自行测试，测试由 ai.agent 后续完成」，目标 VS 只负责编码、编译与单元测试。
+  When publishing to a CAD test-environment (CAD plug-in) project, the AI assistant states in the task that the VS need not start CAD to test; ai.agent runs the CAD tests afterwards, and the VS only codes, builds and runs unit tests.
+  用户不在场、无法回答提问时（通知驱动的轮次、自验证 / 自迭代循环、用户说过自己离开），AI 总控助手不停下来等待，而是根据上下文自己决策并把任务推进到完成，在回复中写明所做的决定；只有确实无法继续（缺少只有用户才有的信息、需要授权的不可逆操作、工具反复失败）时才停下，并在最终回复中说明需要用户提供什么。
+  When the user is away and cannot answer (notice-driven rounds, self-verify / self-iteration loops, or the user said they are away), the AI assistant does not stop to wait; it decides from the context, drives the task to completion and states its decisions in the reply. It stops only when it truly cannot continue (information only the user has, an irreversible action needing authorization, tools failing repeatedly) and then says in the final reply what the user needs to provide.
+- **执行计划缓存**：流程复杂（多步骤、跨重启、步骤间有依赖）时，AI 总控助手先用 `create_plan` 建立执行计划并持久化到 `%APPDATA%\VSManager\agent-plans.json`，每完成一步用 `update_plan_step` 更新，全部完成才 `complete_plan` 释放；进行中的计划常驻系统提示词。VSManager 重启（含自测重启）后新进程自动读回计划，发出「[执行计划恢复]」通知让 AI 从下一步接着做；自测重启时并入重启完成通知。简单请求不建计划。
+  Execution plan cache: for complex flows (multi-step, across restarts, dependent steps) the AI assistant first creates a plan with `create_plan`, persisted in `%APPDATA%\VSManager\agent-plans.json`, updates each finished step with `update_plan_step` and releases it with `complete_plan` only when all are done; active plans stay in the system prompt. After a VSManager restart (including self-test restarts) the new process reads the plans back and sends a "[Plan resumed]" notice so the AI continues from the next step; for self-test restarts it joins the restart notice. Simple requests get no plan.
 - **任务清单**：默认新发布 AI 任务保存后自动按编号调度；手动与恢复任务仍等待「开始流程 / Start」，可在属性改为全部自动。同时显示各 VS 中手动进行的 Copilot 对话。
+- **任务归属与项目摘要**：任务题目自动补全为「项目名 · 事项」（项目名取解决方案名），在任务清单与通知中显示；任务通知、失败反馈与 send_task 结果末尾自动附上「[项目上下文]」（项目名、职责描述、该 VS 最近 3 条任务结果），多项目并行时 AI 总控助手不必从长对话中翻找归属。不改变排队与调度规则。在此基础上的会话层隔离（`AgentSessionIsolation`，默认开启）让 AI 总控助手的模型上下文按项目分开：某项目的通知与对话不会出现在其他项目的轮次中，避免结论、文件路径与错误信息互相串扰。
+  Session-level isolation on top of this (`AgentSessionIsolation`, on by default) splits the AI assistant's model context per project: one project's notices and conversation never appear in another project's rounds, so conclusions, file paths and errors do not leak across projects.
 - **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，获得自动启动资格或本次会话手动开始后，打开目标才会自动推送。
 - **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换）；原 VS 输入栏的按住说话入口已移除。
-- **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill。
+- **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill（含 VS 截图）。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
 - **发布到 GitHub**：一键 git init / 提交 / 创建或关联远程仓库 / 推送，发布前自动做敏感信息自检。
 - **内存监控**：按 VSManager / 各 VS 实例（含子进程）/ 共享组件分组显示工作集与私有字节，支持温和清理与超阈值提醒。
@@ -25,6 +39,8 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
   Selection inserts `@[#number name|session-id]`. Keep the complete marker, add the task and press Enter / Send to enqueue directly; the marker is removed from the task body. **Explicit targeting overrides AI matching** without calling a model, even if no model is configured or it is busy. Inputs without mentions retain their previous flow.
 - AI 总控输入栏的发送按钮旁还有 **「⚡ 直发 / Direct」**（快捷键 Ctrl+Enter，仅在输入中包含 @ 目标时可用）：按 @ 指定的目标直接发布任务，AI 只做简单润色让语句通顺，不补充内容、不提问；未配置模型或模型正在运行时按原文直接入队。
   The AI assistant input also has a **"⚡ 直发 / Direct"** button beside Send (Ctrl+Enter, enabled only when the input contains an @ target): it publishes straight to the @ target, and the AI only smooths the wording without adding content or asking questions; without a configured or idle model the text is enqueued as typed.
+- **@小维**：候选列表末尾固定有「AI @小维」（AI 总控助手），选择后插入 `@[小维|标识]`，也可以直接输入 `@小维`。含 @小维 的消息明确交给 AI 总控助手按常规规则处理（回答问题或调用工具），即使同时 @ 了某个 VS 也不会直接入队，VS 提及只作为上下文；「⚡ 直发」仍以 VS 目标为准。需要已配置模型，AI 正在运行时保留草稿并提示。
+  **@小维**: the candidate list always ends with "AI @小维" (the AI assistant); choosing it inserts `@[小维|id]`, or just type `@小维`. Messages containing @小维 go explicitly to the AI assistant under its normal rules (answer or use tools); even with a VS mention nothing is enqueued directly and the VS only serves as context. "⚡ Direct" still targets the VS. A configured model is required; while the AI is busy the draft is kept with a notice.
 - 一条消息只能指定 **一个不同的 VS**。重复提及同一实例会去重；多个不同实例、未确认的 `@查询`、未知/修改过的标记或无正文（且无附件）都整条拒绝，不部分发布。无匹配时显示中英提示，保留草稿与附件。只有持久化成功才清空输入；重复提交相同目标、正文和附件复用活动任务。
   A message allows **one distinct VS**. Repeated mentions of that instance are deduplicated. Multiple distinct targets, unconfirmed queries, unknown/edited markers, or no body without attachments reject the whole message. No-match and save failures retain text and attachments. Input clears only after persistence; identical active tasks are reused.
 - 编号只是显示，目标实际绑定 **进程 ID、启动时间和解决方案/项目**。切换左侧选中项、实例重排或重名不会改目标；同一解决方案的两个 VS 也不会互相替代。实例关闭、重启或切换解决方案后拒绝发送，已排队任务在调度时失败并说明原因，请重新选择后发布。发送边界还核验真实进程和 DTE；无法核验时不会强行发送。
@@ -199,8 +215,10 @@ VSManager/
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI 兼容接口与模型 |
 | | `AgentKeyProtected` | 空 | API Key（DPAPI 加密；也可用 `VSMANAGER_AGENT_API_KEY`） |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进；也可在笔记本根目录的「AI 助手补充提示词」页面中写补充要求，每次开始新对话时读取（点「新对话」使修改生效） |
+| | `AgentSessionIsolation` | true | 会话层隔离：AI 总控助手的模型上下文按项目（解决方案名）分开。任务通知归属其项目；用户消息恰好提到一个项目（项目名、VS 名或登记别名）时归属该项目，否则为全局。项目轮只看到全局对话与本项目对话，全局轮只看到全局对话和各项目最近结论摘要；归属随对话记录保存，重开后接续。界面对话仍是一条，「新对话」一并清空 |
 | | `NoteAgentDock` / `NoteAgentPercent` / `NoteAgentFloatBounds` | right / 50 / 空 | 笔记本界面的「笔记 AI 助手」：默认与笔记本各占半屏；拖动其标题栏可停靠到右侧 / 左侧（侧边栏停靠）或底部，拖到中间变为浮动窗口（浮动窗口拖回边缘可重新停靠，关闭则回到上次停靠位置），也可点标题栏按钮 ◧ ◨ ⬓ ⧉ 切换；位置、比例与浮动窗口大小自动保存。它有独立对话，只能读取笔记（`read_current_note` / `list_notes` / `read_note`）并用 `format_note_card` 生成笔记卡片，不操作 VS；点「📥 插入到笔记」把最新回复写入当前笔记（光标处或末尾）。关闭 `AgentEnabled` 时一并隐藏 |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | 默认仅授权已登记解决方案目录；额外根目录必须在「AI 文件授权」中应用确认，或由用户编辑本机配置；两者都为空时拒绝全部访问 |
+| | `McpEnabled` / `McpServersJson` | false / "" | 是否为 AI 总控助手挂载 MCP 服务器及其配置 JSON；只在「属性 → MCP 服务器」中由用户修改，AI 不能更改 |
 | | `AgentPowerShellEnabled` | false | 兼容保留字段；AI 任意脚本入口停用，旧配置设为 true 也不能绕过文件白名单 |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | 单次文本上限（字符） |
 | | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | 输出上限（0＝模型默认）、历史条数、单轮工具调用次数 |
@@ -304,6 +322,25 @@ note: 构建与测试通过
 
 审计保存在 `%APPDATA%\VSManager\logs\file-audit.log`：记录操作、关联编号、脱敏路径及路径标识、开始/结果状态、数量和耗时，不记录搜索词或文件内容。读取前和返回前均须成功写入审计，否则不返回内容；无法读取的条目会汇总提示，不静默伪装为完整结果。审计及白名单仅保留本机，不提交到仓库。
 
+### MCP 服务器（外部工具）
+
+在「属性 → MCP 服务器」打开开关，填写配置后点击「应用并连接」（校验通过并确认后生效）。格式与常见 MCP 客户端相同，支持 `mcpServers` / `servers` 两种顶层键；每个服务器只能填写 `command`（本地 stdio，可带 `args`、`env`、`cwd`）或 `url`（Streamable HTTP，可带 `headers`）之一，`"disabled": true` 可暂时停用。值中可使用 `%变量%` 引用环境变量，建议令牌写成 `%变量%` 而不要直接写入配置。第一版不预装任何服务器，示例（可点「插入示例」）：
+
+```json
+{
+  "mcpServers": {
+	"example": { "command": "npx", "args": ["-y", "<mcp-server-package>"], "env": { "TOKEN_NAME": "%TOKEN_NAME%" } },
+	"remote": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer %TOKEN_NAME%" } }
+  }
+}
+```
+
+- 连接在后台完成：握手 `initialize`（协议版本 2025-06-18）→ `tools/list`（自动翻页）；卡片显示每个服务器的状态、工具数量或错误，可随时「重新连接」。服务器通知工具列表变化时自动刷新。
+- 工具以 `mcp_服务器_工具` 的名称注册给 AI 总控助手（笔记助手不挂载），说明与参数 Schema 来自服务器；新增 `list_mcp_servers` 查看状态、`reconnect_mcp_servers` 重连（需确认）。
+- 开启「操作前确认」时，调用未声明只读（`readOnlyHint`）的 MCP 工具前会弹窗显示参数；工具在后台线程执行，默认超时 180 秒，结果中的图片等二进制只给出摘要。
+- `.cmd` / `.bat` 命令（如 `npx`）经 `cmd.exe` 启动；本地服务器进程放入作业对象，VSManager 退出时一并结束。诊断日志写入日志目录的 `mcp.log`（不记录环境变量与请求头的值）。
+- 安全边界：MCP 服务器是独立进程，以当前用户权限运行，**不受「AI 文件授权」限制**，也不会因此扩大 VSManager 内置文件工具的授权；只添加可信服务器。系统提示要求助手把 MCP 返回内容视为不可信数据，未经用户要求不把授权文件内容发送给 MCP 工具。AI 不能增删服务器或修改配置。
+
 ### 发送前文档清理
 
 在「属性 → 发送确认」显式开启 `CloseVsDocumentsBeforeSend`（默认 false）。仅在目标 VS 的文档标签页数严格大于 `CloseVsDocumentsThreshold`（默认 10）时，才在实际发送之前清理已保存文档；多个视图按文档窗口计数。调试中、调试状态未知、未保存或无法确认状态的文档一律跳过；工具窗口、Copilot 窗格和 VS 进程不关闭，也不会自动保存或丢弃修改。
@@ -321,7 +358,7 @@ note: 构建与测试通过
 3. 停留在历史记录时点击「返回」（`backToChat`）切回当前会话；
 4. 校验输入框可见且可编辑，再把 VS 切到前台并聚焦输入框。
 
-每步的窗格状态、候选数量、是否自动隐藏与耗时写入发送日志；结果按现有弹窗与语音设置播报「已打开对话助手」或「未能打开对话助手，请手动打开」。`AutoOpenCopilotPane`（默认 true）开启时，发送任务前也会先按同样的步骤打开窗格（不抢前台），定位输入框重试时同样会退出历史记录。
+每步的窗格状态、候选数量、是否自动隐藏与耗时写入发送日志；结果按现有弹窗与语音设置播报「已打开对话助手」或「未能打开对话助手，请手动打开」。`AutoOpenCopilotPane`（默认 true）开启时，发送任务前也会先按同样的步骤打开窗格（不抢前台），定位输入框重试时同样会退出历史记录。历史列表视图中没有对话列表，窗格搜索靠「返回」按钮识别它。自动修复后窗格仍未就绪时，任务不会被当成「等待手动对话」原样重发：发送结果以「等待对话窗格就绪 / Chat pane not ready」开头并写明诊断原因与处理建议（未找到窗格、不可见、停留在历史列表、无输入框、定位不到输入框），任务清单每轮先诊断并修复，再间隔 10 秒、30 秒重试，最多 3 轮；仍失败就停止自动重发并以该原因失败（未提交任何内容），AI 总控助手会先调用 `open_copilot` 修复成功后再重试，否则把原因转告用户。
 
 ### AI 助手附件
 
@@ -405,6 +442,24 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 - **进程看门狗**（默认关闭，`ProcessWatchdogEnabled`）：开启后会启动一个独立的看门狗进程；VSManager 异常退出（崩溃、被结束）后约 2 秒自动重新拉起。任务清单每次变更都会写盘，崩溃时还会再尽力保存一次；重启后默认恢复任务队列但等待手动「开始流程」（显式全部自动模式除外），获资格后执行中的任务继续跟踪；退出时「发送中」的任务可能已送达，因此标为失败并提示手动重新排队，避免重复发布。正常退出不会被拉起。
 - **防重启风暴**：`AutoRestartWindowMinutes` 分钟内最多自动重启 `AutoRestartMaxCount` 次（默认 5 分钟 3 次，AI 助手与进程分别计数），超过后停止自动重启并提示查看日志。
 - **手动入口**：主窗口顶部「⟳ 重启」菜单与托盘菜单提供「重启 AI 助手」「重启 VSManager…」（需确认；正在发送时拒绝，任务清单与配置先保存），菜单内还可切换上述两个开关、打开日志目录。
+- **测试清单分类与自验证循环**：任务回执规则要求 Copilot 在每个测试项开头标注「[AI]」（AI 总控助手可用工具验证：编译 / 单元测试、日志、文件或配置、命令与接口返回、验证接口等）或「[人工]」（需要操作界面或观察画面、声音）；未标注的项按文字保守推断，涉及界面、点击、观察或无法判断时一律归为人工。测试清单中 AI 项显示青绿色「AI」标签，人工项显示琥珀色「人工」标签，顶部统计两类剩余项数。「🤖 AI 验证 / AI verify」让助手立即用工具验证所有未勾选的 AI 项；「🔁 自验证」开关（需开启「任务完成自动跟进」，保存为 `AgentSelfVerify`）开启后，任务进入待验证且含 AI 项时自动通知助手验证、用 `mark_test_item` 勾选（写明依据），未通过则用 `retry_task_with_info` 带证据重试，再次待验证时自动进入下一轮，受 AI 自主补充上限（3 次）约束。`mark_test_item` 拒绝勾选人工项；人工项始终留给用户。VSManager 自身的任务仍通过自测重启测试。
+  **Checklist split and self-verify loop**: the receipt rules ask Copilot to tag each checklist item "[AI]" (the AI assistant can verify it with tools: build / unit tests, logs, files or settings, command and API output, verification checks) or "[人工]" (manual: needs UI interaction or watching / listening); untagged items are inferred conservatively and anything about UI, clicks, observation or unclear is manual. The test checklist shows AI items with a teal "AI" tag and manual items with an amber "人工" tag, with counts of both at the top. "🤖 AI verify" asks the assistant to verify every unchecked AI item now; the "🔁 Loop" switch (needs task auto follow-up; saved as `AgentSelfVerify`) makes tasks awaiting verification with AI items notify the assistant to verify them and check them via `mark_test_item` with evidence, retrying with `retry_task_with_info` and the evidence on failure; the next pending result re-enters the loop, bounded by the AI retry cap (3). `mark_test_item` refuses manual items, which always stay with the user. VSManager's own tasks are still tested through the self-test restart.
+- **自测重启技能**（AI 总控助手）：VSManager 自身的编程任务完成后，对助手说「重启 VSManager 测试新功能」，它先用 `list_tasks` 读取测试清单写成测试计划，再调用 `restart_vsmanager_for_testing`。要求 VSManager 正在某个 VS 的调试器中运行（F5 启动）；工具先用该 VS 自带的 MSBuild 把 VSManager 项目生成到临时目录确认能编译（失败则不重启，正在运行的程序不受影响），本轮回复结束且没有发送中的任务后保存任务清单、配置、笔记与本会话的启动授权，写入 `%APPDATA%\VSManager\restart-handoff.json`，再让该 VS 执行 Debug.Restart。等待期间暂停发布新任务；其他 VS 中执行的任务照常进行，重启后继续跟踪、不会重发。新进程读取交接单（只用一次，30 分钟内有效）后恢复启动授权，对话自动接续，并向助手发送「[重启完成通知]」（含新旧进程、程序文件时间以判断是否加载了新程序）；助手按计划逐项执行能用工具完成的测试，用 `mark_test_item` 勾选有工具依据的通过项，需要用户操作或观察的项列为「需用户测试」。VS 未能重启时自动撤销并告知助手。
+  **Self-test restart skill** (AI assistant): after a VSManager coding task, ask the assistant to restart VSManager and test; it builds a test plan from the checklist via `list_tasks` and calls `restart_vsmanager_for_testing`. VSManager must run under a VS debugger (F5). The tool pre-builds the project into a temp folder with that VS's MSBuild (no restart on failure; the running app is untouched); after the round ends and no send is in flight it saves tasks, settings, notes and session start grants to `%APPDATA%\VSManager\restart-handoff.json`, then has that VS run Debug.Restart. New sends pause meanwhile; tasks running in other VS instances continue and are tracked again after the restart, never resent. The new process consumes the handoff once (valid 30 minutes), restores grants, resumes the conversation and sends the assistant a "[重启完成通知 / Restart completed]" notice (old/new process and exe times show whether the new build loaded); the assistant runs the tool-verifiable items, checks passed items with evidence via `mark_test_item` and lists the rest as needing user testing. If VS does not restart, the attempt is withdrawn and the assistant is told.
+- **无感重启（不等待其他 VS）**：自测重启只等 AI 本轮回复结束、发送中的消息与正在进行的收尾合并，以及调试 VSManager 的那个 VS 中的任务；其他 VS 中正在执行的任务一律忽略，不必等它们完成，它们照常执行。等待期间其他 VS 的完成事件暂缓处理，排队的助手通知不再在旧进程里开新一轮，而是写入 `%APPDATA%\VSManager\restart-notices.json` 带到新进程（只读一次，12 小时内有效），在「[重启完成通知]」之后补发；暂缓完成的任务由新进程的执行中跟踪重新读取结果，不会重发。手动「重启 VSManager」同样带走未处理的通知。提示词已同步：只有调试 VSManager 的 VS 中有执行中任务时才不重启。
+  **Seamless restart (no waiting on other VS)**: a self-test restart waits only for the assistant's current round, in-flight sends, ongoing finishing / merging and tasks in the VS debugging VSManager; tasks running in other VS instances are ignored, never waited for, and keep running. Meanwhile their completion events are deferred and queued assistant notices no longer start new rounds in the old process; they are written to `%APPDATA%\VSManager\restart-notices.json`, carried to the new process (read once, valid 12 hours) and re-delivered after the "[重启完成通知 / Restart completed]" notice. Deferred tasks are picked up by the new process's running-task tracking, which reads their results without resending. The manual "Restart VSManager" also carries unprocessed notices. The prompt now says only a running task in the VS debugging VSManager blocks a restart.
+- **界面状态探测工具**：AI 总控助手新增 `get_window_state`、`get_foreground_window`、`list_tray_icons`、`read_restart_handoff`，可自己验证重启后窗口位置 / 页面 / 草稿是否恢复、是否抢焦点、是否留下托盘残影、交接文件是否被消费，支撑自迭代。提示词、重启完成通知与测试清单标注规则已同步说明；写明使用这些工具的测试项归为 [AI]，已标 [人工] 的项仍不能由 AI 勾选。
+  **UI state probe tools**: the AI assistant gains `get_window_state`, `get_foreground_window`, `list_tray_icons` and `read_restart_handoff` to verify by itself whether window position / page / draft were restored after a restart, whether focus was stolen, whether a ghost tray icon remains and whether the handoff files were consumed, enabling self-iteration. The prompt, the restart-completed notice and the checklist tag rule describe them; items naming these tools count as [AI], while items tagged [人工] (manual) still cannot be checked by the AI.
+- **可验证性重判与自动验证**：任务进入待验证时按测试项文字重判 [AI] / [人工]（已有清单在启动与读取时同样重判，只改未勾选项）：窗口位置、大小、最大化 / 最小化、所在屏幕、当前页面、选中的 VS、输入框草稿、托盘图标与残影、前台焦点、交接文件消费状态归为 [AI]；画面观感、动画、颜色、需要用户点击按钮、需要人为制造故障的项保持 [人工]。核对清单工具返回或其他项标注的元测试项（提到 `list_test_checklists` / `list_tasks` / `mark_test_item`，或写明某类项「显示为 / 标为 [AI] / [人工]」）单独判定：引号（『』「」“”、反引号等）里引用的是其他项，不参与判定，去掉后本项仍需点击按钮等人工动作才判 [人工]，否则判 [AI]。AI 发布的任务即使未开「🔁 自验证」循环，完成通知也附「[自动验证]」说明，让助手先用 `get_window_state` 等工具验证并勾选 [AI] 项（写明依据），验证不了的如实转告、不得勾选；需要重启才能验证的项只在用户要求或循环 / 自迭代进行中才重启。需要特定前置场景（某个 VS 对话页、最大化 / 副屏、草稿、先切到其他应用）时，助手用 `prepare_restart_scenario` 自己造出场景再触发自测重启。
+  **Verifiability re-judging and auto-verification**: when a task becomes awaiting verification its items are re-judged [AI] / [人工] from their text (existing checklists too, at startup and when read; unchecked items only): window position, size, maximized / minimized, screen, current page, selected VS, input draft, tray icons and ghosts, foreground focus and handoff-file consumption become [AI]; looks, animation, colors, clicking buttons and deliberately causing failures stay [人工]. Meta items that check a checklist tool's output or other items' tags (mentioning `list_test_checklists` / `list_tasks` / `mark_test_item`, or stating that some items "show as / are tagged [AI] / [人工]") are judged separately: quoted text (corner brackets, quotes, backticks) cites other items and is ignored; only a human action left in the item itself (e.g. clicking a button) makes it [人工], otherwise it is [AI]. Even without the "🔁 Loop", completion notices of AI-published tasks carry an "[自动验证 / Auto-verify]" block so the assistant first verifies and checks the [AI] items with `get_window_state` and the other tools (citing evidence) and honestly relays what it cannot verify, never checking it; items that need a restart are restarted only when the user asks or a loop / self-iteration is running. For items that need a precondition (a VS chat page, maximized / second screen, a draft, another app in front) the assistant builds it with `prepare_restart_scenario` before triggering the self-test restart.
+- **补 skill 闭环**：AI 总控助手验证测试项时，若某项用现有工具验证不了、但要看的是机器可读状态（窗口 / 控件 / 托盘 / 文件 / 日志 / 进程等），它自己判断需要什么 skill 并调用 `start_skill_gap_loop`，无需用户提醒地完成「发布实现任务 → 重启加载 → 用新 skill 验证 → 通过勾选 / 未通过带证据修复」，直到通过或达到轮次上限（默认 3）。它是自迭代的特例：复用自迭代的状态、轮次上限、重启完成通知与 `stop_self_iteration`，同一时间只能有一个；区别是由 AI 自动发起、授权只覆盖实现与修复该 skill，目标固定为让该测试项可自动验证。必须人眼 / 人手的项不发起，每项只发起一次；skill 正常但被测项本身不符时交回原任务流程处理。
+  **Skill-gap loop**: when an item cannot be verified with existing tools but concerns machine-readable state (window / control / tray / file / log / process), the AI assistant decides which skill is needed and calls `start_skill_gap_loop`, then runs "publish the implementation → restart to load it → verify with the new skill → check on success / fix with evidence on failure" without user reminders until it passes or the round limit (default 3). It is a special self-iteration reusing the same state, round limit, restart notice and `stop_self_iteration`, and only one can run at a time; unlike a user-started one it is started by the AI, authorizes only tasks implementing or fixing that skill, and its goal is fixed to making that item automatically verifiable. Never for items needing human eyes or hands, one loop per item; if the skill works but the item itself fails, the original task's flow takes over.
+- **查看全部测试清单**：AI 总控助手用 `list_test_checklists` 查看全部待验证任务的完整测试清单（不再只看到最近的两三条），`list_tasks` 也会列出所有待验证任务并为测试项编号；旧任务的清单从已保存的回复补齐。提示词说明这是只读查询、不能为此发布任务：清单保存在 VSManager 自身，各 VS 中的 Copilot 看不到，发布只会产生无效任务；工具不足时也须先说明原因、经用户确认才可请求完善能力。
+  **View every checklist**: the AI assistant uses `list_test_checklists` to see the full checklist of every task awaiting verification (not just the two or three most recent), and `list_tasks` now includes every such task with numbered items; older tasks are filled from the saved reply. The prompt explains this is a read-only query that must not become a published task: the checklist lives in VSManager and the Copilot in each VS cannot see it, so publishing would only create a useless task; when tools fall short it must explain why and ask for an improvement only after the user confirms.
+- **更无感的重启**：自测重启与「重启」按钮会把窗口位置、大小、最大化 / 最小化状态、当前页面（AI 总控或某个 VS 对话）、选中的 VS 与 AI 输入草稿写入 `%APPDATA%\VSManager\restart-ui.json`（只用一次，15 分钟内有效），新进程按原位置恢复（原屏幕已断开时退回默认位置），不再强制切到 AI 总控页；重启前窗口不在前台时新窗口不抢焦点。窗口在前台时，VS 重新生成期间以原窗口截图盖住空白（标注「正在重启 / Restarting」），新窗口出现后自动消失；重启前先移除托盘图标，不留残影；接续对话会等实例列表刷新（2–8 秒）后再开始。重启后 20 秒内页面与选中的 VS 保持为保存值：被程序切走会改回并记入 `watchdog.log`，用户手动点选则立即停止恢复；`get_window_state` 在不一致时列出最近一次页面切换的来源（用户 / 程序 / 重启恢复 / 测试场景）。
+  **Smoother restart**: the self-test restart and the Restart button save window position, size, maximized/minimized state, current page (AI assistant or a VS chat), selected VS and the AI input draft to `%APPDATA%\VSManager\restart-ui.json` (used once, valid 15 minutes). The new process restores them in place (default placement if that screen is gone) and no longer forces the AI assistant page; if the window was not in the foreground, the new one does not steal focus. When it was in the foreground, a screenshot of the old window covers the rebuild gap (labelled "正在重启 / Restarting") and disappears once the new window shows; the tray icon is removed first so no ghost icon remains; resuming the conversation waits for the instance list to refresh (2–8 s). For 20 seconds after the restart the page and selected VS are held at the saved values: program switches are reverted and logged to `watchdog.log`, while a manual user pick ends the restore at once; when they differ, `get_window_state` shows the source of the last page switch (user / program / restart restore / scenario).
+- **自迭代循环**（AI 总控助手，需用户明确要求）：在 F5 调试 VSManager 且开启「任务完成自动跟进」时，对助手说「自己迭代改进 XX，最多 N 轮」，它调用 `start_self_iteration` 记下目标与轮次上限（默认 3，最多 10，状态存于 `%APPDATA%\VSManager\self-iteration.json`，24 小时过期），然后循环：向调试 VSManager 的 VS 发布开发任务 → 任务完成后读测试清单并自测重启 → 重启通知附带本轮说明，按工具测试结果 `mark_test_item`，全部通过即 `stop_self_iteration`，否则按失败证据发布修复任务再重启。每次成功预编译算一轮，达到上限后拒绝再重启；该 VS 中仍有执行中的任务时不会重启；需要用户观察的项仍列为「需用户测试」。随时可说「停止迭代」。
+  **Self-iteration loop** (AI assistant, only on explicit request): with VSManager under F5 and "auto follow-up" enabled, ask the assistant to iterate on a goal for up to N rounds; it calls `start_self_iteration` (default 3, max 10 rounds; state in `%APPDATA%\VSManager\self-iteration.json`, expires after 24 hours) and loops: publish a task to the VS debugging VSManager → after completion restart for testing → the restart notice carries the round guidance; mark evidence-backed items, call `stop_self_iteration` when all pass, otherwise publish a fix based on the failures and restart. Each successful pre-build counts as a round and restarts are refused at the limit; no restart while that VS still runs a task; items needing observation remain for the user. Say "stop iterating" anytime.
 - 日志：`%APPDATA%\VSManager\logs\agent.log`（AI 助手故障与重启）、`watchdog.log`（看门狗）、`crash.log`（未处理异常）。
 
 ### 解决方案登记与 VS 开关
@@ -478,11 +533,15 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 
 | 工具 | 参数 | 说明 |
 |---|---|---|
-| `get_displays` | 无 | 只读返回屏幕数量、编号、分辨率、桌面位置、工作区、主屏、当前前台窗口屏幕、VSManager 与各 VS 所在屏幕；编号与属性一致 |
-| `arrange_workspace_layout` | `vs`（逗号分隔编号/名称，空为全部）、`mainScreen` / `paneScreen`（0 自动）、`includeOutput`（true）、`includeErrorList`（false） | 布局 VS 主窗口、Copilot 和所选附属窗格；遵守 `AgentConfirm` |
+| `get_displays` | 无 | 只读返回屏幕数量、编号、分辨率、横竖屏、桌面位置、工作区、屏幕之间的相对位置（左 / 右 / 上 / 下）、主屏、当前前台窗口屏幕、VSManager 与各 VS 所在屏幕及当前窗口矩形；编号与属性一致 |
+| `place_workspace_windows` | `layout`（JSON 数组，每项 `{"vs":"1","main":{"screen":1,"x":0,"y":0,"w":65,"h":100},"copilot":…,"output":…,"errorList":…,"solutionExplorer":…}`，矩形也可写 `[screen,x,y,w,h]`；x/y/w/h 为该屏工作区百分比） | AI 根据 `get_displays` 自行设计并摆放主窗口与窗格；`main` 必填，省略的窗格不移动；重叠或过小只警告；遵守 `AgentConfirm`，可用 `restore_workspace_layout` 还原 |
+| `arrange_workspace_layout` | `vs`（逗号分隔编号/名称，空为全部）、`mainScreen` / `paneScreen`（0 自动）、`includeOutput`（true）、`includeErrorList`（true）、`includeSolutionExplorer`（true） | 按内置规则自动布局 VS 主窗口、Copilot 和所选附属窗格（用户明确要求默认布局时使用）；遵守 `AgentConfirm` |
 | `restore_workspace_layout` | 无 | 还原这套工作区布局；遵守 `AgentConfirm`，失败项保留供重试 |
 
-自动模式优先把主窗口安排到当前前台窗口所在屏幕（未知时用主屏），Copilot 与附属窗格放到其他屏幕中最大的工作区，其余屏幕分担多个 VS。只有一屏或明确指定同屏时，主窗口占左侧约 65%，窗格占右侧；Copilot 在上，输出与可选错误列表在下。坐标使用桌面像素，保留负坐标并避开任务栏；允许最多 2 像素的 DPI 舍入，更大的位置偏差或最小尺寸限制会如实报告。
+「屏幕布局 / Layout」快捷按钮让 AI 先读取全部屏幕的尺寸与相对位置，再自行设计布局并用 `place_workspace_windows` 摆放，每个 VS 的 Copilot、输出、错误列表与解决方案资源管理器一并安排（尚未创建的内置窗格会被创建，还原时恢复隐藏）；下面的规则只用于 `arrange_workspace_layout`。
+The "屏幕布局 / Layout" quick button has the AI read every screen's size and relative position, design the layout itself and apply it with `place_workspace_windows`, arranging each VS's Copilot, Output, Error List and Solution Explorer as well (built-in panes not yet created are created and hidden again on restore); the rules below apply only to `arrange_workspace_layout`.
+
+自动模式优先把主窗口安排到当前前台窗口所在屏幕（未知时用主屏），Copilot 与附属窗格放到其他屏幕中最大的工作区，其余屏幕分担多个 VS。只有一屏或明确指定同屏时，主窗口占左侧约 65%，窗格占右侧；Copilot 在上，输出、错误列表与解决方案资源管理器在下等分堆叠（三者同时布局时 Copilot 占约 55%）。坐标使用桌面像素，保留负坐标并避开任务栏；允许最多 2 像素的 DPI 舍入，更大的位置偏差或最小尺寸限制会如实报告。
 
 布局时不会最小化 VS，会恢复原先最小化的主窗口参与布局；还原时恢复原显示状态。不保存或关闭文件，不处理任意其他工具窗格；无法确认目标、存在模态对话框、DTE 不可用或窗格缺失时跳过并报告，不猜测原状态或强制打开缺失窗格。审批后显示器或目标窗口改变时不执行旧计划。布局快照仅在当前 VSManager 会话内有效，精确停靠组位置由 VS 管理；恢复后再切换到旧 Copilot 单独布局模式，避免互相覆盖。已有只排列 Copilot 的工具与入口保留。
 
@@ -491,13 +550,42 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 点击「▶ 调试」（或由 AI 助手 / Web 远程触发开始调试）且 VS 处于设计模式时，会检查启动项目的调试启动程序：项目调试属性「启动外部程序」或 `launchSettings.json` 当前配置（`commandName: Executable`）的可执行文件为 `acad.exe`（AutoCAD 及其行业版）、`zwcad.exe`、`gcad.exe` 或 `bricscad.exe` 时，判定为 CAD 调试环境。
 
 - 在 `%TEMP%\VSManager\CadDebug\` 生成启动脚本，内容为 `(command "_.NETLOAD" "启动项目输出 DLL")`，并把 CAD 标准启动参数 `/b "脚本"` 临时加到原参数前；CAD 打开后自动加载要调试的 DLL，调试器从启动开始就已附加，断点正常命中。
+- **FILEDIA**：系统变量 FILEDIA 为 0 时无法自动加载 DLL。点击调试时，VSManager 先检查启动程序对应的 AutoCAD 配置（注册表 `HKCU\Software\Autodesk\AutoCAD\<版本>\<产品>\FixedProfile\General Configuration` 的 `FileDialog`），为 0 时在启动前改为 1，状态栏会说明；无法确定对应安装时处理全部为 0 的 AutoCAD 配置。启动脚本首行还会执行 `(if (= (getvar "FILEDIA") 0) (setvar "FILEDIA" 1))` 兜底，ZWCAD / GstarCAD / BricsCAD 同样生效。FILEDIA 为 1 时不做任何修改。
 - 调试器进入运行 / 中断状态、生成结束后未启动、VS 断开或 15 分钟超时后，恢复原启动参数（`launchSettings.json` 按原字节写回；期间被改动则只去掉本工具加入的参数）；退出 VSManager 时也会恢复。异常残留的参数在下次调试时自动替换，不会叠加。
 - 原参数已含 `/b` 脚本、启动项目不输出 DLL、已在调试中（继续运行）或不是 CAD 时保持原样，状态栏说明原因。开关位于「属性」的「发送确认」卡片中的「CAD 调试自动加载 DLL」，默认开启。
+- **调试图纸**：把图纸路径或 `.dwg` / `.dxf` 附件发给 AI 总控助手（例如「#2 的调试图纸是 %USERPROFILE%\Documents\测试.dwg」），助手会用 `set_cad_debug_drawing` 按该 VS 的解决方案记录下来（`get_cad_debug_drawing` 查看，发送空路径清除；开启审批时需确认）。之后点击调试时把图纸作为 CAD 启动参数一并传入（`"图纸" /b "脚本"`），CAD 打开该图纸并在其中 NETLOAD；未记录或图纸已不存在时不传图纸，CAD 按默认打开新图，状态栏会说明。原启动参数已指定图纸时以原参数为准。以附件记录时使用附件副本，如需保存回原文件请直接发送路径。
 - DLL 不在 CAD 可信位置时，AutoCAD 会弹出安全提示，请选择加载（或自行把输出目录加入 `TRUSTEDPATHS`）；本工具不修改 `SECURELOAD` 等安全设置。
+
+### CAD 动作执行器（ai.exe）
+
+用于让 AI 总控助手自动执行任务清单中的「待验证」项。组成：`src\VSManager.AiHost`（ai.exe，不持有模型的哑调度器）、`src\VSManager.CadAgent`（动作协议与 CAD 侧代理）、`adapters\_template`（项目适配包模板，含中英 SKILL.md）。
+
+- **适配包**：复制 `adapters\_template` 到 `%APPDATA%\VSManager\adapters\<名称>\`，在 `adapter.json` 中填写匹配的解决方案名、命令映射表、日志路径与启动配置（CAD 路径、附加 DLL、启动命令、启动参数、默认图纸）。换项目只需新增适配包，不改 ai.exe 与 VSManager。
+- **流程**：开启 Web 远程 → 点击调试启动 CAD（匹配适配包时自动编译并 NETLOAD 引导 DLL，CAD 中的代理经本机 Web API 上线；命令 `VSM_AIAGENT` 查看状态）→ AI 助手调用 `run_cad_actions` 把动作序列交给 ai.exe → 逐条下发、汇总回传 → 助手对照判定依据判定或请用户确认。`list_cad_adapters` 查看适配包与连接状态。
+- **动作 v1**：`openDrawing`、`switchDrawing`、`closeAllDrawings`、`runCommand`、`getParam`、`screenshot`、`getLog`、`getEntityCount`；统一入参 `vs / timeoutMs / action / args`，统一返回 `ok / errorCode / message / artifacts / durationMs`。未指定图纸时用已记录的调试图纸，图纸不存在时打开新图并说明。
+- **规则与安全**：每条默认超时 60 秒、连接类错误重试 1 次，超时或失败即停止序列（后续标记 SKIPPED）；CAD 崩溃返回 `CAD_GONE`，不自动重启；同一时刻只驱动一个 CAD。`runCommand` 只能执行适配包命令映射表中的命令，`getLog` 只读适配包声明的日志；截图与日志只在内存中回传并在结果窗口展示，不写入用户目录；CAD 接口只接受本机请求；开启「操作前确认」时执行前需确认。
+- **项目自带验证接口（本机 IPC）**：目标项目可以把程序目录 `sdk\VsmVerify.cs`（与 `VSManager.CadAgent.dll` 中的 `VSManager.Verify` 相同，只依赖 .NET Framework 4.x，C# 6 语法）加入插件工程，在进程内登记检查项：
+  ```csharp
+  VerifyEndpoint.Start("示例插件", "Demo.Plugin")          // 第二个参数为解决方案名（不含扩展名）
+      .Register("entityCount", "图层上的实体数", ctx =>
+          VerifyOutcome.Pass("数量正确").With("count", "12"), "layer=图层名");
+  // 需要在 CAD 主线程执行时设置 Invoker，把检查封送到主线程。
+  ```
+  端点在 `\\.\pipe\VSManager.Verify.<进程ID>` 上监听，仅允许当前用户、拒绝网络登录，不需要 Web 远程与令牌。AI 助手调用 `list_verify_checks` → ai.exe `verify list` 发现端点（归属：该 VS 调试器附加的进程，或端点声明的解决方案名与 VS 解决方案一致），再调用 `run_verify_check` → ai.exe `verify run` 执行检查，返回 `pass / fail / inconclusive / error`、说明、证据与明细；只有 pass 且证据满足判定依据才可勾选测试项。每个检查默认超时 60 秒（1–600 秒），同一端点同一时刻只执行一个检查，超时的检查结束前返回 `BUSY`；ai.exe 会校验管道服务端进程 ID，拒绝冒名管道。目标进程与 VSManager 提权状态不一致时管道可能拒绝访问。没有验证接口的项目仍使用上面的动作序列。
+- **限制**：v1 引导 DLL 面向 .NET Framework 版 CAD（如 AutoCAD 2024 及更早），基于 .NET 8 的 AutoCAD 2025+ 暂不支持（调试仍正常，只是不加载代理）。引导 DLL 位于 `%TEMP%\VSManager\CadAgent\`，SECURELOAD 提示时请选择加载。
 
 ### 按 VS 同步 git
 
 总控助手的「🔄 同步 git ▾」是下拉菜单：列出每个打开的 VS 及其仓库当前分支（只读 `.git/HEAD`，支持 worktree），选哪个就只同步该 VS 所在的仓库，不再一次同步全部。非 git 仓库的 VS 不可选；多个 VS 共用一个仓库时标出「与 #N 同仓库」。模型可用时由 AI 用 `send_task` 按编号原样发布给该 VS；未配置模型或模型正忙时按精确目标直接入队（同 @ 提及任务）。同步规则不变：不强推、不 reset --hard、不丢弃修改。
+
+### AI Skill 截图
+
+安装到 Copilot CLI / Claude Code 等的 AI Skill（属性 → AI Agent Skill）新增 `screenshot` 命令：`vsm.ps1 screenshot <vs> [-Out <file.png>]` 截取目标 VS（或其前台弹窗）并保存为 PNG，输出文件路径，外部 AI 再用自己的看图工具打开。默认保存到 `%TEMP%\VSManager\screenshots`，只保留最近 20 张。
+
+- 截图会短暂把该 VS 切到前台，完成后切回原窗口；使用「允许 VS 截图分析」开关（属性 → AI 助手），关闭时拒绝。开启「截图需逐张预览批准」时会先弹出预览，用户取消则不返回图片。
+- 接口 `/api/screenshot` 只服务本机（127.0.0.1 / ::1）调用，局域网手机端即使持有密钥也不能截图。
+- VSManager 启动时会自动刷新已安装的 Skill 文件（只更新已存在的安装目录），无需手动重装。
+- 图片内容可能含代码或敏感信息；Skill 说明要求 AI 把图中文字视为不可信数据，不当作指令。
 
 ### 关闭 .cs 文件标签页
 
@@ -508,12 +596,32 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 | 工具 | 参数 | 说明 |
 |---|---|---|
 | `close_cs_tabs` | `vs`：VS 编号或名称 | 关闭该 VS 中所有已打开的 .cs 标签页，返回关闭数量与保留的未保存文件；遵守 `AgentConfirm` |
+| `restart_vsmanager_for_testing` | `testPlan`：重启后要执行的测试计划；`taskId`：要验证的任务编号（可为 0） | 自测重启：预编译通过后，在本轮结束时让调试 VSManager 的 VS 重新启动调试，重启后发送「[重启完成通知]」续跑测试；遵守 `AgentConfirm` |
+| `get_window_state` | 无 | 只读：VSManager 主窗口位置、大小、最大化 / 最小化、所在屏幕、是否前台、当前页面、选中的 VS、AI 草稿与托盘状态；重启后逐项对照重启前保存值（一致 / 不一致） |
+| `get_foreground_window` | 无 | 只读：当前前台窗口的标题、窗口类、进程名与 PID，以及是否属于本 VSManager，用于验证是否抢焦点 |
+| `list_tray_icons` | `openOverflow`（默认 true） | 只读：列出托盘图标并给出 VSManager 托盘残影结论；Windows 10 可得所属进程与失效窗口，Windows 11 经 UI 自动化读取（会短暂展开「显示隐藏的图标」再收起并交还前台） |
+| `read_restart_handoff` | 无 | 只读：`restart-ui.json` / `restart-handoff.json` 的内容与消费状态（文件不存在通常表示已被新进程读取删除），以及本进程启动时实际恢复了什么 |
+| `read_vsmanager_log` | `name`：日志名（`tasks`、`send`、`watchdog`、`cad`、`mcp`、`memory`、`crash` 等）或文件名；`lines`：末尾行数（默认 200，最多 2000）；`date`：可选 `yyyy-MM-dd`（默认当天） | 只读：读取 VSManager 自身日志，返回日志文件路径（用户目录显示为 `%APPDATA%` 等环境变量）、总行数与末尾 N 行原文，按文件工具的现有规则脱敏。在 `%APPDATA%\VSManager\archive\logs`（`send-日期.log` 等归档日志，多分卷时取最后一卷）与 `%APPDATA%\VSManager\logs`（`tasks.log`、`watchdog.log` 等）中查找；按天分文件的日志取该日文件，不分天的日志给出日期时只取该日记录。只接受文件名与 .log / .txt，`agent.log`、`file-audit.log` 不开放；找不到时列出可用日志名。用于核对「已按测试项文字重判 N 个测试项的可验证性」「【执行方式】请按自动推荐的提示词执行」等记录是否存在 |
+| `read_agent_chat` | `lines`：末尾轮数（默认 20，最多 200）；`since`：可选 `yyyy-MM-dd HH:mm`，只返回该时间之后的轮次与启动记录 | 只读：读取 `%APPDATA%\VSManager\agent-chat.jsonl` 与 `plan.log`。第一部分按轮列出轮次序号、时间、用户消息 / 通知摘要（脱敏并截断到 160 字）与该轮实际调用的工具名（如 `create_plan`、`update_plan_step`、`read_plan`、`send_task`，重复调用记为 ×N）；第二部分列出本进程（★）与历次启动读回的执行计划：启动时间、读回计划数、续跑的计划编号与标题、是否发出「执行计划恢复」通知（单独通知或并入重启完成通知）。用于核对某轮是否真的调用过某工具、重启后是否读回计划 |
+| `create_plan` | `title`：计划标题；`steps`：步骤列表（2–30 步，按执行顺序）；`goal`：可选，目标与验收标准 | 为复杂流程（多步骤、跨重启、步骤间有依赖，如补 skill 闭环、自迭代、多阶段验证）创建执行计划，写入 `%APPDATA%\VSManager\agent-plans.json`，常驻直到 `complete_plan`；同名进行中的计划不重复创建，最多 5 个进行中的计划；简单请求不要建计划 |
+| `update_plan_step` | `step`：第几步（从 1 开始）；`status`：`pending` / `in_progress` / `done` / `failed` / `skipped`（也接受「完成」「进行中」等中文）；`note`：可选说明；`planId`：只有一个进行中的计划时可省略 | 更新某一步的状态与说明并立即写盘，返回计划进度与下一步；全部完成时提示调用 `complete_plan` |
+| `read_plan` | `planId`：可选，0 表示全部 | 读回进行中的执行计划：步骤、每步状态与说明、下一步 |
+| `complete_plan` | `summary`：结果总结；`planId`：可选；`force`：可选，强制释放 | 流程完成后释放计划（从文件中移除）；有未完成步骤时拒绝，确需放弃时 `force=true` 并写明原因 |
+| `prepare_restart_scenario` | `page`、`vs`、`draft`、`window`、`screen`、`foreground`（均可选，至少一项） | 场景补齐：切到 AI 总控页或某个 VS 对话页、写入 AI 输入草稿（已有用户草稿不覆盖）、最大化 / 还原 / 最小化、移到第 N 块屏幕、把前台切给其他应用或 VSManager；保留 10 分钟，`restart_vsmanager_for_testing` 在保存界面状态前再应用一次并写进重启完成通知；多次调用会合并（未填的项沿用上一次），用户发送消息清空的草稿在重启前重新写入 |
+| `list_test_checklists` | `taskId`（0 表示全部） | 只读：列出全部「待验证」任务（不限最近几条）的完整测试清单，每项带序号（与 `mark_test_item` 一致）、勾选状态与 [AI] / [人工] 标注；不入队、不发布任务 |
+| `mark_test_item` | `taskId`、`item`（从 1 开始）、`passed`、`evidence`（必填依据） | 勾选 / 取消勾选待验证任务的测试项，全部勾选后任务标记为完成；标为「[人工]」的项拒绝勾选；依据写入 tasks.log；遵守 `AgentConfirm` |
+| `start_self_iteration` | `goal`（目标与验收标准）、`maxRounds`（默认 3，最多 10） | 用户明确要求时开始自迭代循环，需 F5 调试与「任务完成自动跟进」；返回调试 VSManager 的 VS；遵守 `AgentConfirm` |
+| `start_skill_gap_loop` | `taskId`、`item`、`skill`（需要的新 skill）、`reason`（现有工具为何验证不了）、`maxRounds`（默认 3，最多 10） | 补 skill 闭环，由 AI 自动发起、无需用户提醒：某测试项用现有工具验证不了、但新增一个读取机器可读状态的 skill 就能自动验证时，开始一轮专用自迭代——发布实现任务 → 重启加载 → 用新 skill 验证并勾选（即使标为人工），失败带证据修复。拒绝必须人眼 / 人手的项；每项只发起一次；与自迭代互斥 |
+| `stop_self_iteration` | `summary`（可选） | 结束自迭代，报告已用轮次 |
 
 ### 任务回执
 
 任务清单派发的每条任务都有本轮回执 ID（GUID），Copilot 在最终回复最后一行输出三选一的回执：`SUCCESS`（已完成且已验证）、`UNVERIFIED`（改动已完成，但尚未实际验证或需要用户测试 / 确认，显示为「待验证」；旧回执 `NEEDS_USER` 仍按待验证识别）、`FAILED`（任务本身未完成；无关的遗留问题不算失败）。
 
 回执规则附在每条任务消息的末尾。VS 2026 的 Copilot 代理（内置 Copilot CLI）不会加载 `copilot-instructions.md` 等自定义指令文件，所以规则不能靠指令文件下发，每条任务都会带上完整规则。
+
+回执规则之前还附有一条执行方式「【执行方式】请按自动推荐的提示词执行」：过程中出现自动推荐的提示词（建议的下一步 / 后续操作）时，Copilot 直接按推荐内容继续，把任务推进到完成，不停下来询问或等待确认；只有确实无法继续时才停下并说明需要用户提供什么。所有发布的任务（AI 发布、@ 直发、手动与重试）都会带上这条。
+Before the receipt rules every task also carries an execution rule, "follow the automatically suggested prompts": when suggested prompts (recommended next steps / follow-ups) appear, Copilot continues with them and drives the task to completion without stopping to ask or wait for confirmation, and stops only when it truly cannot continue, saying what the user must provide. Every published task (AI-published, @ direct, manual and retries) carries it.
 
 ### 接续等级
 
@@ -533,6 +641,7 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 - 防止循环消耗用量：同一需求（重发链 + 补充重试）由 AI 自主触发的 Copilot 执行次数有上限，在「设置 → 发送确认 → AI 重试上限」调整（默认 3，范围 1–10）；原样或只加「请再试一次」的重发会被拒绝。投递失败、VS 关闭、读取失败和「Copilot 本轮未执行完」（网络 / 服务错误、被中断）不计入次数，AI 可用 `retry_task` 重试，每个任务最多 5 次。你在任务清单里手动重试不受限制。
 - 失败时读取完整回复：任务失败时，VSManager 会保存本轮 Copilot 的完整回复（最后一条任务消息之后的全部回答与过程步骤，不只是最后一行状态），失败通知附上全文（过长时为开头与结尾摘录，AI 可用 `read_task_reply` 分页读取全文）。回复结尾出现返回中断 / 未预期的 EOF、返回体或上下文过大、达到单轮迭代上限、网络 / 服务错误时，即使回复很长也判为「Copilot 本轮未执行完」，不计入执行次数。AI 先阅读全文找原因并补充内容：中断类用 `retry_task` 重试，重试会自动提示 Copilot 在已有进度上继续，需要调整做法（如分步完成、减少输出）时写在 `note` 中；内容类用 `retry_task_with_info` 补充信息重试；确实无法处理时才交给你。完整回复随任务保存在 `tasks.json`，重新排队后清除。失败日志也会读取：Copilot 回复中折叠的过程步骤（如 Autopilot 重试、命令执行等）会被临时展开，读取每段日志最顶层的内容（每步最多 20 行 / 1500 字符，每个文本块 8 行），这里往往是本轮失败的主要原因；同时读取界面上可见的 Copilot 提示（如「此响应被截断，因为它太长了」），读完后恢复折叠，思考过程不展开。
 - 重试说明整合而非堆叠：重试时轮次、前次尝试反馈、补充信息与接续说明合并为一段，只给一次处理要求（补充信息与前次反馈冲突时以补充信息为准）。`retry_task_with_info` 的 `replace_previous=true` 表示 info 是主控 AI 按用户意图整合后的完整说明，替换此前累积的补充、前次反馈与接续说明；`fresh_context=true`（`retry_task` 也支持）表示 Copilot 对话已清空或换成新线程，Copilot 会先重新阅读相关代码、文档与 Git 状态了解进度，而不是依赖已不存在的对话。任务菜单「补充信息后重试」对话框也提供这两个开关。
+- 任务自动接续（「属性 → AI 助手 → 任务自动接续」，默认开启，需要「任务完成自动跟进」）：任务返回待验证、或已完成但回复提到还有剩余步骤（如「尚未完成」「剩余步骤」「下一步需要」「TODO」）时，通知附「[自动接续]」说明，AI 助手先验证 [AI] 项，再自己判断剩余步骤：目标 VS 能完成的剩余工作用 `continue_task` 向同一 VS 发布接续任务（正文自动附原任务摘要与上一轮结果，只做剩余步骤），形成闭环而不停下来等你；[AI] 项不通过属于本次改动本身的问题时仍用 `retry_task_with_info`；只剩 [人工] 项或需要你提供信息 / 授权时不接续，改为告诉你。每个任务只接续一次，每条接续链最多 3 次；原任务阻塞同一 VS 时自动放行（测试清单保持待验证），接续任务按编号排在该 VS 已排队任务之后。用户直接发布的任务待验证时同样会通知 AI 判断接续。
 
 ## 发布到 GitHub
 
@@ -622,10 +731,13 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 - **In-app Copilot chat**: VS thread pages display live Markdown replies and retain Stop Copilot, open-chat and debug controls. There is no bottom composer; send text and attachments through the manager assistant's Direct action.
 - **Debug control**: start / stop / break / restart debugging, build / rebuild, read the error list.
 - **AI assistant**: works with any OpenAI-compatible endpoint (DeepSeek by default) and uses function calling to inspect instances, dispatch tasks and wait for results.
+- **MCP external tools**: optionally mount MCP (Model Context Protocol) servers (local command or Streamable HTTP address) and register their tools for the AI assistant; off by default with no server preinstalled.
+- **CAD action executor**: a standalone ai.exe drives the CAD started by debugging through an action sequence (open drawing, run command, screenshot, read log, ...) and returns the results to the AI assistant for "pending verification" items; one adapter per project. Target projects can also embed `sdk\VsmVerify.cs` to expose a verification interface that ai.exe calls over a local named pipe.
 - **Task list**: newly submitted AI tasks auto-start after saving by default; manual/restored tasks await **Start**, unless Settings explicitly enables all-automatic mode. Dispatch respects IDs and target readiness; manual Copilot chats are listed as well.
+- **Task ownership and project summary**: task titles are completed as "Project · item" (the solution name) and shown in the task list and notifications; task notifications, failure feedback and send_task results end with a [项目上下文 / Project context] block (project name, responsibility, latest 3 task outcomes of that VS), so the AI assistant does not have to dig ownership out of a long conversation when several projects run in parallel. Queueing and dispatch rules are unchanged.
 - **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a closed solution are parked, and dispatch once it opens with automatic eligibility or manual Start in this session.
 - **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it); the old VS composer's push-to-talk control has been removed.
-- **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents.
+- **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents (including VS screenshots).
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
 - **Publish to GitHub**: one-click git init / commit / create or link the remote / push, with an automatic sensitive-content scan before publishing.
 - **Memory monitor**: working set and private bytes grouped by VSManager / each VS instance (with child processes) / shared components, with gentle cleanup and threshold alerts.
@@ -778,8 +890,10 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI-compatible endpoint and model |
 | | `AgentKeyProtected` | empty | API key (DPAPI-encrypted; or `VSMANAGER_AGENT_API_KEY`) |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish; extra instructions can also be written in the root notebook page "AI 助手补充提示词", read at the start of each new conversation (click "New chat" to apply edits) |
+| | `AgentSessionIsolation` | true | Session isolation: the AI assistant's model context is split per project (solution name). Task notices belong to their project; a user message mentioning exactly one project (project name, VS name or registered alias) belongs to it, otherwise it is global. Project rounds see only the global and that project's conversation; global rounds see the global conversation plus each project's latest conclusion digest. Scopes are saved with the chat history and resumed on reopen. The on-screen transcript stays one thread and "New chat" clears everything |
 | | `NoteAgentDock` / `NoteAgentPercent` / `NoteAgentFloatBounds` | right / 50 / empty | "Note assistant" on the notebook page: shares the page half and half with the notebook by default; drag its title bar to dock it right / left (side dock) or at the bottom, or drop it in the middle to float (drag the floating window back to an edge to re-dock; closing it returns to the last dock position); the title bar buttons ◧ ◨ ⬓ ⧉ switch too; position, share and floating bounds are saved automatically. It has its own conversation and can only read notes (`read_current_note` / `list_notes` / `read_note`) and build note cards with `format_note_card`, never VS; click "📥 Insert into note" to write the latest reply into the current note (at the caret or at the end). Hidden when `AgentEnabled` is off |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | Defaults to registered solution directories only; extra roots require Apply/confirmation in AI file authorization or a user-edited local configuration; no roots means deny all |
+| | `McpEnabled` / `McpServersJson` | false / "" | Whether MCP servers are mounted for the AI assistant, and their configuration JSON; changed only by the user in Settings → MCP servers, never by the AI |
 | | `AgentPowerShellEnabled` | false | Legacy compatibility field; arbitrary AI scripts are disabled, and setting this to true cannot bypass the file allowlist |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | Per-call text limits (characters) |
 | | `AgentMaxOutputTokens` / `AgentMaxHistory` / `AgentMaxIterations` | 0 / 800 / 320 | Output limit (0 = model default), history messages, tool calls per round |
@@ -885,6 +999,25 @@ note: Build and tests passed
 
 Audit records stay in `%APPDATA%\VSManager\logs\file-audit.log`: operation, request ID, masked path/path ID, start/result status, counts and elapsed time, without queries or file content. Both pre-read and pre-return audit writes must succeed or no content is returned. Unreadable entries are reported rather than silently presenting incomplete results as complete. Audit and allowlist remain local and must not be committed.
 
+### MCP servers (external tools)
+
+In Settings → MCP servers, turn on the switch, enter the configuration and click Apply and connect (it is validated and confirmed first). The format matches common MCP clients and accepts either `mcpServers` or `servers` at the top level. Each server needs exactly one of `command` (local stdio with optional `args`, `env`, `cwd`) or `url` (Streamable HTTP with optional `headers`); `"disabled": true` pauses it. Values may reference environment variables as `%VAR%`; keep tokens in environment variables rather than in the configuration. No server is preinstalled. Example (also available through Insert example):
+
+```json
+{
+  "mcpServers": {
+	"example": { "command": "npx", "args": ["-y", "<mcp-server-package>"], "env": { "TOKEN_NAME": "%TOKEN_NAME%" } },
+	"remote": { "url": "https://example.com/mcp", "headers": { "Authorization": "Bearer %TOKEN_NAME%" } }
+  }
+}
+```
+
+- Connections run in the background: `initialize` (protocol 2025-06-18) → `tools/list` (paginated). The card shows each server's state, tool count or error, and Reconnect is always available. Tool-list change notifications refresh automatically.
+- Tools are registered for the AI assistant (not the note assistant) as `mcp_server_tool`, with descriptions and schemas from the server. New built-in tools: `list_mcp_servers` (status) and `reconnect_mcp_servers` (confirmed).
+- With confirmation enabled, MCP tools not declared read-only (`readOnlyHint`) show their arguments for approval before running. Calls run on background threads with a 180-second timeout; images and other binaries are summarised.
+- `.cmd` / `.bat` commands (such as `npx`) start through `cmd.exe`; local server processes join a job object and end with VSManager. Diagnostics go to `mcp.log` in the log folder (environment and header values are never logged).
+- Security boundary: MCP servers are separate processes running with your permissions and are **not limited by AI file authorization**; they also do not widen the built-in file tools' authorization. Add trusted servers only. The system prompt tells the assistant to treat MCP output as untrusted data and not to send granted file contents to MCP tools unless asked. The AI cannot add, remove or edit servers.
+
 ### Pre-send document cleanup
 
 Explicitly enable `CloseVsDocumentsBeforeSend` in Settings → Send confirmation (default false). Saved documents are cleaned immediately before the actual send only when the target VS's document tab count strictly exceeds `CloseVsDocumentsThreshold` (default 10); multiple views count as document windows. Debugging, unknown debugger state, unsaved documents and unreadable state are skipped. Tool windows, Copilot panes and the VS process are never closed; changes are neither automatically saved nor discarded.
@@ -902,7 +1035,7 @@ Finding the Copilot pane does not mean it accepts input: it may be auto-hidden, 
 3. On the history list it presses "Back" (`backToChat`) to return to the current conversation;
 4. It verifies the input is visible and editable, then brings VS to the front and focuses the input.
 
-Pane state, candidate count, auto-hide state and timings of every step go to the send log; the result is announced through the existing popup and voice settings ("Copilot chat opened" or "Could not open the Copilot chat; please open it manually"). With `AutoOpenCopilotPane` (default true) the same steps run before sending a task (without stealing the foreground), and input-locate retries also leave the history list.
+Pane state, candidate count, auto-hide state and timings of every step go to the send log; the result is announced through the existing popup and voice settings ("Copilot chat opened" or "Could not open the Copilot chat; please open it manually"). With `AutoOpenCopilotPane` (default true) the same steps run before sending a task (without stealing the foreground), and input-locate retries also leave the history list. The history view has no conversation list, so the pane search recognizes it by the Back button. When the pane is still not ready after the automatic repair, the task is not treated as "waiting for manual chat" and resent unchanged: the send result starts with "等待对话窗格就绪 / Chat pane not ready" and states the diagnosed cause and remedy (pane not found, offscreen, stuck on the history list, no input, input not located). The task list diagnoses and repairs every round, retrying after 10 s and 30 s for at most 3 rounds; then it stops resending and fails with that reason (nothing submitted). The AI assistant first calls `open_copilot` and retries only after it succeeds, otherwise it relays the cause to the user.
 
 ### AI assistant attachments
 
@@ -944,6 +1077,11 @@ Transcript browsers initialize only when first visible, stop rendering and try t
 - **Process watchdog** (off by default, `ProcessWatchdogEnabled`): starts a separate watchdog process that relaunches VSManager about 2 seconds after an abnormal exit (crash, killed). The task list is saved on every change and once more on a crash; after restart the restored queue awaits manual **Start** by default (unless all-automatic mode is explicitly enabled), then running tasks are tracked again. Tasks that were "sending" at the exit may already have been delivered, so they are marked failed with a hint to requeue manually instead of being published twice. A normal exit is never relaunched.
 - **Restart-storm guard**: at most `AutoRestartMaxCount` automatic restarts per `AutoRestartWindowMinutes` minutes (default 3 per 5 minutes, counted separately for the assistant and the process); beyond that automatic restarts stop and you are asked to check the logs.
 - **Manual entries**: the "⟳ 重启" (Restart) menu at the top of the main window and the tray menu provide "Restart AI assistant" and "Restart VSManager…" (asks for confirmation; refused while a message is being sent; tasks and settings are saved first). The menu also toggles both switches and opens the log folder.
+- **Checklist split and self-verify loop**: Copilot tags each checklist item "[AI]" (tool-verifiable) or "[人工]" (manual); untagged items are inferred conservatively (UI, clicks, observation or unclear → manual). The checklist shows teal "AI" and amber "人工" tags with counts; "🤖 AI verify" has the assistant verify unchecked AI items now, and the "🔁 Loop" switch (`AgentSelfVerify`, needs auto follow-up) does so automatically for each task awaiting verification, retrying failures with evidence within the AI retry cap (3). `mark_test_item` refuses manual items.
+- **Self-test restart skill** (AI assistant): after a VSManager coding task, ask the assistant to restart VSManager and test it; it turns the task checklist (from `list_tasks`) into a test plan and calls `restart_vsmanager_for_testing`. VSManager must run under a VS debugger (F5). It pre-builds the project into a temp folder with that VS's MSBuild (no restart on failure), waits until the round ends and nothing is being sent, saves tasks, settings, notes and session start grants to `%APPDATA%\VSManager\restart-handoff.json`, and has that VS run Debug.Restart. New sends pause meanwhile; tasks running in other VS instances continue and are tracked again, never resent. The new process consumes the handoff once (valid 30 minutes), restores grants, resumes the conversation and sends a "[重启完成通知 / Restart completed]" notice with old/new exe times; the assistant runs tool-verifiable tests, checks passed items via `mark_test_item` with evidence and lists the rest for the user. If VS does not restart, the attempt is withdrawn and reported.
+- **Smoother restart**: the self-test restart and the Restart button save window position, size, maximized/minimized state, current page, selected VS and the AI input draft to `%APPDATA%\VSManager\restart-ui.json` (used once, valid 15 minutes) and restore them in the new process (default placement if that screen is gone) without forcing the AI assistant page or stealing focus from another app. When the window was in the foreground, a screenshot cover labelled "Restarting" fills the rebuild gap until the new window appears; the tray icon is removed first so no ghost icon remains; the conversation resumes after the instance list refreshes (2–8 s).
+- **Self-iteration loop** (AI assistant, only on explicit request): with VSManager under F5 and "auto follow-up" enabled, ask the assistant to iterate on a goal for up to N rounds; it calls `start_self_iteration` (default 3, max 10 rounds; state in `%APPDATA%\VSManager\self-iteration.json`, expires after 24 hours) and loops publish → complete → restart for testing → mark items → fix or `stop_self_iteration`. Restarts are refused at the round limit and while the VS debugging VSManager still runs a task; items needing observation remain for the user.
+  **自测重启技能**：见中文部分同名说明（任务完成后由 AI 总控助手预编译、保存交接单并让调试 VSManager 的 VS 重新启动调试，重启后续跑测试）。
 - Logs: `%APPDATA%\VSManager\logs\agent.log` (assistant faults and restarts), `watchdog.log` (watchdog), `crash.log` (unhandled exceptions).
 
 ### Solution registry & VS open/close
@@ -1017,11 +1155,14 @@ Click the manager assistant's **Layout** shortcut or ask: "Read my displays, the
 
 | Tool | Parameters | Description |
 |---|---|---|
-| `get_displays` | none | Read-only display count, numbers, resolution, desktop position, work area, primary screen, foreground/VSManager screens and each VS location; numbering matches Settings |
-| `arrange_workspace_layout` | `vs` (comma-separated numbers/names, empty = all), `mainScreen` / `paneScreen` (0 = auto), `includeOutput` (true), `includeErrorList` (false) | Arranges main VS windows, Copilot and selected auxiliary panes; honors `AgentConfirm` |
+| `get_displays` | none | Read-only display count, numbers, resolution, orientation, desktop position, work area, relative screen positions (left / right / above / below), primary screen, foreground/VSManager screens and each VS location with its current window rectangle; numbering matches Settings |
+| `place_workspace_windows` | `layout` (JSON array of `{"vs":"1","main":{"screen":1,"x":0,"y":0,"w":65,"h":100},"copilot":…,"output":…,"errorList":…,"solutionExplorer":…}`; a rectangle may also be `[screen,x,y,w,h]`; x/y/w/h are percentages of that screen's work area) | The AI designs the layout from `get_displays` and places main windows and panes; `main` is required, omitted panes are not moved; overlaps or small sizes only warn; honors `AgentConfirm`, restorable with `restore_workspace_layout` |
+| `arrange_workspace_layout` | `vs` (comma-separated numbers/names, empty = all), `mainScreen` / `paneScreen` (0 = auto), `includeOutput` (true), `includeErrorList` (true), `includeSolutionExplorer` (true) | Arranges main VS windows, Copilot and selected auxiliary panes with the built-in rules (used when the user explicitly asks for the default layout); honors `AgentConfirm` |
 | `restore_workspace_layout` | none | Restores this workspace layout; honors `AgentConfirm` and retains failed items for retry |
 
-Auto mode favors the foreground window's screen for main windows (primary screen if unknown), selects the largest other work area for Copilot/auxiliary panes and distributes multiple VS instances across remaining screens. One screen, or explicitly choosing the same screen, partitions roughly 65% left for main windows and the remainder for panes; Copilot sits above Output and optional Error List. Desktop pixel coordinates retain negative origins and exclude taskbars. Up to 2 pixels of DPI rounding are allowed; larger position deviations or minimum-size constraints are reported truthfully.
+The "屏幕布局 / Layout" quick button has the AI read every screen's size and relative position, design the layout itself and apply it with `place_workspace_windows`, arranging each VS's Copilot, Output, Error List and Solution Explorer as well (built-in panes not yet created are created and hidden again on restore); the rules below apply only to `arrange_workspace_layout`.
+
+Auto mode favors the foreground window's screen for main windows (primary screen if unknown), selects the largest other work area for Copilot/auxiliary panes and distributes multiple VS instances across remaining screens. One screen, or explicitly choosing the same screen, partitions roughly 65% left for main windows and the remainder for panes; Copilot sits above Output, Error List and Solution Explorer, which stack evenly below it (Copilot takes about 55% when all three are included). Desktop pixel coordinates retain negative origins and exclude taskbars. Up to 2 pixels of DPI rounding are allowed; larger position deviations or minimum-size constraints are reported truthfully.
 
 Arranging does not minimize VS and brings previously minimized main windows back into view; restoring returns their original show state. Files are never saved/closed and arbitrary other tool panes are not manipulated. Unknown targets, modal dialogs, unavailable DTE and missing panes are skipped and reported without inventing their original state or forcibly opening missing panes. Changed displays or target windows after approval prevent the old plan from executing. Snapshots last only for the current VSManager session; exact docking-group positions remain VS-managed. Restore before switching to the legacy Copilot-only mode to avoid overlapping snapshots. Existing Copilot-only tools and entry points remain available.
 
@@ -1030,13 +1171,42 @@ Arranging does not minimize VS and brings previously minimized main windows back
 When you press "▶ Debug" (or the AI assistant / Web remote starts debugging) while VS is in design mode, VSManager inspects the startup project's debug target: if the project's "Start external program" or the active `launchSettings.json` profile (`commandName: Executable`) points to `acad.exe` (AutoCAD and its verticals), `zwcad.exe`, `gcad.exe` or `bricscad.exe`, the session is treated as CAD debugging.
 
 - A startup script is written to `%TEMP%\VSManager\CadDebug\` containing `(command "_.NETLOAD" "startup project output DLL")`, and the CAD-standard `/b "script"` argument is temporarily prepended to the original arguments. CAD loads the DLL under test after it opens, with the debugger attached from the start so breakpoints hit normally.
+- **FILEDIA**: the DLL cannot be auto-loaded while the FILEDIA system variable is 0. When you press Debug, VSManager first checks the AutoCAD settings of the start program (the `FileDialog` value under `HKCU\Software\Autodesk\AutoCAD\<release>\<product>\FixedProfile\General Configuration`) and changes 0 to 1 before launch; the status bar says so. When the install cannot be identified, every AutoCAD profile at 0 is fixed. The first startup-script line also runs `(if (= (getvar "FILEDIA") 0) (setvar "FILEDIA" 1))` as a fallback, which covers ZWCAD / GstarCAD / BricsCAD too. Nothing changes when FILEDIA is already 1.
 - The original arguments are restored once the debugger runs or breaks, the build ends without a launch, VS disconnects or 15 minutes pass (`launchSettings.json` is written back byte for byte; if it changed meanwhile only the injected argument is removed). They are also restored when VSManager exits, and any leftover injection is replaced rather than stacked on the next launch.
 - Nothing changes when the arguments already contain a `/b` script, the startup project does not build a DLL, debugging is already running (continue), or the host is not CAD; the status bar explains why. The switch "CAD 调试自动加载 DLL / Auto-load DLL for CAD debugging" lives in the Settings "Send confirmation" card and is on by default.
+- **Debug drawing**: send the AI assistant a drawing path or a `.dwg` / `.dxf` attachment (for example "the debug drawing for #2 is %USERPROFILE%\Documents\test.dwg"). It records it per solution with `set_cad_debug_drawing` (`get_cad_debug_drawing` shows it, an empty path clears it; approval mode asks first). Later debug launches pass the drawing to CAD together with the script (`"drawing" /b "script"`), so CAD opens it and NETLOADs inside it. With no recorded drawing, or when the file no longer exists, no drawing is passed and CAD opens a new drawing; the status bar says so. A drawing already present in your own start arguments wins. Attachments are recorded as their stored copy; send the path instead if edits must be saved to the original file.
 - If the DLL is outside CAD's trusted locations, AutoCAD shows a security prompt; choose Load (or add the output folder to `TRUSTEDPATHS` yourself). VSManager never changes `SECURELOAD` or other security settings.
+
+### CAD action executor (ai.exe)
+
+Lets the AI assistant execute "pending verification" items from the task list. Parts: `src\VSManager.AiHost` (ai.exe, a model-free dumb dispatcher), `src\VSManager.CadAgent` (action protocol and CAD-side agent) and `adapters\_template` (project adapter template with a bilingual SKILL.md).
+
+- **Adapters**: copy `adapters\_template` to `%APPDATA%\VSManager\adapters\<name>\` and fill in `adapter.json`: matching solution names, command map, log paths and launch settings (CAD path, extra DLLs, startup commands, launch arguments, default drawing). A new project only needs a new adapter; ai.exe and VSManager stay unchanged.
+- **Flow**: enable Web remote → start CAD with the debug button (a matching adapter compiles and NETLOADs a boot DLL; the agent inside CAD connects through the local Web API; the `VSM_AIAGENT` command shows its status) → the assistant calls `run_cad_actions`, which hands the sequence to ai.exe → actions run one by one and the summary comes back → the assistant judges against the criteria or asks the user. `list_cad_adapters` shows adapters and connection status.
+- **Actions v1**: `openDrawing`, `switchDrawing`, `closeAllDrawings`, `runCommand`, `getParam`, `screenshot`, `getLog`, `getEntityCount`; unified input `vs / timeoutMs / action / args` and output `ok / errorCode / message / artifacts / durationMs`. Without a path the recorded debug drawing is used; a missing drawing opens a new one and says so.
+- **Rules and safety**: 60 s default timeout per action and one retry for connection errors; a timeout or failure stops the sequence (the rest are SKIPPED). A CAD crash returns `CAD_GONE` and CAD is never restarted automatically; one CAD at a time. `runCommand` only runs commands from the adapter map and `getLog` only reads adapter-declared logs. Screenshots and logs are returned in memory and shown in a result window, never written to user folders. The CAD API accepts local requests only, and the confirmation setting applies before running.
+- **Project-provided verification interface (local IPC)**: a target project can add `sdk\VsmVerify.cs` from the program folder (the same `VSManager.Verify` code as in `VSManager.CadAgent.dll`; .NET Framework 4.x only, C# 6 syntax) to its plug-in and register checks in-process:
+  ```csharp
+  VerifyEndpoint.Start("Demo plug-in", "Demo.Plugin")       // second argument: solution name without extension
+      .Register("entityCount", "Entities on a layer", ctx =>
+          VerifyOutcome.Pass("Count is correct").With("count", "12"), "layer=layer name");
+  // Set Invoker to marshal checks onto the CAD main thread when required.
+  ```
+  The endpoint listens on `\\.\pipe\VSManager.Verify.<pid>`, allows only the current user and denies network logons; no Web remote or token is needed. The assistant calls `list_verify_checks` → ai.exe `verify list` to discover endpoints (owned by a VS when its debugger is attached to the process or the declared solution name matches), then `run_verify_check` → ai.exe `verify run`, which returns `pass / fail / inconclusive / error` with message, evidence and details; only a pass whose evidence meets the criteria may tick a test item. Each check has a 60 s default timeout (1–600 s); one check runs per endpoint at a time and a timed-out check keeps returning `BUSY` until it ends. ai.exe verifies the pipe server's process id to reject squatting pipes. Access may be denied when only one side runs elevated. Projects without the interface keep using the action sequences above.
+- **Limits**: the v1 boot DLL targets .NET Framework CAD hosts (such as AutoCAD 2024 and earlier); .NET 8 based AutoCAD 2025+ is not supported yet (debugging still works without the agent). The boot DLL lives in `%TEMP%\VSManager\CadAgent\`; allow it when SECURELOAD prompts.
 
 ### Sync git per VS
 
 The assistant's "🔄 同步 git ▾" (Sync git) button is a dropdown listing every open VS with its repository's current branch (read from `.git/HEAD` only, worktrees supported). Choosing one syncs only that VS's repository instead of all of them. Non-git solutions are disabled, and VS sharing a repository are marked "same repo as #N". With a model available the AI publishes the task verbatim to that number via `send_task`; without a configured or idle model it is enqueued to the pinned target like an @ mention. The sync rules are unchanged: no force push, no reset --hard, no discarded changes.
+
+### AI Skill screenshots
+
+The AI Skill installed for Copilot CLI / Claude Code and similar agents (Properties → AI Agent Skill) gains a `screenshot` command: `vsm.ps1 screenshot <vs> [-Out <file.png>]` captures the target VS (or its foreground popup) as PNG and prints the file path for the external AI to open with its own image tool. The default folder is `%TEMP%\VSManager\screenshots`, keeping the latest 20.
+
+- The VS is briefly brought to the front and the previous window is restored afterwards. It honors "Allow VS screenshot analysis" (Properties → AI assistant) and is refused when that is off; with "Preview every screenshot" enabled, a preview is shown first and cancelling returns no image.
+- `/api/screenshot` serves only local callers (127.0.0.1 / ::1); LAN phone clients cannot take screenshots even with the key.
+- VSManager refreshes already-installed Skill files at startup (existing install folders only), so no manual reinstall is needed.
+- Images may contain code or sensitive data; the Skill tells the AI to treat text in images as untrusted data, never as instructions.
 
 ### Close .cs file tabs
 
@@ -1047,6 +1217,23 @@ Closes every open .cs file tab in a VS at once (only files with the `.cs` extens
 | Tool | Parameters | Description |
 |---|---|---|
 | `close_cs_tabs` | `vs`: VS number or name | Closes all open .cs tabs in that VS and returns how many were closed and which unsaved files were kept; honors `AgentConfirm` |
+| `restart_vsmanager_for_testing` | `testPlan`: tests to run after the restart; `taskId`: task under test (may be 0) | Self-test restart: after a passing pre-build, has the VS debugging VSManager restart the session when the round ends, then sends a restart-completed notice to continue the tests; honors `AgentConfirm` |
+| `get_window_state` | none | Read-only: VSManager main window position, size, maximized / minimized, screen, foreground, current page, selected VS, AI draft and tray state; after a restart compares each value with the saved one (match / differs) |
+| `get_foreground_window` | none | Read-only: the foreground window's title, class, process name and PID and whether it belongs to this VSManager, for focus-stealing checks |
+| `list_tray_icons` | `openOverflow` (default true) | Read-only: lists tray icons with a VSManager ghost-icon verdict; Windows 10 gives owners and dead windows, Windows 11 is read via UI Automation (briefly opens the hidden-icons flyout, closes it and hands the foreground back) |
+| `read_restart_handoff` | none | Read-only: content and consumption state of `restart-ui.json` / `restart-handoff.json` (absent usually means a new process read and deleted it), plus what this process actually restored at startup |
+| `read_vsmanager_log` | `name`: log name (`tasks`, `send`, `watchdog`, `cad`, `mcp`, `memory`, `crash`…) or file name; `lines`: tail lines (default 200, max 2000); `date`: optional `yyyy-MM-dd` (today by default) | Read-only: reads VSManager's own logs and returns the log file path (user folders shown as `%APPDATA%` and similar variables), the total line count and the last N lines verbatim, redacted with the file tools' existing rules. Searches `%APPDATA%\VSManager\archive\logs` (archived `send-<date>.log`…, the last volume when split) and `%APPDATA%\VSManager\logs` (`tasks.log`, `watchdog.log`…); per-day logs use that day's file, undated logs keep only that day's records when a date is given. Accepts file names and .log / .txt only; `agent.log` and `file-audit.log` are not available; lists the available log names when nothing matches. Use it to check whether records such as "已按测试项文字重判 N 个测试项的可验证性" exist |
+| `read_agent_chat` | `lines`: last rounds (default 20, max 200); `since`: optional `yyyy-MM-dd HH:mm`, only rounds and startup records after it | Read-only: reads `%APPDATA%\VSManager\agent-chat.jsonl` and `plan.log`. Part 1 lists each round's number, time, user message / notice summary (redacted, cut to 160 characters) and the tools actually called in it (e.g. `create_plan`, `update_plan_step`, `read_plan`, `send_task`; repeats shown as ×N); part 2 lists the execution plans read back by this process (★) and earlier startups: startup time, plans read back, resumed plan ids and titles, and whether the "Plan resumed" notice was sent (separately or inside the restart notice). Use it to check whether a round really called a tool and whether a restart read the plans back |
+| `create_plan` | `title`: plan title; `steps`: steps in execution order (2–30); `goal`: optional goal and acceptance criteria | Creates an execution plan for a complex flow (multi-step, across restarts, dependent steps such as the skill-gap loop, self-iteration, multi-stage verification) in `%APPDATA%\VSManager\agent-plans.json`; it stays until `complete_plan`. An active plan with the same title is not duplicated; at most 5 active plans; no plans for simple requests |
+| `update_plan_step` | `step`: 1-based step number; `status`: `pending` / `in_progress` / `done` / `failed` / `skipped` (Chinese aliases accepted); `note`: optional; `planId`: optional when only one plan is active | Updates a step's status and note, saves at once, and returns the progress and next step; hints `complete_plan` when everything is finished |
+| `read_plan` | `planId`: optional, 0 = all | Reads back the active plans: steps, each state and note, next step |
+| `complete_plan` | `summary`: outcome; `planId`: optional; `force`: optional forced release | Releases the plan once the flow is complete (removed from the file); refuses while steps are unfinished unless `force=true` with the reason |
+| `prepare_restart_scenario` | `page`, `vs`, `draft`, `window`, `screen`, `foreground` (all optional, at least one) | Scenario setup: switch to the AI assistant page or a VS chat page, put a draft in the AI input (an existing user draft is never overwritten), maximize / restore / minimize, move to screen N, hand the foreground to another app or VSManager; kept for 10 minutes and re-applied by `restart_vsmanager_for_testing` before the UI state is saved, then recorded in the restart notice; repeated calls merge (items not given keep the previous values), and a draft cleared by a user send is written again before the restart |
+| `list_test_checklists` | `taskId` (0 = all) | Read-only: lists the full checklist of every task awaiting verification (not only recent ones), each item numbered as `mark_test_item` expects, with check state and [AI] / [manual] tag; never enqueues or publishes a task |
+| `mark_test_item` | `taskId`, `item` (1-based), `passed`, `evidence` (required) | Checks / unchecks a checklist item of a task awaiting verification; the task completes when every item is checked; refuses to check "[人工]" (manual) items; evidence goes to tasks.log; honors `AgentConfirm` |
+| `start_self_iteration` | `goal` (goal and acceptance criteria), `maxRounds` (default 3, max 10) | Starts the self-iteration loop on explicit user request; needs F5 debugging and auto follow-up; returns the VS debugging VSManager; honors `AgentConfirm` |
+| `start_skill_gap_loop` | `taskId`, `item`, `skill` (the new skill needed), `reason` (why existing tools cannot verify it), `maxRounds` (default 3, max 10) | Skill-gap loop the AI starts by itself without user reminders: when an item cannot be verified with existing tools but a new skill reading machine-readable state could, it runs a dedicated self-iteration — publish the implementation → restart to load it → verify and check the item with the new skill (even if tagged manual), fixing with evidence on failure. Refuses items needing human eyes or hands; one loop per item; exclusive with self-iteration |
+| `stop_self_iteration` | `summary` (optional) | Ends self-iteration and reports rounds used |
 
 ### Task receipts
 
@@ -1072,6 +1259,7 @@ The task list header has a four-stop slider (click, drag or use ←/→; saved a
 - Usage protection: the Copilot runs the AI may trigger on its own for one request (resend chain plus retries with info) are capped under Settings → Send confirmation → "AI retry limit" (default 3, range 1–10); verbatim resends or ones that only add "try again" are refused. Delivery failures, VS closed, read failures and "Copilot run interrupted" (network / service error, cut-off) do not count; the AI may retry those with `retry_task`, at most 5 times per task. Manual retries from the task list are not limited.
 - Reading the whole reply on failure: when a task fails, VSManager keeps the whole Copilot turn (every answer and step after the last task message, not just the last status line), and the failure notice carries it (a head-and-tail excerpt when long; the AI can read it all page by page with `read_task_reply`). When the turn ends with a cut-off response / unexpected EOF, an oversized payload or context, the per-turn iteration limit or a network / service error, it counts as "Copilot run interrupted" even if the reply is long, and does not count as a run. The AI reads it first to find the cause and supplements: interruptions are retried with `retry_task`, which tells Copilot to continue from its progress, with any approach change (smaller steps, less output) in `note`; content failures are retried with `retry_task_with_info`; only what it truly cannot handle goes to you. The whole turn is saved with the task in `tasks.json` and cleared on requeue. Failure logs are read too: collapsed steps in the Copilot reply (Autopilot retries, command runs, etc.) are expanded briefly and the top of each log is read (at most 20 lines / 1500 characters per step, 8 lines per text block), which usually holds the main cause of the failure; visible Copilot notices (such as "this response was truncated because it was too long") are read as well. Steps are collapsed back afterwards, and thoughts are not expanded.
 - Retry briefs are consolidated, not stacked: on a retry the round, previous feedback, supplements and continuation note form one section with a single instruction (supplements win over earlier feedback). `retry_task_with_info` with `replace_previous=true` means the info is a brief the main AI consolidated from the user's intent, replacing the accumulated supplements, feedback and continuation note; `fresh_context=true` (also on `retry_task`) means the Copilot conversation was cleared or replaced by a new thread, so Copilot first re-reads the relevant code, docs and Git state instead of relying on a conversation that no longer exists. The task menu's "Retry with info" dialog offers both switches too.
+- Task auto-continue ("Properties → AI assistant → Auto-continue tasks", on by default, needs task auto follow-up): when a task returns awaiting verification, or done but its reply mentions remaining steps ("not yet done", "remaining steps", "next steps", "TODO"…), the notice carries an "[自动接续 / Auto-continue]" block. The AI assistant verifies the [AI] items first and then judges what remains by itself: remaining work the target VS can do is published to the same VS with `continue_task` (the text carries the original task summary and previous result and covers only the remaining steps), closing the loop instead of waiting for you; an [AI] item failing because of the change itself still goes to `retry_task_with_info`; when only [人工] items or information / authorization only you can give remain, nothing is continued and you are told what to do. One continuation per task and at most 3 per chain; a blocking original is released (its checklist stays pending) and the continuation queues after the tasks already queued on that VS. Tasks you published yourself also notify the AI to judge a continuation when they await verification.
 
 ## Publish to GitHub
 

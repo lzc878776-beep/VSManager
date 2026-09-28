@@ -296,7 +296,11 @@ namespace VSManager
         private int _lastPaneCandidates;
 
         /// <param name="throttleMiss">为 true 时，最近未找到窗格的 VS 在冷却期内直接返回 null（完整搜索开销大）。</param>
-        public AutomationElement FindPane(VsInstance vs, bool throttleMiss = false, bool strict = false)
+        /// <param name="allowHistory">
+        /// 为 true 时，停留在聊天历史列表的窗格（没有对话列表，只有「返回」）也会返回，但不缓存，供「打开对话助手」点「返回」修复。
+        /// When true, a pane stuck on the chat history list (no conversation list, only "Back") is returned too, uncached, so "open chat" can press Back to repair it.
+        /// </param>
+        public AutomationElement FindPane(VsInstance vs, bool throttleMiss = false, bool strict = false, bool allowHistory = false)
         {
             lock (_lock)
             {
@@ -318,7 +322,7 @@ namespace VSManager
             }
 
             string kw = Keyword;
-            AutomationElement best = null;
+            AutomationElement best = null, history = null;
             IntPtr bestHost = IntPtr.Zero;
             int candidates = 0;
             foreach (var h in Native.GetProcessWindows(vs.Pid))
@@ -332,7 +336,13 @@ namespace VSManager
                     try
                     {
                         if ((p.Current.Name ?? "").IndexOf(kw, StringComparison.OrdinalIgnoreCase) < 0) continue;
-                        if (FindList(p) == null) continue;
+                        if (FindList(p) == null)
+                        {
+                            // 历史列表视图里没有对话列表（PART_MainListView），只能靠「返回」按钮识别
+                            // The history list view has no conversation list (PART_MainListView); only the Back button identifies it
+                            if (allowHistory && history == null && HasBackButton(p)) history = p;
+                            continue;
+                        }
                         candidates++;
                         if (best == null || (!p.Current.IsOffscreen && best.Current.IsOffscreen)) { best = p; bestHost = h; }
                     }
@@ -344,12 +354,21 @@ namespace VSManager
             {
                 _lastPaneCandidates = candidates;
                 if (best != null) { _panes[vs.Pid] = best; _hosts[vs.Pid] = bestHost; _missUntil.Remove(vs.Pid); }
+                else if (history != null) _missUntil.Remove(vs.Pid);
                 else _missUntil[vs.Pid] = DateTime.Now.AddSeconds(_missUntil.ContainsKey(vs.Pid) ? 30 : 10);
             }
             if (_trace != null)
-                T(best == null ? "完整搜索：未找到对话窗格（关键字「" + kw + "」）"
-                    : "完整搜索：找到 " + candidates + " 个对话窗格" + (candidates > 1 ? "（⚠ 多个，取可见的一个）" : "") + "，使用 " + Describe(best) + " host=0x" + bestHost.ToString("X"));
-            return best;
+                T(best != null
+                    ? "完整搜索：找到 " + candidates + " 个对话窗格" + (candidates > 1 ? "（⚠ 多个，取可见的一个）" : "") + "，使用 " + Describe(best) + " host=0x" + bestHost.ToString("X")
+                    : history != null ? "完整搜索：对话窗格停留在聊天历史列表 / pane is on the chat history list " + Describe(history)
+                    : "完整搜索：未找到对话窗格（关键字「" + kw + "」）");
+            return best ?? history;
+        }
+
+        private static bool HasBackButton(AutomationElement pane)
+        {
+            try { return RawFindAll(pane, TreeScope.Descendants, IdCond(CopilotPaneModes.BackToChatId), 1).Count > 0; }
+            catch { return false; }
         }
 
         private static bool SafeOffscreen(AutomationElement e)
@@ -758,6 +777,18 @@ namespace VSManager
             return false;
         }
 
+        /// <summary>
+        /// 队列发送：自动修复后窗格仍未就绪，返回带诊断原因的「未就绪」结果（未提交任何内容），由任务清单间隔重试或停止。
+        /// Queue send: the pane is still not ready after the automatic repair; returns a "not ready" result with the diagnosed cause
+        /// (nothing submitted), which the task list retries after a pause or stops.
+        /// </summary>
+        private string PaneNotReady(CopilotPaneMode mode, bool inputMissing)
+        {
+            string r = SendRetryPolicy.PaneNotReadyPrefix + CopilotPaneModes.Diagnose(mode, inputMissing);
+            T("诊断 / diagnosis：" + CopilotPaneModes.Describe(mode) + (inputMissing ? "，无可编辑输入框 / no editable input" : "") + " → " + r);
+            return r;
+        }
+
         private string SendCore(VsInstance vs, string text, IntPtr returnTo, bool background, IReadOnlyList<ChatImage> images)
         {
             if (vs == null || !Native.IsWindow(vs.MainHwnd)) return "该 VS 已关闭";
@@ -780,6 +811,7 @@ namespace VSManager
             string blocked = BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+            T("发送前 VS 在前台 / VS foreground before=" + fgBefore + "，切回目标 / return target=0x" + returnTo.ToInt64().ToString("X"));
 
             var pane = FindPane(vs);
             if (_queueGuard != null)
@@ -803,7 +835,7 @@ namespace VSManager
                 pane = opened ?? pane;
                 T("自动打开结果 / auto-open result：" + (open.Ok ? "成功 / ok" : "失败 / failed") + "，" + CopilotPaneModes.Describe(open.Final) + "，" + open.ElapsedMs + "ms");
                 if (open.Blocked != null) return open.Blocked;
-                if (!open.Ok && open.Final == CopilotPaneMode.History) return open.MessageZh(null) + " / " + open.MessageEn(null);
+                if (!open.Ok && open.Final == CopilotPaneMode.History) return _queueGuard != null ? PaneNotReady(CopilotPaneMode.History, false) : open.MessageZh(null) + " / " + open.MessageEn(null);
             }
             else if (pane == null || SafeOffscreen(pane))
             {
@@ -813,7 +845,7 @@ namespace VSManager
             }
             blocked = BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
-            if (pane == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
+            if (pane == null) return _queueGuard != null ? PaneNotReady(CopilotPaneMode.NotFound, false) : InputLocator.FailureMessage(LocateOutcome.PaneNotFound, 1);
             var loc = LocateWithRetry(vs, ref pane, out int locateAttempts);
             blocked = loc.Blocked ?? BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
@@ -841,7 +873,7 @@ namespace VSManager
                 edit = loc.Edit;
                 T(edit != null ? "激活后已定位输入框 / input located after activation" : "激活后仍无法定位输入框 / input still not locatable after activation");
             }
-            if (edit == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : InputLocator.FailureMessage(loc.Outcome, locateAttempts);
+            if (edit == null) return _queueGuard != null ? PaneNotReady(Observe(pane, out _), true) : InputLocator.FailureMessage(loc.Outcome, locateAttempts);
             blocked = GuardQueueInput(vs, pane, edit);
             if (blocked != null) return blocked;
             T("输入框 / Input " + Describe(edit) + " 焦点 / Focus=" + HasFocus(edit) + " 前台 / Foreground=" + ForegroundIs(vs));

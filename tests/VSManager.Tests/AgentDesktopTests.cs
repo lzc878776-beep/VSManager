@@ -993,6 +993,97 @@ namespace VSManager.Tests
                 Assert.AreEqual(2, client.Calls);
                 StringAssert.StartsWith(client.LastUser, ToolClaimCheck.Marker);
                 StringAssert.Contains(client.LastUser, "@50");
+
+                // 虚报原文不留在上下文里 / The fabricated text never stays in the context
+                var assistant = agent.HistoryForTests.Where(m => m.Role == Microsoft.Extensions.AI.ChatRole.Assistant).ToList();
+                Assert.IsTrue(assistant.Count > 0 && assistant.All(m => m.Text == ToolClaimCheck.DiscardedReply), string.Join("|", assistant.Select(m => m.Text)));
+            }
+        }
+
+        [TestMethod]
+        public async Task CorrectionRound_RequiresToolCall_ThenRelaxes()
+        {
+            _settings.AgentAutoFollowUp = true;
+            var client = new ToolModeClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                agent.NextTaskIdSource = () => 50;
+                await agent.RunAsync("发布");
+                for (int i = 0; i < 50 && (client.Modes.Count < 3 || agent.Running); i++) await Task.Delay(100);
+                await Task.Delay(300);
+                Assert.IsTrue(client.Modes.Count >= 3, string.Join("|", client.Modes));
+                Assert.AreEqual("auto", client.Modes[0]);
+                Assert.AreEqual("required", client.Modes[1], "更正轮强制调用工具 / the correction round requires a tool call");
+                Assert.AreNotEqual("required", client.Modes[2], "调用后不再强制，避免循环 / relaxed after the call, no loop");
+                Assert.AreEqual(3, client.Modes.Count);
+            }
+        }
+
+        /// <summary>首轮虚报；被强制时调用 list_tasks，否则回复文字。/ Fabricates first; calls list_tasks when required, otherwise replies with text.</summary>
+        private sealed class ToolModeClient : IAiClientFactory, IChatClient
+        {
+            internal readonly List<string> Modes = new List<string>();
+            public IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<ChatResponse> GetResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            {
+                string mode = options?.ToolMode is RequiredChatToolMode ? "required" : options?.ToolMode is NoneChatToolMode ? "none" : "auto";
+                Modes.Add(mode);
+                await Task.Yield();
+                if (Modes.Count == 1) yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "已确认入队 @50");
+                else if (mode == "required") yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, new List<AIContent> { new FunctionCallContent("c1", "list_tasks", new Dictionary<string, object>()) });
+                else yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "更正：@50 没有入队。");
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
+        }
+
+        [TestMethod]
+        public async Task SessionIsolation_ProjectRoundsSeeOnlyTheirOwnContext()
+        {
+            // 会话层隔离：项目 B 的一轮看不到项目 A 的通知；全局轮只看到各项目摘要；关闭隔离后恢复完整上下文
+            // Session isolation: a project B round cannot see project A's notice; a global round sees only digests; turning isolation off restores the full context
+            var client = new StreamingClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                await agent.RunAsync("A 任务完成：修改了 %APPDATA%\\ProjA\\a.cs，错误 CS0103", "通知 A", null, "ProjA");
+                await agent.RunAsync("B 任务失败：缺少 QQ-B2", "通知 B", null, "ProjB");
+                string seen = string.Join("\n", client.Messages.Select(m => m.Text));
+                Assert.IsFalse(seen.Contains("CS0103"), seen);
+                StringAssert.Contains(seen, "B 任务失败");
+                StringAssert.Contains(seen, "「ProjB」");
+                Assert.AreEqual("ProjB", agent.CurrentScope);
+
+                await agent.RunAsync("现在整体进度如何？", null, null, "");
+                seen = string.Join("\n", client.Messages.Select(m => m.Text));
+                Assert.IsFalse(seen.Contains("CS0103") || seen.Contains("QQ-B2"), seen);
+                StringAssert.Contains(seen, "- ProjA：ok");
+                StringAssert.Contains(seen, "- ProjB：ok");
+
+                await agent.RunAsync("A 再次通知", "通知 A2", null, "proja");
+                seen = string.Join("\n", client.Messages.Select(m => m.Text));
+                StringAssert.Contains(seen, "CS0103", "同一项目（不区分大小写）保留自己的上下文 / the same project (case-insensitive) keeps its context");
+                StringAssert.Contains(seen, "现在整体进度如何", "全局轮对各项目可见 / global rounds are visible to projects");
+                Assert.IsFalse(seen.Contains("QQ-B2"), seen);
+
+                _settings.AgentSessionIsolation = false;
+                await agent.RunAsync("B 再次通知", "通知 B2", null, "ProjB");
+                seen = string.Join("\n", client.Messages.Select(m => m.Text));
+                StringAssert.Contains(seen, "CS0103");
+                Assert.IsFalse(seen.Contains("【会话隔离】"), seen);
+            }
+        }
+
+        [TestMethod]
+        public async Task ModelWrittenToolLog_IsStrippedFromReply()
+        {
+            var client = new ScriptedClient("好的。\n〔工具记录（VSManager 自动附加，不可手写模仿）：⚙ 查看任务清单〕");
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                await agent.RunAsync("看看");
+                var parts = agent.Transcript.Messages[1].Parts;
+                Assert.IsFalse(parts.Any(p => !p.IsStep && p.Text.Contains("工具记录")));
+                Assert.IsTrue(parts.Any(p => p.IsStep && p.Text.Contains("已移除")));
             }
         }
 
@@ -1144,8 +1235,23 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost
+        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost, IAgentCadDebugHost, IAgentMcpHost, IAgentCadActionHost, IAgentVerifyHost
         {
+            internal readonly Dictionary<int, List<int>> Debugged = new Dictionary<int, List<int>>();
+            public Task<IList<int>> DebuggedProcessIds(VsInstance v) => Task.FromResult<IList<int>>(v != null && Debugged.TryGetValue(v.Pid, out var l) ? l : new List<int>());
+            internal readonly List<CadAgent.CadSequenceResult> CadShown = new List<CadAgent.CadSequenceResult>();
+            public void ShowCadArtifacts(string title, CadAgent.CadSequenceResult result) => CadShown.Add(result);
+            internal McpHub Mcp;
+            public IReadOnlyList<McpRegisteredTool> McpTools() => Mcp?.Tools ?? new McpRegisteredTool[0];
+            public string McpStatusText() => Mcp?.StatusText() ?? "MCP is off";
+            public async Task<string> ReconnectMcp() { if (Mcp != null) await Mcp.Reconnect(); return McpStatusText(); }
+            internal readonly Dictionary<string, string> CadDrawings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            public string GetCadDrawing(VsInstance v) => CadDrawings.TryGetValue(v.SolutionPath ?? "", out var d) ? d : null;
+            public Task<string> SetCadDrawing(VsInstance v, string drawing)
+            {
+                if (string.IsNullOrWhiteSpace(drawing)) CadDrawings.Remove(v.SolutionPath); else CadDrawings[v.SolutionPath] = drawing;
+                return Task.FromResult(drawing == null ? "cleared" : "recorded " + drawing);
+            }
             internal WorkspaceDisplaySnapshot Displays = new WorkspaceDisplaySnapshot();
             internal WorkspaceLayoutPlan LayoutPlan;
             internal string LayoutSignature;

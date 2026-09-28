@@ -72,6 +72,7 @@ namespace VSManager
             var result = _tasks.AddMention(target, request.Target, request.Body, attachments);
             if (!result.Accepted) { SetStatus(result.Message); return result; }
             var task = result.Task;
+            ApplyTitle(task, null);
             string startNote = _dispatcher.AcceptQueued(task, "用户", fromAgentPanel);
             HideResentFailed(task);
             if (_taskPanel.Collapsed) _taskPanel.SetCollapsed(false);

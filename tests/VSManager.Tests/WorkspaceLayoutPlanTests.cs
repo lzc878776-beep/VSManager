@@ -21,9 +21,9 @@ namespace VSManager.Tests
             return snapshot;
         }
 
-        private static WorkspaceLayoutPlan Plan(WorkspaceDisplaySnapshot screens, int count = 3, int main = 0, int panes = 0, bool output = true, bool errors = true) =>
+        private static WorkspaceLayoutPlan Plan(WorkspaceDisplaySnapshot screens, int count = 3, int main = 0, int panes = 0, bool output = true, bool errors = true, bool solution = false) =>
             WorkspaceLayoutPlan.Create(screens, Enumerable.Range(0, count).Select(i => new VsInstance { Pid = i + 1 }).ToList(),
-                Enumerable.Range(0, count).Select(i => "VS " + (i + 1)).ToList(), main, panes, output, errors);
+                Enumerable.Range(0, count).Select(i => "VS " + (i + 1)).ToList(), main, panes, output, errors, solution);
 
         [TestMethod]
         public void DiscoveryGeometry_MatchesLiveDisplaysWithoutMovingWindows()
@@ -49,9 +49,10 @@ namespace VSManager.Tests
         public void AutoPlan_AllWindowsInsideWorkAreasAndNonOverlapping(int screenCount)
         {
             var screens = Screens(screenCount);
-            var plan = Plan(screens);
+            var plan = Plan(screens, 3, 0, 0, true, true, true);
             Assert.AreEqual(3, plan.Placements.Count);
-            var rectangles = plan.Placements.SelectMany(p => new[] { p.MainBounds, p.CopilotBounds, p.OutputBounds, p.ErrorListBounds }).ToList();
+            Assert.IsTrue(plan.Placements.All(p => !p.SolutionExplorerBounds.IsEmpty && !p.ErrorListBounds.IsEmpty && !p.OutputBounds.IsEmpty));
+            var rectangles = plan.Placements.SelectMany(p => new[] { p.MainBounds, p.CopilotBounds, p.OutputBounds, p.ErrorListBounds, p.SolutionExplorerBounds }).ToList();
             foreach (var r in rectangles)
             {
                 Assert.IsTrue(r.Width > 0 && r.Height > 0);
@@ -114,6 +115,67 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Describe_ReportsRelativePositionsAndOrientation()
+        {
+            var screens = Screens(2);
+            screens.Displays.Add(new WorkspaceDisplay { Number = 3, Bounds = new Rectangle(1920, -1920, 1080, 1920), WorkingArea = new Rectangle(1920, -1920, 1080, 1880) });
+            string text = screens.Describe();
+            StringAssert.Contains(text, "#2 位于 #1 的右侧 / #2 is right of #1");
+            StringAssert.Contains(text, "#3 is above and right of #2");
+            StringAssert.Contains(text, "portrait");
+        }
+
+        [TestMethod]
+        public void CustomPlan_ConvertsPercentagesAndWarnsOnOverlap()
+        {
+            var screens = Screens(2);
+            var a = new VsInstance { Pid = 1 };
+            var b = new VsInstance { Pid = 2 };
+            var items = WorkspaceCustomLayoutParser.Parse("[{\"vs\":1,\"main\":{\"screen\":1,\"x\":0,\"y\":0,\"w\":65,\"h\":100},\"copilot\":[2,0,0,50,70],\"output\":{\"screen\":2,\"x\":0,\"y\":70,\"w\":50,\"h\":30}},"
+                + "{\"vs\":\"B\",\"main\":{\"screen\":1,\"x\":60,\"y\":0,\"w\":40,\"h\":100}}]");
+            Assert.AreEqual("1", items[0].VsRef);
+            Assert.AreEqual("B", items[1].VsRef);
+            items[0].Vs = a; items[0].Name = "A";
+            items[1].Vs = b; items[1].Name = "B";
+            var plan = WorkspaceLayoutPlan.CreateCustom(screens, items);
+            Assert.IsTrue(plan.Custom);
+            Assert.IsTrue(plan.IncludeOutput);
+            Assert.IsFalse(plan.IncludeErrorList);
+            var area1 = screens.Displays[0].WorkingArea;
+            Assert.AreEqual(new Rectangle(area1.X, area1.Y, 1248, 1040), plan.Placements[0].MainBounds);
+            Assert.AreEqual(new Rectangle(0, 0, 960, 728), plan.Placements[0].CopilotBounds);
+            Assert.AreEqual(new Rectangle(0, 728, 960, 312), plan.Placements[0].OutputBounds);
+            Assert.AreEqual(Rectangle.Empty, plan.Placements[1].CopilotBounds);
+            StringAssert.Contains(plan.Describe(), "A VS overlaps B VS");
+            Assert.IsTrue(plan.TargetsUnchanged);
+            Assert.IsFalse(plan.IncludeSolutionExplorer);
+
+            var more = WorkspaceCustomLayoutParser.Parse("[{\"vs\":1,\"main\":[1,0,0,70,100],\"errorList\":[1,70,0,30,50],\"solutionExplorer\":[1,70,50,30,50]}]");
+            more[0].Vs = a; more[0].Name = "A";
+            var plan2 = WorkspaceLayoutPlan.CreateCustom(screens, more);
+            Assert.IsTrue(plan2.IncludeErrorList);
+            Assert.IsTrue(plan2.IncludeSolutionExplorer);
+            Assert.AreEqual(new Rectangle(area1.X + 1344, area1.Y + 520, 576, 520), plan2.Placements[0].SolutionExplorerBounds);
+            StringAssert.Contains(plan2.Describe(), "Solution Explorer=(");
+        }
+
+        [TestMethod]
+        public void CustomPlan_RejectsBadScreensRangesAndDuplicates()
+        {
+            var screens = Screens(2);
+            var vs = new VsInstance { Pid = 1 };
+            WorkspaceCustomPlacement Item(int screen, double x, double w) => new WorkspaceCustomPlacement { Vs = vs, Name = "A", Main = new WorkspaceRectSpec { Screen = screen, X = x, Y = 0, W = w, H = 100 } };
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceLayoutPlan.CreateCustom(screens, new[] { Item(3, 0, 50) }));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceLayoutPlan.CreateCustom(screens, new[] { Item(1, 60, 50) }));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceLayoutPlan.CreateCustom(screens, new[] { Item(1, 0, 0) }));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceLayoutPlan.CreateCustom(screens, new[] { Item(1, 0, 50), Item(2, 0, 50) }));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceLayoutPlan.CreateCustom(screens, new[] { new WorkspaceCustomPlacement { Vs = vs, Name = "A" } }));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceCustomLayoutParser.Parse("not json"));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceCustomLayoutParser.Parse("[{\"main\":[1,0,0,50,100]}]"));
+            Assert.ThrowsException<ArgumentException>(() => WorkspaceCustomLayoutParser.Parse("[{\"vs\":1,\"main\":[1,0,0]}]"));
+        }
+
+        [TestMethod]
         public void InvalidScreens_AreRejectedAndUnknownCurrentUsesPrimary()
         {
             Assert.ThrowsException<ArgumentException>(() => Plan(Screens(0)));
@@ -171,7 +233,9 @@ namespace VSManager.Tests
                 {
                     Assert.AreEqual(host.Displays.Signature, host.LayoutSignature);
                     Assert.IsTrue(host.LayoutPlan.IncludeOutput);
-                    Assert.IsFalse(host.LayoutPlan.IncludeErrorList);
+                    Assert.IsTrue(host.LayoutPlan.IncludeErrorList);
+                    Assert.IsTrue(host.LayoutPlan.IncludeSolutionExplorer);
+                    Assert.IsFalse(host.LayoutPlan.Placements[0].SolutionExplorerBounds.IsEmpty);
                     Assert.AreSame(host.Instances[0], host.LayoutPlan.Placements[0].Vs);
                 }
                 await Invoke(agent, "restore_workspace_layout");
@@ -213,6 +277,30 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task PlaceWorkspace_AppliesAiLayoutAfterApproval()
+        {
+            var host = new AgentDesktopTests.DesktopHost { Displays = WorkspaceLayoutPlanTests.Screens(2), ConfirmResult = true };
+            host.Instances.Add(new VsInstance { Pid = 100, Key = "one" });
+            host.Instances.Add(new VsInstance { Pid = 101, Key = "two" });
+            using (var agent = new AgentService(host, () => new AppSettings { AgentConfirm = true }))
+            {
+                StringAssert.Contains(await Invoke(agent, "place_workspace_windows", new AIFunctionArguments { ["layout"] = "[{\"vs\":\"9\",\"main\":[1,0,0,100,100]}]" }), "9");
+                Assert.IsNull(host.LayoutPlan);
+                Assert.AreEqual(0, host.Confirmations);
+                await Task.Run(() => Invoke(agent, "place_workspace_windows", new AIFunctionArguments
+                {
+                    ["layout"] = "[{\"vs\":\"2\",\"main\":[2,0,0,100,100]},{\"vs\":\"1\",\"main\":[1,0,0,70,100],\"copilot\":[1,70,0,30,100]}]"
+                }));
+                Assert.AreEqual(1, host.Confirmations);
+                Assert.IsTrue(host.LayoutPlan.Custom);
+                Assert.AreEqual(host.Displays.Signature, host.LayoutSignature);
+                Assert.AreSame(host.Instances[1], host.LayoutPlan.Placements[0].Vs);
+                Assert.AreEqual(host.Displays.Displays[1].WorkingArea, host.LayoutPlan.Placements[0].MainBounds);
+                Assert.IsFalse(host.LayoutPlan.IncludeOutput);
+            }
+        }
+
+        [TestMethod]
         public void PromptAndSteps_ExplainDiscoveryLayoutAndRestore()
         {
             foreach (bool english in new[] { false, true })
@@ -220,11 +308,12 @@ namespace VSManager.Tests
                 string prompt = Prompts.AgentSystem(english, DateTime.Today, "", "");
                 StringAssert.Contains(prompt, "get_displays");
                 StringAssert.Contains(prompt, "arrange_workspace_layout");
+                StringAssert.Contains(prompt, "place_workspace_windows");
                 StringAssert.Contains(prompt, "restore_workspace_layout");
                 StringAssert.Contains(prompt, "arrange_copilot_panes");
             }
             using (var agent = new AgentService(new AgentDesktopTests.DesktopHost(), () => new AppSettings()))
-                foreach (var name in new[] { "get_displays", "arrange_workspace_layout", "restore_workspace_layout" })
+                foreach (var name in new[] { "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout" })
                 {
                     string step = (string)typeof(AgentService).GetMethod("DescribeCall", BindingFlags.Instance | BindingFlags.NonPublic)
                         .Invoke(agent, new object[] { new FunctionCallContent("step", name, new Dictionary<string, object>()) });

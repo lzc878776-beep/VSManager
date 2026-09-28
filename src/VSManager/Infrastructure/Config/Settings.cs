@@ -153,6 +153,26 @@ namespace VSManager
         [DataMember] public bool AgentConfirm;
         /// <summary>任务清单中的任务完成后，自动让 AI 助手跟进（汇报结果 / 发布后续任务）。</summary>
         [DataMember] public bool AgentAutoFollowUp;
+        /// <summary>
+        /// 自验证循环：任务进入「待验证」且测试清单含 [AI] 项时，自动让 AI 助手用工具验证、勾选，未通过则带证据重试（受 AI 自主补充上限约束）。
+        /// Self-verify loop: when a task awaits verification with [AI] checklist items, the AI assistant verifies and checks them with tools, and retries with evidence on failure (bounded by the AI retry cap).
+        /// </summary>
+        [DataMember] public bool AgentSelfVerify;
+        /// <summary>
+        /// 任务自动接续：任务返回待验证或部分完成时，AI 助手判断剩余步骤并用 continue_task 发布接续任务，不停下来等用户；默认开启（需要「任务完成自动跟进」）。
+        /// Task auto-continue: when a task returns awaiting verification or partially done, the AI assistant works out the remaining steps and publishes a continuation with continue_task instead of waiting; on by default (needs task auto follow-up).
+        /// </summary>
+        [DataMember] public bool AgentAutoContinue;
+        /// <summary>
+        /// 按需加载工具组：每轮只向模型公布核心工具与相关分组（布局、自测、文件检查、worktree、笔记、CAD、MCP），其余用 load_tools 加载或按名调用，节省上下文；默认开启，关闭则每轮公布全部工具。
+        /// On-demand tool groups: each round advertises only core tools and relevant groups (layout, self-test, inspection, worktree, notes, CAD, MCP); the rest load via load_tools or are called by name, saving context. On by default; off advertises every tool each round.
+        /// </summary>
+        [DataMember] public bool AgentToolGrouping;
+        /// <summary>
+        /// 会话层隔离：AI 总控助手的模型上下文按项目分开，项目任务通知只看到全局对话与本项目对话；默认开启。
+        /// Session isolation: the AI assistant's model context is split per project, so a project's task notices see only the global and that project's conversation; on by default.
+        /// </summary>
+        [DataMember] public bool AgentSessionIsolation;
         /// <summary>允许经预览批准的截图分析；需要视觉模型。/ Allow approved screenshot analysis; requires a vision model.</summary>
         [DataMember] public bool AgentScreenshotEnabled;
         /// <summary>
@@ -440,6 +460,12 @@ namespace VSManager
         [DataMember] public bool RecordCompletedTasksInNotebook;
         /// <summary>调试 CAD 插件（启动程序为 acad.exe 等）时自动 NETLOAD 启动项目 DLL，默认开启。/ Auto-NETLOAD the startup project DLL when debugging a CAD plug-in (start program acad.exe etc.); on by default.</summary>
         [DataMember] public bool CadDebugAutoLoad;
+        /// <summary>各解决方案的 CAD 调试图纸（Key 为解决方案路径，Alias 为图纸路径），由 AI 总控助手记录。/ CAD debug drawing per solution (Key = solution path, Alias = drawing path), recorded by the AI assistant.</summary>
+        [DataMember] public List<AliasEntry> CadDebugDrawings;
+        /// <summary>是否为 AI 总控助手挂载 MCP 服务器，默认关闭。/ Whether MCP servers are mounted for the AI assistant; off by default.</summary>
+        [DataMember] public bool McpEnabled;
+        /// <summary>MCP 服务器配置 JSON（{"mcpServers":{...}}），只由用户在属性页编辑，默认为空。/ MCP server configuration JSON ({"mcpServers":{...}}), edited only by the user in Settings; empty by default.</summary>
+        [DataMember] public string McpServersJson;
 
         public const int DefaultSendConfirmTimeoutSeconds = PasteVerifier.DefaultTimeoutSeconds, DefaultSendRetryCount = 1;
         public const int DefaultSendLocateTimeoutSeconds = InputLocator.DefaultTimeoutSeconds, DefaultSendLocateRetryCount = InputLocator.DefaultRetryCount;
@@ -583,6 +609,9 @@ namespace VSManager
             AgentModel = AgentPresets.Default.Model;
             AgentConfirm = false;
             AgentAutoFollowUp = true;
+            AgentAutoContinue = true;
+            AgentToolGrouping = true;
+            AgentSessionIsolation = true;
             AgentScreenshotEnabled = true;
             AgentPowerShellEnabled = false;
             AgentIncludeSolutionRoots = true;
@@ -662,6 +691,9 @@ namespace VSManager
             PublishAuthorEmail = "";
             Aliases = new List<AliasEntry>();
             VsNotes = new List<AliasEntry>();
+            CadDebugDrawings = new List<AliasEntry>();
+            McpEnabled = false;
+            McpServersJson = "";
         }
 
         public static string FilePath => Path.Combine(AppPaths.DataFolder, "settings.json");
@@ -679,6 +711,8 @@ namespace VSManager
                 }
                 if (s.Aliases == null) s.Aliases = new List<AliasEntry>();
                 if (s.VsNotes == null) s.VsNotes = new List<AliasEntry>();
+                if (s.CadDebugDrawings == null) s.CadDebugDrawings = new List<AliasEntry>();
+                if (s.McpServersJson == null) s.McpServersJson = "";
                 if (s.HiddenResentTasks == null) s.HiddenResentTasks = new List<HiddenTaskMark>();
                 s.TaskListGroupSort = TaskGrouping.NormalizeSort(s.TaskListGroupSort);
                 s.TaskListCollapsedGroups = TaskGrouping.NormalizeCollapsed(s.TaskListCollapsedGroups);
@@ -791,6 +825,26 @@ namespace VSManager
             {
                 VsNotes.RemoveAll(a => string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase));
                 if (!string.IsNullOrWhiteSpace(note)) VsNotes.Add(new AliasEntry { Key = key, Alias = note.Trim() });
+            }
+        }
+
+        /// <summary>读取解决方案的 CAD 调试图纸（线程安全）。/ Reads a solution's CAD debug drawing (thread-safe).</summary>
+        public string GetCadDrawing(string solutionPath)
+        {
+            if (string.IsNullOrWhiteSpace(solutionPath)) return null;
+            var list = CadDebugDrawings ?? (CadDebugDrawings = new List<AliasEntry>());
+            lock (list) return list.Find(a => string.Equals(a.Key, solutionPath, StringComparison.OrdinalIgnoreCase))?.Alias;
+        }
+
+        /// <summary>记录或清除（drawing 为空）解决方案的 CAD 调试图纸。/ Records or clears (empty drawing) a solution's CAD debug drawing.</summary>
+        public void SetCadDrawing(string solutionPath, string drawing)
+        {
+            if (string.IsNullOrWhiteSpace(solutionPath)) return;
+            var list = CadDebugDrawings ?? (CadDebugDrawings = new List<AliasEntry>());
+            lock (list)
+            {
+                list.RemoveAll(a => string.Equals(a.Key, solutionPath, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrWhiteSpace(drawing)) list.Add(new AliasEntry { Key = solutionPath, Alias = drawing.Trim() });
             }
         }
     }

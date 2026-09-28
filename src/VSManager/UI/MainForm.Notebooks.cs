@@ -76,6 +76,7 @@ namespace VSManager
         {
             if (!InitializeNotebook() || _workspaceNavigation == null) return;
             _workspaceNavigation.Select(WorkspacePage.Notebook);
+            NoteUserNavigation("用户打开笔记本 / user opened the notebook");
             _agentMode = false;
             _agentCard.Selected = false;
             _workspaceSidebar.SetNotionCollapsed(false);

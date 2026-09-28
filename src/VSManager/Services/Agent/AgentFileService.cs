@@ -279,7 +279,20 @@ namespace VSManager
 
         private string Redact(string text)
         {
-            var settings = _settings();
+            text = RedactText(text, _settings());
+            if (text.Length > MaxBytes * 2) throw new IOException();
+            return text;
+        }
+
+        /// <summary>
+        /// 按现有规则脱敏文本：已配置的密钥 / 令牌、私钥块、口令类键值、连接字符串、带凭据的 URL 与常见令牌格式。也供 read_vsmanager_log 使用。
+        /// Redacts text with the existing rules: configured keys / tokens, private-key blocks, password-like key-values, connection strings,
+        /// URLs with credentials and common token formats. Also used by read_vsmanager_log.
+        /// </summary>
+        internal static string RedactText(string text, AppSettings settings)
+        {
+            if (string.IsNullOrEmpty(text)) return text ?? "";
+            settings = settings ?? new AppSettings();
             var secrets = new[] { settings.EffectiveAgentApiKey, settings.AgentApiKey, settings.EffectiveVoiceApiKey,
                 settings.VoiceApiKey, settings.EffectiveGitHubToken, settings.GitHubToken, settings.WebToken,
                 settings.AgentKeyProtected, settings.VoiceKeyProtected, settings.GitHubTokenProtected }
@@ -303,7 +316,6 @@ namespace VSManager
                 text = Regex.Replace(text, pattern, m => Mask(m.Value), RegexOptions.None, TimeSpan.FromMilliseconds(200));
             if (secrets.Length > 0)
                 text = Regex.Replace(text, string.Join("|", secrets.Select(Regex.Escape)), m => Mask(m.Value), RegexOptions.None, TimeSpan.FromMilliseconds(200));
-            if (text.Length > MaxBytes * 2) throw new IOException();
             return text;
         }
 

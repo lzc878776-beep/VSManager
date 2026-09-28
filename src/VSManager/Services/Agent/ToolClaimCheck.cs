@@ -62,13 +62,13 @@ namespace VSManager
         /// <summary>会新建或重新排队任务的工具。/ Tools that create or requeue tasks.</summary>
         internal static readonly HashSet<string> EnqueueTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "send_task", "request_vsmanager_improvement", "retry_task", "retry_task_with_info",
+            "send_task", "request_vsmanager_improvement", "retry_task", "retry_task_with_info", "continue_task",
         };
 
         /// <summary>会返回任务清单实际状态的工具。/ Tools that return the actual task-list state.</summary>
         internal static readonly HashSet<string> QueueReadTools = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "list_tasks", "send_task", "request_vsmanager_improvement", "retry_task", "retry_task_with_info", "read_task_reply",
+            "list_tasks", "list_test_checklists", "send_task", "request_vsmanager_improvement", "retry_task", "retry_task_with_info", "continue_task", "read_task_reply",
         };
 
         /// <summary>「已」后常见的修饰词。/ Common modifiers after "已".</summary>
@@ -327,6 +327,56 @@ namespace VSManager
                 default:
                     return "⚠ 自动核查：" + string.Join("、", r.MissingIds.Select(i => "@" + i)) + " 不在任务清单中，已要求助手更正 / Auto check: claimed tasks are not in the task list; asked the assistant to correct";
             }
+        }
+
+        /// <summary>
+        /// 虚报回复在模型上下文中的替代文字：原文不再留在上下文里，避免模型照着「已入队」的写法继续模仿。
+        /// Replacement for a fabricated reply in the model context: the original text is dropped so the model cannot keep imitating it. Same text as <see cref="Retraction"/>.
+        /// </summary>
+        public const string DiscardedReply = Retraction;
+
+        /// <summary>模型自己手写的「工具记录」块的开头。/ Start of a tool-log block the model wrote by itself.</summary>
+        private const string ToolLogStart = "〔工具记录";
+
+        /// <summary>该条记录是否已被核查判定为虚报。/ Whether the record was flagged as fabricated by the check.</summary>
+        public static bool IsFabricated(IList<string> steps) =>
+            (steps ?? new List<string>()).Any(s => s != null && s.TrimStart().StartsWith("⚠ 核查未通过", StringComparison.Ordinal));
+
+        /// <summary>
+        /// 去掉回复中模型手写的「〔工具记录…〕」块（真实工具记录从不出现在正文里）；返回是否有删除。
+        /// Removes "〔工具记录…〕" tool-log blocks the model wrote into its reply (real tool logs never appear in the text); returns whether anything was removed.
+        /// </summary>
+        public static bool StripFakeToolLog(ref string text)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            bool removed = false;
+            int i;
+            while ((i = text.IndexOf(ToolLogStart, StringComparison.Ordinal)) >= 0)
+            {
+                int end = text.IndexOf('〕', i);
+                text = text.Substring(0, i).TrimEnd() + (end < 0 ? "" : text.Substring(end + 1));
+                removed = true;
+            }
+            if (removed) text = text.Trim();
+            return removed;
+        }
+
+        /// <summary>
+        /// 接续对话时恢复到模型上下文的助手文字：虚报回复换成作废说明，模型手写的工具记录会被去掉；
+        /// 真实的工具调用另行以结构化消息恢复（见 AgentService.RestoreConversation），不再以文字附在回复后面，以免被模型模仿。
+        /// Assistant text restored into the model context when resuming: fabricated replies become the discard note and model-written
+        /// tool logs are removed; real tool calls are restored as structured messages (see AgentService.RestoreConversation) rather than
+        /// appended as text, which the model would imitate.
+        /// </summary>
+        public static string HistoryText(string text, IList<string> steps, bool hadToolCalls)
+        {
+            if (IsFabricated(steps)) return DiscardedReply;
+            text = (text ?? "").Trim();
+            StripFakeToolLog(ref text);
+            bool calledTool = hadToolCalls || (steps ?? new List<string>()).Any(s => s != null && s.TrimStart().StartsWith("⚙", StringComparison.Ordinal));
+            if (!calledTool && text.Length > 0 && Check(text, new string[0], 0).Verdict != ClaimVerdict.Ok)
+                text += "\n（VSManager 核查：这一轮没有调用任何工具，上面的入队 / 核实说法没有工具依据 / VSManager check: no tool was called in this round; the claims above have no tool backing）";
+            return text;
         }
 
         private static string OneLine(string s, int max)

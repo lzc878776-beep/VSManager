@@ -4,6 +4,7 @@ using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace VSManager
@@ -43,13 +44,26 @@ namespace VSManager
             + "3) 解决冲突后生成解决方案，确保编译通过；4) 不推送远程，不删除 worktree 或分支。"
             + "无法确定如何解决冲突时停止并说明。完成后列出合并了哪些分支及结果。";
 
-        internal const string WorkspaceLayoutPrompt = "先用 get_displays 读取显示器和当前屏幕，再用 arrange_workspace_layout 自动布局所有 VS 主窗口、Copilot 和输出窗格；报告实际结果与未处理项。/ Read displays first, then auto-arrange VS main windows, Copilot and Output; report actual results and skipped items.";
+        internal const string WorkspaceLayoutPrompt = "先用 get_displays 读取全部显示器的尺寸、横竖屏与相对位置以及各 VS 所在屏，由你自己设计所有 VS 主窗口及 Copilot、输出、错误列表、解决方案资源管理器等窗格的摆放（每个 VS 的这些窗格都要安排，靠近所属主窗口且互不重叠），再用 place_workspace_windows 应用；有警告或失败就调整重试，最后说明布局思路并报告实际结果与未处理项。/ Read every display's size, orientation and relative position plus where each VS is with get_displays, design the placement of all VS main windows and their Copilot, Output, Error List and Solution Explorer panes yourself (arrange all of these panes for every VS, near its main window and without overlaps), apply it with place_workspace_windows, adjust and retry on warnings or failures, then explain the layout and report actual results and skipped items.";
+
+        // 「关闭 .cs 标签页」由 VSManager 直接执行，不经过 AI；未保存的文件保留、不保存。
+        // "Close .cs tabs" runs directly in VSManager without the AI; unsaved files stay open and are not saved.
+        internal const string CloseCsTabsText = "🗂 关闭 .cs 标签页 / Close .cs tabs";
+        internal const string CloseCsTabsTip = "关闭各 VS 中已打开的 .cs 文件标签页；有未保存修改的文件保留不关闭、不保存，并列出结果\n"
+            + "Close the open .cs tabs in every VS; files with unsaved changes stay open, are not saved, and are listed in the result";
+
+        /// <summary>
+        /// 点击「关闭 .cs 标签页」时调用，返回汇总文字（首行为总计）。
+        /// Called by "Close .cs tabs"; returns the summary text (first line is the total).
+        /// </summary>
+        public Func<Task<string>> CloseCsTabsRequested { get; set; }
 
         private static readonly (string Text, string Prompt)[] QuickPrompts =
         {
             ("屏幕布局 / Layout", WorkspaceLayoutPrompt),
             (SyncGitText, SyncGitTask),
             ("🔀 worktree 并入主分支", MergeWorktreesPrompt),
+            (CloseCsTabsText, CloseCsTabsTip),
         };
 
         // 笔记助手的快捷指令 / Quick prompts of the note assistant
@@ -95,7 +109,9 @@ namespace VSManager
         {
             _mentions?.Dispose();
             _mentionSession = session; _mentionTargets = targets;
-            _mentions = new VsMentionInput(_input, session, targets);
+            // 输入框候选末尾加入 @小维（AI 总控助手），不改变 VS 项的顺序；同步菜单等仍只用 VS 列表。/ The input appends @小维 (the AI assistant) after the VS entries, keeping their order; the sync menu and others keep using VS targets only.
+            _mentions = new VsMentionInput(_input, session, _noteMode ? targets
+                : () => (targets?.Invoke() ?? new VsMentionTarget[0]).Concat(new[] { VsMentionTarget.Assistant() }).ToArray());
         }
         public void RefreshMentions() { if (_mentions?.IsOpen == true) _mentions.Refresh(); }
 
@@ -144,6 +160,11 @@ namespace VSManager
                 {
                     b.Click += (s, e) => ShowSyncMenu(b);
                     _tips.SetToolTip(b, "选择要同步的 VS（显示其仓库当前分支），只同步该仓库\nChoose the VS to sync (shows its repository's current branch); only that repository is synced");
+                }
+                else if (q.Text == CloseCsTabsText)
+                {
+                    b.Click += async (s, e) => await CloseCsTabs(b);
+                    _tips.SetToolTip(b, CloseCsTabsTip);
                 }
                 else
                 {
@@ -297,6 +318,13 @@ namespace VSManager
             UpdateUi();
         }
 
+        /// <summary>输入框草稿（重启前后保留）。/ Input draft (kept across restarts).</summary>
+        internal string DraftText
+        {
+            get => _input.Text;
+            set { _input.Text = value ?? ""; _input.SelectionStart = _input.TextLength; }
+        }
+
         public void FocusInput()
         {
             if (Visible && _input.CanFocus) _input.Focus();
@@ -336,7 +364,7 @@ namespace VSManager
                     ? "尚未配置 AI 模型\n\n点击右上角「⚙ 模型设置」，选择 DeepSeek 并填写 API Key 后即可使用\n（在 platform.deepseek.com 创建 Key）"
                     : _noteMode
                     ? "我是笔记助手，可以阅读并整理你的笔记：\n\n· 总结这篇笔记\n· 找出所有提到发布的笔记\n· 把这篇改写成周报\n\nI am the note assistant: ask me to summarize, search or rewrite notes."
-                    : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案");
+                    : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案\n\n输入 @小维 明确把消息交给我，@ 加 VS 编号则指定目标 VS / Type @小维 to address me, or @ plus a VS number to target a VS");
                 return;
             }
             _transcript.Render(_agent.Transcript, true);
@@ -347,6 +375,11 @@ namespace VSManager
             text = (text ?? "").Trim();
             bool fromInput = text == _input.Text.Trim();
             var files = fromInput ? _pending.ToArray() : new AttachmentRef[0];
+            bool toAssistant = fromInput && !_noteMode && VsMentionSession.AddressesAssistant(text);
+            // @小维：明确交给 AI 总控助手，不按 VS 提及直接入队；直发仍以 VS 目标为准。
+            // @小维 addresses the AI assistant explicitly instead of enqueuing to a mentioned VS; Direct still targets the VS.
+            if (toAssistant && !direct) { SendToAssistant(text, files); return; }
+            if (toAssistant) text = VsMentionSession.StripAssistant(text);
             if (direct && (!fromInput || _noteMode || !VsMentionSession.HasIntent(text)))
             {
                 _mentionStatus = DirectNeedsMention;
@@ -405,7 +438,82 @@ namespace VSManager
             return true;
         }
 
+        internal const string AssistantBusy = "小维正在处理上一条，草稿已保留 / 小维 is still working on the previous message; draft kept";
+        internal const string AssistantEmpty = "请在 @小维 后输入内容 / Type your message after @小维";
+
+        /// <summary>
+        /// @小维：把消息交给 AI 总控助手按常规规则处理；其中的 VS 提及换成「#编号 名称」作为上下文，不直接入队。
+        /// @小维: hands the message to the AI assistant under its normal rules; VS mentions inside become "#number name" context instead of direct enqueues.
+        /// </summary>
+        private void SendToAssistant(string text, AttachmentRef[] files)
+        {
+            if (_agent == null) return;
+            if (!_agent.Configured) { SettingsRequested?.Invoke(); return; }
+            if (_agent.Running) { _mentionStatus = AssistantBusy; _inputStatus.Text = _mentionStatus; return; }
+            var live = _mentionTargets?.Invoke() ?? new VsMentionTarget[0];
+            string shown = LabelMentions(text, live, out var names);
+            string body = VsMentionSession.StripAssistant(shown);
+            if (body.Length == 0 && files.Length == 0) { _mentionStatus = AssistantEmpty; _inputStatus.Text = _mentionStatus; return; }
+            _input.Clear(); _pending.Clear(); RefreshChips();
+            _mentionStatus = "已交给小维 / Handed to 小维";
+            _inputStatus.Text = _mentionStatus;
+            _ = _agent.RunAsync(AssistantPrompt(body, names), shown, files);
+            FocusInput();
+        }
+
+        /// <summary>把输入中的已确认令牌换成可读标签（VS 用当前编号）。/ Replaces confirmed tokens with readable labels (VS use their current numbers).</summary>
+        private string LabelMentions(string text, VsMentionTarget[] live, out List<string> names)
+        {
+            names = new List<string>();
+            if (_mentionSession == null) return text.Trim();
+            var sb = new StringBuilder(text);
+            foreach (var chip in _mentionSession.Chips(text).Reverse())
+            {
+                string label = chip.Label;
+                if (_mentionSession.TryGetTarget(text.Substring(chip.Start, chip.Length), out var chosen) && !chosen.IsAssistant)
+                {
+                    var now = live.FirstOrDefault(t => t.InstanceKey == chosen.InstanceKey
+                        && string.Equals(t.SolutionPath, chosen.SolutionPath, StringComparison.OrdinalIgnoreCase));
+                    string name = now != null ? "#" + now.Number + " " + now.Name : "#" + chosen.Number + " " + chosen.Name;
+                    label = "@" + name + (now == null ? "（已关闭 / closed）" : "");
+                    if (!names.Contains(name)) names.Insert(0, name);
+                }
+                sb.Remove(chip.Start, chip.Length).Insert(chip.Start, label);
+            }
+            return sb.ToString().Trim();
+        }
+
+        /// <summary>@小维 消息发给模型的文字。/ Model text for an @小维 message.</summary>
+        internal static string AssistantPrompt(string body, IList<string> names)
+        {
+            string text = body.Length == 0 ? "（用户只发送了附件 / The user only sent attachments）" : body;
+            string note = "\n\n[用户用 @小维 明确把这条消息交给你（AI 总控助手）处理，请直接回应或按常规规则调用工具 / The user addressed this message to you (the AI assistant) via @小维; answer it or use tools under your normal rules";
+            if (names != null && names.Count > 0)
+                note += "；消息中提到的 VS：" + string.Join("、", names) + "，仅作为上下文，是否发布任务由你判断 / VS mentioned: " + string.Join(", ", names) + ", context only; you decide whether to publish tasks";
+            return text + note + "]";
+        }
+
         private ContextMenuStrip _syncMenu;
+
+        /// <summary>
+        /// 执行「关闭 .cs 标签页」：执行期间禁用按钮，完成后在输入区状态行显示总计，按钮提示显示各 VS 明细。
+        /// Runs "Close .cs tabs": the button is disabled meanwhile; the total goes to the input status line and the per-VS details to the button tooltip.
+        /// </summary>
+        private async Task CloseCsTabs(FlatButton button)
+        {
+            if (CloseCsTabsRequested == null || !button.Enabled) return;
+            button.Enabled = false;
+            _mentionStatus = "正在关闭各 VS 的 .cs 标签页… / Closing .cs tabs in every VS…";
+            _inputStatus.Text = _mentionStatus;
+            string summary;
+            try { summary = await CloseCsTabsRequested() ?? ""; }
+            catch (Exception ex) { summary = "关闭 .cs 标签页失败 / Failed to close .cs tabs：" + ex.Message; }
+            finally { if (!button.IsDisposed) button.Enabled = true; }
+            if (IsDisposed) return;
+            _mentionStatus = "🗂 " + summary.Split('\n')[0];
+            _inputStatus.Text = _mentionStatus;
+            _tips.SetToolTip(button, CloseCsTabsTip + "\n\n上次结果 / Last result：\n" + summary);
+        }
 
         /// <summary>
         /// 弹出「同步 git」下拉：列出各 VS 及其仓库当前分支，非 git 仓库不可选；同一仓库的多个 VS 标出首个编号。

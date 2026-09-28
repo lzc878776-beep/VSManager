@@ -1,0 +1,19 @@
+{
+  "name": "MyPlugin",
+  "description": "示例适配包：复制本目录到 %APPDATA%\\VSManager\\adapters\\<名称>\\ 后修改 / Sample adapter: copy this folder to %APPDATA%\\VSManager\\adapters\\<name>\\ and edit it",
+  "match": [ "MyPlugin", "MyPlugin.*" ],
+  "host": "AutoCAD",
+  "commands": {
+    "MyCommand": "MyCommand",
+    "regen": "_.REGEN"
+  },
+  "allowRawCommands": false,
+  "logs": [ "%LOCALAPPDATA%\\MyPlugin\\Logs\\*.log" ],
+  "launch": {
+    "cadPath": "",
+    "extraDlls": [],
+    "startupCommands": [],
+    "args": "",
+    "drawing": ""
+  }
+}

@@ -6,6 +6,18 @@ namespace VSManager.Tests
     public class CopilotPaneModeTests
     {
         [TestMethod]
+        public void Classify_HistoryWithoutConversationList_AndDiagnoseNamesTheCause()
+        {
+            // 历史列表视图没有对话列表元素，只有「返回」/ The history view has no conversation list element, only Back
+            Assert.AreEqual(CopilotPaneMode.History, CopilotPaneModes.Classify(true, false, true, null, null));
+            StringAssert.Contains(CopilotPaneModes.Diagnose(CopilotPaneMode.History), "返回");
+            StringAssert.Contains(CopilotPaneModes.Diagnose(CopilotPaneMode.History), "Back");
+            StringAssert.Contains(CopilotPaneModes.Diagnose(CopilotPaneMode.NotFound), "not found");
+            StringAssert.Contains(CopilotPaneModes.Diagnose(CopilotPaneMode.NoInput), "登录");
+            StringAssert.Contains(CopilotPaneModes.Diagnose(CopilotPaneMode.Conversation, true), "输入框");
+        }
+
+        [TestMethod]
         public void Classify_NotFoundAndHidden()
         {
             Assert.AreEqual(CopilotPaneMode.NotFound, CopilotPaneModes.Classify(false, false, null, null, null));

@@ -22,17 +22,45 @@ namespace VSManager
 
         public static bool Installed => TargetDirs().Any(d => File.Exists(Path.Combine(d, "SKILL.md")));
 
-        /// <summary>安装 / 更新技能文件，返回成功写入的目录。</summary>
-        public static List<string> Install(out string error)
+        /// <summary>
+        /// 只更新已安装过的技能目录中内容不同的文件，不新建目录；返回更新的目录数。启动时调用，让新增命令（如 screenshot）自动生效。
+        /// Updates only differing files in already-installed skill directories without creating new ones; returns the number updated. Called at startup so new commands (such as screenshot) take effect.
+        /// </summary>
+        public static int RefreshInstalled(IEnumerable<string> dirs = null)
+        {
+            var data = Resources(out _);
+            if (data == null) return 0;
+            int updated = 0;
+            foreach (var dir in dirs ?? TargetDirs())
+            {
+                try
+                {
+                    if (!File.Exists(Path.Combine(dir, "SKILL.md"))) continue;
+                    bool changed = false;
+                    foreach (var kv in data)
+                    {
+                        string file = Path.Combine(dir, kv.Key);
+                        if (File.Exists(file) && File.ReadAllBytes(file).SequenceEqual(kv.Value)) continue;
+                        File.WriteAllBytes(file, kv.Value);
+                        changed = true;
+                    }
+                    if (changed) updated++;
+                }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+            }
+            return updated;
+        }
+
+        private static Dictionary<string, byte[]> Resources(out string error)
         {
             error = null;
-            var done = new List<string>();
             var asm = typeof(SkillInstaller).Assembly;
             var data = new Dictionary<string, byte[]>();
             foreach (var f in Files)
             {
                 var res = asm.GetManifestResourceNames().FirstOrDefault(n => n.EndsWith("Skill." + f, StringComparison.OrdinalIgnoreCase));
-                if (res == null) { error = "技能资源缺失：" + f; return done; }
+                if (res == null) { error = "技能资源缺失：" + f; return null; }
                 using (var s = asm.GetManifestResourceStream(res))
                 using (var ms = new MemoryStream())
                 {
@@ -40,6 +68,16 @@ namespace VSManager
                     data[f] = ms.ToArray();
                 }
             }
+            return data;
+        }
+
+        /// <summary>安装 / 更新技能文件，返回成功写入的目录。</summary>
+        public static List<string> Install(out string error)
+        {
+            error = null;
+            var done = new List<string>();
+            var data = Resources(out error);
+            if (data == null) return done;
             foreach (var dir in TargetDirs())
             {
                 try

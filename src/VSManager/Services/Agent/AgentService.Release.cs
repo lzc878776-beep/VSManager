@@ -47,8 +47,43 @@ namespace VSManager
         Task<string> CheckBlockedTarget(VsInstance v, SolutionEntry parkFor, string text);
     }
 
+    /// <summary>
+    /// 可选宿主能力：为待验证或部分完成的任务向同一 VS 发布接续任务（界面线程之外可调用）。
+    /// Optional host capability: publishes a continuation to the same VS for a task awaiting verification or partially done (callable from background threads).
+    /// </summary>
+    public interface IAgentContinuationHost
+    {
+        /// <summary>发布接续任务并返回结果文字（以「✅」「⏳」「❌」开头，与 send_task 相同）。/ Publishes the continuation and returns result text (starting with ✅ / ⏳ / ❌ like send_task).</summary>
+        Task<string> ContinueTask(int id, string remaining, string title);
+    }
+
     public sealed partial class AgentService
     {
+        [Description("任务自动接续：任务返回待验证、或已完成但回复提到还有剩余步骤时，为它向同一 VS 发布接续任务，只做剩余步骤（原任务摘要与上一轮结果会自动附上）。" +
+            "收到带「[自动接续]」的通知时，判断剩余工作是目标 VS 自己能完成的（未完成部分、后续步骤、需补的代码 / 编译 / 单元测试 / 文档）才调用，不要停下来等用户；" +
+            "[AI] 项验证不通过、属于本次改动本身的问题用 retry_task_with_info；只剩 [人工] 项或需要用户提供信息 / 授权时不要调用，告诉用户。" +
+            "每个任务只能接续一次，每条接续链最多 " + TaskContinuation.MaxDepthText + " 次；原任务阻塞同一 VS 时会自动放行（测试清单保持待验证），接续任务按编号排在该 VS 已排队任务之后。" +
+            "/ Task auto-continue: for a task awaiting verification, or done but whose reply mentions remaining steps, publishes a continuation to the same VS covering only the remaining steps (the original task summary and previous result are attached). " +
+            "On a notice with \"[自动接续 / Auto-continue]\", call it when the remaining work is something the target VS can do itself, instead of waiting for the user; use retry_task_with_info when an [AI] item fails because of the change itself; " +
+            "do not call it when only [人工] items or user-only information / authorization remain. One continuation per task, at most " + TaskContinuation.MaxDepthText + " per chain; a blocking original is released (its checklist stays pending) and the continuation queues after the tasks already queued on that VS.")]
+        internal async Task<string> ContinueTask(
+            [Description("要接续的原任务编号，如 3")] int id,
+            [Description("本轮要完成的具体剩余步骤：做什么、改哪里、如何验收；不要只写「继续」/ The concrete remaining steps: what, where and how to accept; never just \"continue\"")] string remaining,
+            [Description("可选：接续任务的中文题目，不超过 20 字；留空时沿用原题目加「接续」/ Optional short Chinese title; defaults to the original title plus \"接续\"")] string title = null)
+        {
+            if (!(_host is IAgentContinuationHost host)) return "当前宿主不支持任务接续 / Task continuation is unavailable.";
+            if (!_settings().AgentAutoContinue)
+                return "任务自动接续未开启（属性 → AI 助手 → 任务自动接续），请把剩余步骤告诉用户 / Task auto-continue is off (Properties > AI assistant); tell the user the remaining steps.";
+            if (string.IsNullOrWhiteSpace(remaining)) return "remaining 不能为空 / remaining is empty.";
+            if (_settings().AgentConfirm && !await ConfirmAsync("发布任务 #" + id + " 的接续任务", remaining))
+                return "用户拒绝了该操作。";
+            return await host.ContinueTask(id, remaining.Trim(), title).ConfigureAwait(false);
+        }
+
+        /// <summary>发给 VSManager 项目的任务附加开源约束（按界面语言）。/ Open-source constraint appended to tasks for the VSManager project (by UI language).</summary>
+        internal static string OpenSourceSuffixFor(VsInstance v, bool english) =>
+            v != null && IsVsManager(v) ? (english ? OpenSourceTaskSuffixEn : OpenSourceTaskSuffix) : "";
+
         private const string ReleaseUnsupported = "当前宿主不支持接续等级 / Continuation levels are unavailable.";
 
         [Description("设置任务队列的接续等级（与任务清单顶栏的四档滑块同步并保存）：completed=已完成（只有成功才自动执行同一 VS 的下一项，待确认或失败都阻塞后续）；" +

@@ -710,8 +710,290 @@ namespace VSManager.Tests
                 StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "start_task_workflow");
         }
 
-        private sealed class FileHost : IAgentHost, IAgentNotebookHost, IAgentTaskResultHost, IAgentWorkflowHost
+        [TestMethod]
+        public async Task RestartForTesting_ValidatesPrebuildsThenSchedules()
         {
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = " ", ["taskId"] = 0 }), "empty");
+            _host.RestartBlocked = "not under a debugger";
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "not under a debugger");
+            Assert.AreEqual(0, _host.Prebuilds);
+            _host.RestartBlocked = null;
+            _host.Build = new SelfRestartBuild { Ok = false, Summary = "CS1002 missing semicolon" };
+            string failed = await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 });
+            StringAssert.Contains(failed, "CS1002");
+            StringAssert.Contains(failed, "restart cancelled");
+            Assert.AreEqual(0, _host.Scheduled.Count);
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "declined");
+            Assert.AreEqual(1, _host.Prebuilds);
+            _host.ConfirmResult = true;
+            _host.Build = new SelfRestartBuild { Ok = true, Summary = "build ok" };
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = " - [ ] a ", ["taskId"] = 5 }), "scheduled");
+            CollectionAssert.AreEqual(new[] { "- [ ] a|5|build ok" }, _host.Scheduled);
+            foreach (bool en in new[] { false, true })
+            {
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "restart_vsmanager_for_testing");
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "mark_test_item");
+            }
+        }
+
+        [TestMethod]
+        public async Task SelfIteration_StartsCountsRoundsAndStops()
+        {
+            _settings.AgentAutoFollowUp = false;
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "fix layout", ["maxRounds"] = 2 }), "auto follow-up");
+            _settings.AgentAutoFollowUp = true;
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = " ", ["maxRounds"] = 2 }), "goal");
+            _host.RestartBlocked = "not under a debugger";
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "fix layout", ["maxRounds"] = 2 }), "not under a debugger");
+            Assert.IsNull(SelfIteration.Load(DateTime.UtcNow));
+            _host.RestartBlocked = null;
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "fix layout", ["maxRounds"] = 2 }), "declined");
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "fix layout", ["maxRounds"] = 2 }), "max 2 rounds");
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "other", ["maxRounds"] = 2 }), "already active");
+            _settings.AgentConfirm = false;
+
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "round 1/2");
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "round 2/2");
+            int prebuilds = _host.Prebuilds;
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "round limit");
+            Assert.AreEqual(prebuilds, _host.Prebuilds);
+            Assert.AreEqual(2, _host.Scheduled.Count);
+
+            var state = SelfIteration.Load(DateTime.UtcNow);
+            Assert.AreEqual(2, state.Round);
+            string notice = SelfRestart.NoticeContent(new SelfRestartHandoff { TestPlan = "- [ ] a", TaskId = 5 }, new SelfRestartOutcome(), state);
+            StringAssert.Contains(notice, "2/2");
+            StringAssert.Contains(notice, "stop_self_iteration");
+            Assert.IsFalse(SelfIteration.NoticeBlock(state).Contains("send_task"), "the last round must not ask for another fix");
+            state.Round = 1;
+            StringAssert.Contains(SelfIteration.NoticeBlock(state), "send_task");
+            Assert.IsFalse(SelfRestart.NoticeContent(new SelfRestartHandoff { TestPlan = "- [ ] a" }, new SelfRestartOutcome()).Contains("Self-iteration"));
+
+            StringAssert.Contains(await Invoke("stop_self_iteration", new AIFunctionArguments { ["summary"] = "all passed" }), "2/2");
+            Assert.IsNull(SelfIteration.Load(DateTime.UtcNow));
+            StringAssert.Contains(await Invoke("stop_self_iteration", new AIFunctionArguments()), "No self-iteration");
+            StringAssert.Contains(await Invoke("restart_vsmanager_for_testing", new AIFunctionArguments { ["testPlan"] = "- [ ] a", ["taskId"] = 5 }), "scheduled");
+            foreach (bool en in new[] { false, true })
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "start_self_iteration");
+        }
+
+        [TestMethod]
+        public async Task SkillGapLoop_StartsDedicatedIterationOncePerItemAndIsDocumented()
+        {
+            var args = new Func<AIFunctionArguments>(() => new AIFunctionArguments { ["taskId"] = 5, ["item"] = 1, ["skill"] = "list_tray_menu: reads the tray menu items", ["reason"] = "no tool reads menus" });
+            _settings.AgentAutoFollowUp = false;
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", args()), "auto follow-up");
+            _settings.AgentAutoFollowUp = true;
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", new AIFunctionArguments { ["taskId"] = 5, ["item"] = 1, ["skill"] = " ", ["reason"] = "x" }), "Describe the skill");
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", new AIFunctionArguments { ["taskId"] = 9, ["item"] = 1, ["skill"] = "s", ["reason"] = "r" }), "No task #9");
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", args()), "declined");
+            Assert.IsNull(_host.GapItem.Skill, "拒绝后撤销登记 / Declining releases the claim");
+            Assert.IsNull(SelfIteration.Load(DateTime.UtcNow));
+            _host.ConfirmResult = true;
+            string ok = await Invoke("start_skill_gap_loop", args());
+            _settings.AgentConfirm = false;
+            StringAssert.Contains(ok, "Skill-gap loop started (max 3 rounds)");
+            var state = SelfIteration.Load(DateTime.UtcNow);
+            Assert.IsTrue(state.IsSkillGap);
+            Assert.AreEqual(5, state.TargetTaskId);
+            Assert.AreEqual(1, state.TargetItem);
+            Assert.IsTrue(TaskTestChecklist.CanAiCheck(_host.GapItem), "目标项可由 AI 用新 skill 勾选 / The target item can be checked with the new skill");
+            StringAssert.Contains(await Invoke("start_self_iteration", new AIFunctionArguments { ["goal"] = "g" }), "already active");
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", args()), "already active");
+            string block = SelfIteration.NoticeBlock(state);
+            StringAssert.Contains(block, "Skill-gap loop");
+            StringAssert.Contains(block, "item 1 of task #5");
+            StringAssert.Contains(block, "original task's problem");
+            await Invoke("stop_self_iteration", new AIFunctionArguments());
+            StringAssert.Contains(await Invoke("start_skill_gap_loop", args()), "one per item");
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, "start_skill_gap_loop");
+                StringAssert.Contains(prompt, en ? "Skill-gap loop vs self-iteration" : "补 skill 闭环与自迭代的关系");
+                StringAssert.Contains(prompt, en ? "no user reminder needed" : "不需要用户提醒");
+            }
+        }
+
+        [TestMethod]
+        public void Prompt_TellsCadProjectsNotToStartCadThemselves()
+        {
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, en ? "Do not start CAD to test it yourself" : "不需要你启动 CAD 自行测试");
+                StringAssert.Contains(prompt, en ? "ai.agent will run the CAD tests afterwards" : "CAD 中的测试由 ai.agent 后续完成");
+            }
+        }
+
+        [TestMethod]
+        public void Prompt_RestartIgnoresTasksInOtherVs()
+        {
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, en ? "tasks running in other VS instances are ignored and never waited for" : "其他 VS 中正在执行的任务一律忽略、不必等它们完成");
+                StringAssert.Contains(prompt, en ? "re-delivered automatically afterwards" : "期间到达的完成通知在重启后自动补发");
+                Assert.IsFalse(prompt.Contains(en ? "Never restart while a task is still running." : "任务仍在执行时不要重启。"));
+            }
+        }
+
+        [TestMethod]
+        public void Prompt_DecidesAutonomouslyWhenUserAway()
+        {
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, en ? "18. Keep going when the user is away" : "18. 用户不在时自主推进");
+                StringAssert.Contains(prompt, en ? "do not stop to ask and wait" : "不要停下来提问等待");
+                StringAssert.Contains(prompt, en ? "what the user needs to provide" : "需要用户提供什么");
+                StringAssert.Contains(prompt, en ? "acting on your own never counts as authorization" : "自主推进不构成授权");
+            }
+        }
+
+        [TestMethod]
+        public void CarriedNotices_RoundTripOnceAndSkipStale()
+        {
+            string path = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "vsm-notices-" + Guid.NewGuid().ToString("N") + ".json");
+            var now = DateTime.UtcNow;
+            try
+            {
+                Assert.IsNull(CarriedNotices.Save(new[]
+                {
+                    new CarriedNotice { Display = "d1", Content = "c1", Scope = "ProjA" },
+                    new CarriedNotice { Display = "d2", Content = "", Scope = null },
+                    new CarriedNotice { Display = "d3", Content = "c3", Scope = null }
+                }, now, path));
+                var list = CarriedNotices.Take(now.AddMinutes(1), out string error, path);
+                Assert.IsNull(error);
+                Assert.AreEqual(2, list.Count);
+                Assert.AreEqual("c1", list[0].Content);
+                Assert.AreEqual("ProjA", list[0].Scope);
+                Assert.IsNull(list[1].Scope);
+                Assert.IsFalse(System.IO.File.Exists(path));
+                Assert.AreEqual(0, CarriedNotices.Take(now, out error, path).Count);
+
+                Assert.IsNull(CarriedNotices.Save(new[] { new CarriedNotice { Display = "d", Content = "c" } }, now, path));
+                Assert.AreEqual(0, CarriedNotices.Take(now + CarriedNotices.MaxAge + TimeSpan.FromMinutes(1), out error, path).Count);
+                Assert.IsFalse(System.IO.File.Exists(path));
+
+                System.IO.File.WriteAllText(path, "x");
+                Assert.IsNull(CarriedNotices.Save(new CarriedNotice[0], now, path));
+                Assert.IsFalse(System.IO.File.Exists(path));
+            }
+            finally { CarriedNotices.Discard(path); }
+        }
+
+        [TestMethod]
+        public void SelfIteration_ClampsRoundsAndExpires()
+        {
+            Assert.AreEqual(SelfIteration.DefaultRounds, SelfIteration.ClampRounds(0));
+            Assert.AreEqual(SelfIteration.MaxRoundsLimit, SelfIteration.ClampRounds(99));
+            Assert.IsNull(SelfIteration.Save(new SelfIterationState { Goal = "g", MaxRounds = 3, StartedUtc = DateTime.UtcNow.AddHours(-30) }));
+            Assert.IsNull(SelfIteration.Load(DateTime.UtcNow));
+            Assert.IsFalse(System.IO.File.Exists(SelfIteration.FilePath));
+        }
+
+        [TestMethod]
+        public async Task MarkTestItem_RequiresEvidence_HonorsConfirm()
+        {
+            StringAssert.Contains(await Invoke("mark_test_item", new AIFunctionArguments { ["taskId"] = 5, ["item"] = 1, ["passed"] = true, ["evidence"] = " " }), "evidence");
+            StringAssert.Contains(await Invoke("mark_test_item", new AIFunctionArguments { ["taskId"] = 5, ["item"] = 0, ["passed"] = true, ["evidence"] = "list_vs ok" }), "from 1");
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("mark_test_item", new AIFunctionArguments { ["taskId"] = 5, ["item"] = 1, ["passed"] = true, ["evidence"] = "list_vs ok" }), "declined");
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("mark_test_item", new AIFunctionArguments { ["taskId"] = 5, ["item"] = 2, ["passed"] = true, ["evidence"] = "list_vs ok" }), "marked");
+            CollectionAssert.AreEqual(new[] { "5:2:True:list_vs ok" }, _host.Marks);
+        }
+
+        [TestMethod]
+        public async Task ListTestChecklists_ReturnsHostTextAndIsInPrompt()
+        {
+            StringAssert.Contains(await Invoke("list_test_checklists", new AIFunctionArguments { ["taskId"] = 0 }), "checklists:0");
+            StringAssert.Contains(await Invoke("list_test_checklists", new AIFunctionArguments { ["taskId"] = 9 }), "checklists:9");
+            Assert.IsTrue(ToolClaimCheck.QueueReadTools.Contains("list_test_checklists"));
+            Assert.IsFalse(ToolClaimCheck.EnqueueTools.Contains("list_test_checklists"));
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, "list_test_checklists");
+                StringAssert.Contains(prompt, en ? "Why you must not publish a task for this" : "为什么不能自己发布这类任务");
+            }
+        }
+
+        [TestMethod]
+        public async Task UiProbeTools_UseHostAndAreDocumentedInPrompt()
+        {
+            StringAssert.Contains(await Invoke("get_window_state", new AIFunctionArguments()), "window-state");
+            string handoff = await Invoke("read_restart_handoff", new AIFunctionArguments());
+            StringAssert.Contains(handoff, "consumed-at-startup");
+            StringAssert.Contains(handoff, "【restart-handoff.json】");
+            StringAssert.Contains(await Invoke("get_foreground_window", new AIFunctionArguments()), "/");
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                foreach (string tool in new[] { "get_window_state", "get_foreground_window", "list_tray_icons", "read_restart_handoff" })
+                    StringAssert.Contains(prompt, tool);
+            }
+            StringAssert.Contains(SelfRestart.NoticeContent(new SelfRestartHandoff { TestPlan = "- [ ] a" }, new SelfRestartOutcome()), "list_tray_icons");
+        }
+
+        [TestMethod]
+        public async Task PrepareRestartScenario_ValidatesAndReachesHostAndIsDocumented()
+        {
+            string ok = await Invoke("prepare_restart_scenario", new AIFunctionArguments { ["vs"] = "Demo", ["window"] = "最大化", ["foreground"] = "other" });
+            StringAssert.Contains(ok, "scenario:");
+            StringAssert.Contains(ok, "page=vs（Demo）");
+            StringAssert.Contains(ok, "window=maximize");
+            StringAssert.Contains(ok, "foreground=other");
+            string bad = await Invoke("prepare_restart_scenario", new AIFunctionArguments { ["window"] = "sideways" });
+            StringAssert.Contains(bad, "Invalid scenario");
+            StringAssert.Contains(await Invoke("prepare_restart_scenario", new AIFunctionArguments()), "at least one");
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, "prepare_restart_scenario");
+                StringAssert.Contains(prompt, en ? "Verifiability re-judging" : "可验证性重判");
+            }
+            string notice = SelfRestart.NoticeContent(new SelfRestartHandoff { TestPlan = "- [ ] a", Scenario = "前台=其他应用 / foreground=other" }, new SelfRestartOutcome());
+            StringAssert.Contains(notice, "Pre-restart scenario: 前台=其他应用");
+        }
+
+        private sealed class FileHost : IAgentHost, IAgentNotebookHost, IAgentTaskResultHost, IAgentWorkflowHost, IAgentSelfRestartHost, IAgentChecklistHost, IAgentUiProbeHost, IAgentScenarioHost, IAgentSkillGapHost
+        {
+            public TaskTestItem GapItem = new TaskTestItem { Text = "设置页的保存路径显示为默认值", By = TaskTestChecklist.ByUser };
+            public Task<Tuple<string, string>> ClaimSkillGap(int taskId, int item, string skill)
+            {
+                if (taskId != 5 || item != 1) return Task.FromResult(Tuple.Create<string, string>(null, "No task #" + taskId));
+                string refusal = TaskTestChecklist.SkillGapRefusal(GapItem);
+                if (refusal != null) return Task.FromResult(Tuple.Create<string, string>(null, refusal));
+                GapItem.Skill = skill;
+                return Task.FromResult(Tuple.Create<string, string>(GapItem.Text, null));
+            }
+            public Task ReleaseSkillGap(int taskId, int item) { GapItem.Skill = null; return Task.FromResult(true); }
+            public RestartScenario Scenario;
+            public Task<string> PrepareRestartScenario(RestartScenario s) { Scenario = s; return Task.FromResult("scenario:" + s.Describe()); }
+            public Task<string> GetWindowState() => Task.FromResult("window-state");
+            public Task<string> RestartConsumption() => Task.FromResult("consumed-at-startup");
+            public Task<UiSelfInfo> SelfInfo() => Task.FromResult(new UiSelfInfo { TrayText = "t", TrayVisible = true });
+            public Task<string> ListTestChecklists(int taskId) => Task.FromResult("checklists:" + taskId);
+            internal string RestartBlocked;
+            internal SelfRestartBuild Build = new SelfRestartBuild { Ok = true, Summary = "ok" };
+            internal int Prebuilds;
+            internal readonly List<string> Scheduled = new List<string>();
+            internal readonly List<string> Marks = new List<string>();
+            public Task<string> CheckSelfRestart() => Task.FromResult(RestartBlocked);
+            public Task<SelfRestartBuild> PrebuildSelf(CancellationToken cancellationToken) { Prebuilds++; return Task.FromResult(Build); }
+            public Task<string> ScheduleSelfRestart(string testPlan, int taskId, string scope, string buildSummary) { Scheduled.Add(testPlan + "|" + taskId + "|" + buildSummary); return Task.FromResult("scheduled"); }
+            public Task<string> SetTestItem(int taskId, int item, bool passed, string evidence) { Marks.Add(taskId + ":" + item + ":" + passed + ":" + evidence); return Task.FromResult("marked"); }
             internal int WorkflowStarts;
             public bool WorkflowStarted { get; private set; }
             public Task<string> StartWorkflow() { WorkflowStarts++; WorkflowStarted = true; return Task.FromResult("started-by-host"); }

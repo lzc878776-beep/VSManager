@@ -103,6 +103,7 @@ namespace VSManager.Tests
             Assert.IsFalse(text.Contains(TaskStateMachine.NeedsUserReceipt(t)), "规则只保留三种回执 / Rules list three receipts only");
             StringAssert.Contains(text, "三选一");
             StringAssert.Contains(text, "无关的遗留");
+            StringAssert.Contains(text, "[人工]");
         }
 
         [TestMethod]

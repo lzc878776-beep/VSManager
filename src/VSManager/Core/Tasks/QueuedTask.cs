@@ -44,14 +44,33 @@ namespace VSManager
     {
         public const int MaxLength = 20;
 
+        /// <summary>保存的题目上限（含「项目名 · 」前缀）。/ Stored title limit (including the "Project · " prefix).</summary>
+        public const int MaxStoredLength = 48;
+
         /// <summary>规范为单行并截断到上限；为空时返回 null。/ Normalizes to one line and truncates to the limit; null when empty.</summary>
-        public static string Normalize(string title)
+        public static string Normalize(string title) => Normalize(title, MaxLength);
+
+        /// <summary>规范为单行并截断到指定上限；为空时返回 null。/ Normalizes to one line and truncates to the given limit; null when empty.</summary>
+        public static string Normalize(string title, int max)
         {
             var sb = new System.Text.StringBuilder();
             foreach (char c in title ?? "") sb.Append(char.IsControl(c) || char.IsWhiteSpace(c) ? ' ' : c);
             string result = System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ").Trim();
-            if (result.Length > MaxLength) result = result.Substring(0, MaxLength).TrimEnd();
+            if (result.Length > max) result = result.Substring(0, max).TrimEnd();
             return result.Length == 0 ? null : result;
+        }
+
+        /// <summary>
+        /// 从任务正文取题目：去掉开头的【标签】，取首句并截断到 <see cref="MaxLength"/>；为空时返回 null。
+        /// Derives a title from task text: drops leading 【tags】, takes the first sentence and truncates to <see cref="MaxLength"/>; null when empty.
+        /// </summary>
+        public static string FromText(string text)
+        {
+            string s = (text ?? "").Trim();
+            while (s.StartsWith("【", StringComparison.Ordinal) && s.IndexOf('】') > 0) s = s.Substring(s.IndexOf('】') + 1).TrimStart();
+            int end = s.IndexOfAny(new[] { '。', '！', '？', '；', '\n' });
+            if (end > 0) s = s.Substring(0, end);
+            return Normalize(s.TrimEnd('，', ',', '：', ':'));
         }
     }
 
@@ -165,6 +184,10 @@ namespace VSManager
         /// code and docs to learn the progress instead of relying on the earlier conversation; cleared once delivered.
         /// </summary>
         [DataMember(EmitDefaultValue = false)] public bool FreshContext;
+        /// <summary>接续的原任务编号（见 <see cref="TaskContinuation"/>），普通任务为 0。/ Id of the task this one continues (see <see cref="TaskContinuation"/>); 0 for ordinary tasks.</summary>
+        [DataMember(EmitDefaultValue = false)] public int ContinuedFrom;
+        /// <summary>在接续链中的序号：原任务为 0，第一次接续为 1。/ Position in the continuation chain: 0 for the original task, 1 for the first continuation.</summary>
+        [DataMember(EmitDefaultValue = false)] public int ContinuationDepth;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -179,6 +202,8 @@ namespace VSManager
         [IgnoreDataMember] public string PredecessorNotice;
         /// <summary>会话内等待原因，不持久化、不改变业务状态。/ Session wait reason; never persisted and never changes business state.</summary>
         [IgnoreDataMember] public string ManualChatWaitReason;
+        /// <summary>运行期：本次发布中对话窗格「诊断并修复」已进行的轮数。/ Runtime only: pane diagnose-and-repair rounds so far in this dispatch.</summary>
+        [IgnoreDataMember] public int PaneRepairRounds;
 
         public bool FromAgent => Source == "AI";
 
@@ -197,7 +222,8 @@ namespace VSManager
             ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
             PendingNote = PendingNote, FailureReason = FailureReason,
             TestItems = TestItems?.Select(i => i?.Clone()).ToArray(), Interrupted = Interrupted,
-            Reply = Reply, RunIssue = RunIssue, ResumeNote = ResumeNote, FreshContext = FreshContext
+            Reply = Reply, RunIssue = RunIssue, ResumeNote = ResumeNote, FreshContext = FreshContext,
+            ContinuedFrom = ContinuedFrom, ContinuationDepth = ContinuationDepth
         };
     }
 
@@ -207,7 +233,17 @@ namespace VSManager
     {
         [DataMember] public string Text;
         [DataMember(EmitDefaultValue = false)] public bool Checked;
+        /// <summary>
+        /// 由谁验证：「ai」= AI 总控助手可用工具验证，「user」= 必须人工验证；为空时按文字推断（旧数据）。
+        /// Who verifies it: "ai" = the AI assistant can verify with tools, "user" = must be verified by a person; inferred from the text when empty (older data).
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string By;
+        /// <summary>
+        /// 为验证该项而补齐的 skill（AI 发起的补 skill 闭环）；非空时即使标为人工，只要不是必须人眼 / 人手的项，也可由 AI 用该 skill 验证后勾选。
+        /// The skill being added to verify this item (AI-started skill-gap loop); when set, the AI may check the item with that skill even if tagged manual, unless it truly needs human eyes or hands.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string Skill;
 
-        public TaskTestItem Clone() => new TaskTestItem { Text = Text, Checked = Checked };
+        public TaskTestItem Clone() => new TaskTestItem { Text = Text, Checked = Checked, By = By, Skill = Skill };
     }
 }

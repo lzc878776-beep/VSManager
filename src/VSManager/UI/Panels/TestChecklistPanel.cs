@@ -16,6 +16,10 @@ namespace VSManager
         private readonly Panel _top = new Panel();
         private readonly ChecklistView _list = new ChecklistView();
         private readonly ToolTip _tips = new ThemedToolTip();
+        private readonly FlatButton _btnVerify = new FlatButton { Text = "🤖 AI 验证 / AI verify", Ghost = true };
+        private readonly FlatButton _btnLoop = new FlatButton { Text = "🔁 自验证：关 / Loop off", Ghost = true };
+        private bool _selfVerify;
+        private int _aiItems, _userItems;
         private TaskQueue _queue;
         private Func<DateTime?> _clearedAt;
         private string _signature;
@@ -28,6 +32,17 @@ namespace VSManager
         /// <summary>请求对任务执行操作：verify / supplement / open。/ Requests a task action: verify / supplement / open.</summary>
         public event Action<QueuedTask, string> ActionRequested;
 
+        /// <summary>请求 AI 助手立即验证所有未勾选的 AI 项。/ Asks the AI assistant to verify every unchecked AI item now.</summary>
+        public event Action AiVerifyRequested;
+
+        /// <summary>用户切换自验证循环（参数为新状态）。/ The user toggled the self-verify loop (argument is the new state).</summary>
+        public event Action<bool> SelfVerifyToggled;
+
+        /// <summary>AI 可验证项的颜色（青绿）。/ Color of AI-verifiable items (teal).</summary>
+        internal static Color AiColor => Theme.NotesAccent;
+        /// <summary>必须人工验证项的颜色（琥珀）。/ Color of manual items (amber).</summary>
+        internal static Color UserColor => Theme.BusyFg;
+
         public TestChecklistPanel()
         {
             Dock = DockStyle.Right;
@@ -38,9 +53,18 @@ namespace VSManager
             Visible = false;
 
             _top.Dock = DockStyle.Top;
-            _top.Height = Dpi.S(58);
+            _top.Height = Dpi.S(92);
             _top.BackColor = Theme.Sidebar;
             _top.Paint += Top_Paint;
+            _btnVerify.Height = _btnLoop.Height = Dpi.S(26);
+            _btnVerify.Font = _btnLoop.Font = Theme.Small;
+            _btnVerify.Click += (s, e) => AiVerifyRequested?.Invoke();
+            _btnLoop.Click += (s, e) => SelfVerifyToggled?.Invoke(!_selfVerify);
+            _tips.SetToolTip(_btnVerify, "让 AI 总控助手现在用工具验证所有未勾选的 AI 项（青绿色），人工项（琥珀色）留给你\r\nAsk the AI assistant to verify every unchecked AI item (teal) with tools now; manual items (amber) stay with you");
+            _tips.SetToolTip(_btnLoop, "开启后，任务进入待验证且含 AI 项时自动让 AI 助手验证、勾选，未通过则带证据重试（受 AI 自主补充上限约束）；需要开启「任务完成自动跟进」\r\nWhen on, tasks awaiting verification with AI items are verified and checked by the assistant automatically, and retried with evidence on failure (bounded by the AI retry cap); needs task auto follow-up");
+            _top.Controls.Add(_btnVerify);
+            _top.Controls.Add(_btnLoop);
+            _top.Resize += (s, e) => LayoutButtons();
             typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)
                 ?.SetValue(_top, true, null);
 
@@ -77,6 +101,23 @@ namespace VSManager
             Reload();
         }
 
+        /// <summary>显示自验证循环的开关状态。/ Shows the self-verify loop state.</summary>
+        public void SetSelfVerify(bool on)
+        {
+            _selfVerify = on;
+            _btnLoop.Text = on ? "🔁 自验证：开 / Loop on" : "🔁 自验证：关 / Loop off";
+            _btnLoop.Tint = on ? AiColor : (Color?)null;
+            _btnLoop.Invalidate();
+        }
+
+        private void LayoutButtons()
+        {
+            int x = Dpi.S(8), y = Dpi.S(60), gap = Dpi.S(4);
+            int w = Math.Max(Dpi.S(60), (_top.Width - x * 2 - gap) / 2);
+            _btnVerify.SetBounds(x, y, w, _btnVerify.Height);
+            _btnLoop.SetBounds(x + w + gap, y, w, _btnLoop.Height);
+        }
+
         /// <summary>任务清单收起时一并隐藏。/ Hidden while the task list is collapsed.</summary>
         public void SetSuppressed(bool suppressed)
         {
@@ -96,8 +137,11 @@ namespace VSManager
             var tasks = ListedTasks(_queue.Items, _clearedAt?.Invoke());
             foreach (var t in tasks) TaskTestChecklist.Ensure(t);
             string signature = string.Join("\n", tasks.Select(t => t.Id + "|" + t.Status + "|" + t.Title + "|" + t.VsName + "|"
-                + string.Join("\u0001", t.TestItems.Select(i => (i.Checked ? "1" : "0") + i.Text))));
+                + string.Join("\u0001", t.TestItems.Select(i => (i.Checked ? "1" : "0") + (TaskTestChecklist.IsAi(i) ? "a" : "u") + i.Text))));
             _pendingTasks = tasks.Count;
+            _aiItems = tasks.Sum(t => TaskTestChecklist.RemainingAi(t));
+            _userItems = tasks.Sum(t => t.TestItems.Count(i => i != null && !i.Checked && !TaskTestChecklist.IsAi(i)));
+            _btnVerify.Enabled = _aiItems > 0;
             // 只替换内容，滚动位置由列表自己保持 / Only the content changes; the list keeps its own scroll position
             if (signature != _signature)
             {
@@ -123,8 +167,14 @@ namespace VSManager
             var flags = TextFormatFlags.NoPrefix | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter;
             int x = Dpi.S(12), w = Math.Max(0, _top.Width - Dpi.S(22));
             TextRenderer.DrawText(g, "🧪 测试清单 / Test checklist", Theme.CardTitle, new Rectangle(x, Dpi.S(8), w, Dpi.S(22)), Theme.Text, flags);
-            string sub = $"{_pendingTasks} 个任务待测，勾选即完成 / {_pendingTasks} to test; check to complete";
-            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(x, Dpi.S(32), w, Dpi.S(18)), Theme.TextMuted, flags);
+            string sub = $"{_pendingTasks} 个任务待测 / {_pendingTasks} to test · ";
+            var subRect = new Rectangle(x, Dpi.S(32), w, Dpi.S(18));
+            TextRenderer.DrawText(g, sub, Theme.Small, subRect, Theme.TextMuted, flags);
+            int sx = x + TextRenderer.MeasureText(g, sub, Theme.Small, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+            string ai = $"■ AI {_aiItems}";
+            TextRenderer.DrawText(g, ai, Theme.Small, new Rectangle(sx, subRect.Y, Math.Max(0, x + w - sx), subRect.Height), AiColor, flags);
+            sx += TextRenderer.MeasureText(g, ai + "  ", Theme.Small, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.NoPrefix).Width;
+            TextRenderer.DrawText(g, $"■ 人工 / Manual {_userItems}", Theme.Small, new Rectangle(sx, subRect.Y, Math.Max(0, x + w - sx), subRect.Height), UserColor, flags);
         }
 
         protected override void OnPaint(PaintEventArgs e)
@@ -169,6 +219,7 @@ namespace VSManager
 
             private List<QueuedTask> _tasks = new List<QueuedTask>();
             private int[] _tops = new int[0], _heights = new int[0], _textHeights = new int[0];
+            private int[][] _itemHeights = new int[0][];
             private int _content, _scroll;
             private bool _dragging;
             private int _dragY, _dragScroll;
@@ -200,8 +251,23 @@ namespace VSManager
             internal static string ContentText(QueuedTask t)
             {
                 var items = t.TestItems ?? new TaskTestItem[0];
-                if (items.Length == 1) return items[0].Text;
-                return string.Join("\n", items.Where(i => i != null).Select(i => (i.Checked ? "✓ " : "• ") + i.Text));
+                return string.Join("\n", items.Where(i => i != null).Select(i => (i.Checked ? "✓ " : "• ") + TagText(i) + " " + i.Text));
+            }
+
+            /// <summary>条目前的验证方标签。/ Verifier tag shown before an item.</summary>
+            internal static string TagText(TaskTestItem i) => TaskTestChecklist.IsAi(i) ? "AI" : "人工";
+
+            private static int ItemGap => Dpi.S(4);
+            private static int TagWidth => Dpi.S(34);
+
+            /// <summary>各项文字的高度（按标签后的剩余宽度换行）。/ Heights of the item texts (wrapped in the width after the tag).</summary>
+            private int[] MeasureItems(Graphics g, QueuedTask t)
+            {
+                var items = (t.TestItems ?? new TaskTestItem[0]).Where(i => i != null).ToArray();
+                var hs = new int[items.Length];
+                for (int k = 0; k < items.Length; k++)
+                    hs[k] = Math.Max(Dpi.S(18), TextRenderer.MeasureText(g, items[k].Text, Theme.Regular, new Size(Math.Max(Dpi.S(40), TextWidth - TagWidth), 0), WrapFlags).Height);
+                return hs;
             }
 
             /// <summary>
@@ -226,12 +292,13 @@ namespace VSManager
             private void Relayout()
             {
                 int n = _tasks.Count;
-                _tops = new int[n]; _heights = new int[n]; _textHeights = new int[n];
+                _tops = new int[n]; _heights = new int[n]; _textHeights = new int[n]; _itemHeights = new int[n][];
                 int y = 0;
                 using (var g = CreateGraphics())
                     for (int i = 0; i < n; i++)
                     {
-                        int h = TextRenderer.MeasureText(g, ContentText(_tasks[i]), Theme.Regular, new Size(TextWidth, 0), WrapFlags).Height;
+                        _itemHeights[i] = MeasureItems(g, _tasks[i]);
+                        int h = _itemHeights[i].Sum() + ItemGap * Math.Max(0, _itemHeights[i].Length - 1);
                         _textHeights[i] = Math.Min(Dpi.S(360), Math.Max(Dpi.S(18), h));
                         _tops[i] = y;
                         _heights[i] = HeaderHeight + _textHeights[i] + Dpi.S(14);
@@ -394,8 +461,21 @@ namespace VSManager
                 int box = Dpi.S(16);
                 var br = new RectangleF(Dpi.S(20), top, box, box);
                 Theme.DrawRound(g, hot ? Theme.Accent : Theme.TextMuted, br, Dpi.S(4));
-                var tr = new Rectangle(TextLeft, top, TextWidth, _textHeights[i]);
-                TextRenderer.DrawText(g, ContentText(t), Theme.Regular, tr, Theme.Text, WrapFlags | TextFormatFlags.EndEllipsis);
+                // 每项一行：青绿「AI」= AI 可验证，琥珀「人工」= 必须人工验证 / One row per item: teal "AI" = AI-verifiable, amber "人工" = manual
+                var items = (t.TestItems ?? new TaskTestItem[0]).Where(it => it != null).ToArray();
+                var hs = _itemHeights.Length > i ? _itemHeights[i] : new int[0];
+                int bottom = top + _textHeights[i], iy = top;
+                for (int k = 0; k < items.Length && k < hs.Length && iy < bottom; k++)
+                {
+                    bool ai = TaskTestChecklist.IsAi(items[k]);
+                    var color = ai ? AiColor : UserColor;
+                    var tag = new RectangleF(TextLeft, iy + Dpi.S(1), TagWidth - Dpi.S(6), Dpi.S(16));
+                    Theme.FillRound(g, Color.FromArgb(items[k].Checked ? 24 : 48, color), tag, Dpi.S(4));
+                    TextRenderer.DrawText(g, TagText(items[k]), Theme.Small, Rectangle.Round(tag), items[k].Checked ? Theme.TextMuted : color, TextFormatFlags.HorizontalCenter | LineFlags);
+                    var ir = new Rectangle(TextLeft + TagWidth, iy, Math.Max(Dpi.S(40), TextWidth - TagWidth), Math.Min(hs[k], bottom - iy));
+                    TextRenderer.DrawText(g, (items[k].Checked ? "✓ " : "") + items[k].Text, Theme.Regular, ir, items[k].Checked ? Theme.TextMuted : Theme.Text, WrapFlags | TextFormatFlags.EndEllipsis);
+                    iy += hs[k] + ItemGap;
+                }
             }
         }
     }

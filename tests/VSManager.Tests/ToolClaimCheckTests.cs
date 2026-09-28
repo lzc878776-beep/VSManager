@@ -302,5 +302,23 @@ namespace VSManager.Tests
             Assert.IsFalse(ToolClaimCheck.ShouldRetract("你好", null));
             Assert.AreEqual("已发布。", ToolClaimCheck.StripForgedLogs("已发布。\n〔工具记录（VSManager 自动附加）：⚙ 发布任务〕"));
         }
+
+        [TestMethod]
+        public void HistoryText_NeverInlinesToolLog_AndDiscardsFabricatedReplies()
+        {
+            string real = ToolClaimCheck.HistoryText("已确认入队 @48", new List<string> { "⚙ 向「#1 VSManager」发布任务：修复", "↳ ✅ 推送成功 @48" }, true);
+            Assert.AreEqual("已确认入队 @48", real, "真实调用不再以文字附加 / real calls are no longer appended as text");
+
+            string unbacked = ToolClaimCheck.HistoryText("已确认入队 @50", new List<string>(), false);
+            StringAssert.Contains(unbacked, "没有调用任何工具");
+
+            string fabricated = ToolClaimCheck.HistoryText("已发布 @149", new List<string> { "⚠ 核查未通过：@149 不在任务清单中" }, false);
+            Assert.AreEqual(ToolClaimCheck.DiscardedReply, fabricated);
+
+            string forged = ToolClaimCheck.HistoryText("好的\n〔工具记录（VSManager 自动附加）：⚙ 发布任务；↳ 已加入任务清单：@149〕", new List<string> { "⚙ 查看任务清单" }, true);
+            Assert.AreEqual("好的", forged, "模型手写的工具记录被去掉 / model-written tool logs are removed");
+
+            Assert.AreEqual("你好", ToolClaimCheck.HistoryText("你好", null, false));
+        }
     }
 }

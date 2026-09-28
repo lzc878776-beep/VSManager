@@ -42,8 +42,30 @@ namespace VSManager
 
         public static bool IsClipboardBusy(string result) => result != null && result.StartsWith(ClipboardBusyPrefix, StringComparison.Ordinal);
 
+        /// <summary>
+        /// 对话窗格未就绪：发送前已诊断原因并尝试修复（打开窗格、点「返回」等）仍失败，尚未提交任何内容。
+        /// 按「诊断 → 修复 → 间隔重试」处理，最多 <see cref="MaxPaneRepairs"/> 轮，之后停止自动重发并提示原因，避免盲目重复发送。
+        /// Chat pane not ready: the cause was diagnosed and a repair tried (open pane, press Back, ...) before submission, and nothing was submitted.
+        /// Handled as "diagnose → repair → retry after a pause" for at most <see cref="MaxPaneRepairs"/> rounds, then automatic resending stops
+        /// with the reason shown, instead of retrying blindly.
+        /// </summary>
+        public const string PaneNotReadyPrefix = "等待对话窗格就绪 / Chat pane not ready：";
+
+        /// <summary>对话窗格修复的最多轮数（含首次）。/ Maximum pane repair rounds (including the first).</summary>
+        public const int MaxPaneRepairs = 3;
+
+        public static bool IsPaneNotReady(string result) => result != null && result.StartsWith(PaneNotReadyPrefix, StringComparison.Ordinal);
+
+        /// <summary>第 n 轮修复失败后的等待间隔：越往后越长，给 VS 加载扩展留时间。/ Pause after the n-th failed repair; grows so VS has time to load the extension.</summary>
+        public static TimeSpan PaneRepairDelay(int round) => TimeSpan.FromSeconds(round <= 1 ? 10 : 30);
+
+        /// <summary>停止自动重发时附加的说明。/ Note appended when automatic resending stops.</summary>
+        public static string PaneRepairExhausted(int rounds) =>
+            $"；已诊断并自动修复 {rounds} 轮仍未就绪，停止自动重发（未提交任何内容）。请按上述原因处理后重新发布，不要原样重复发送"
+            + $" / Diagnosed and auto-repaired {rounds} rounds without success; automatic resending stopped (nothing was submitted). Fix the cause above, then publish again instead of resending as is";
+
         public static bool IsBlocked(string result) =>
-            ManualChatProtection.IsWait(result) || IsUserBusy(result) || IsClipboardBusy(result)
+            ManualChatProtection.IsWait(result) || IsUserBusy(result) || IsClipboardBusy(result) || IsPaneNotReady(result)
             || (result != null && result.StartsWith(BlockedPrefix, StringComparison.Ordinal));
 
         /// <summary>最多尝试次数。/ Maximum number of attempts.</summary>

@@ -14,6 +14,21 @@ namespace VSManager
         public string Name { get; }
         public int Number { get; }
         public string Note { get; }
+        /// <summary>AI 总控助手的昵称，用于 @小维 提及。/ Nickname of the AI assistant, used by the @小维 mention.</summary>
+        public const string AssistantName = "小维";
+        /// <summary>是否为 @小维（AI 总控助手）而非某个 VS。/ Whether this is @小维 (the AI assistant) rather than a VS.</summary>
+        public bool IsAssistant { get; }
+
+        private VsMentionTarget()
+        {
+            InstanceKey = "assistant"; SolutionPath = ""; Number = 0; Name = AssistantName;
+            Note = "AI 总控助手，消息交给 AI 处理 / AI assistant (ai.agent)";
+            IsAssistant = true;
+        }
+
+        /// <summary>@ 候选列表中的 AI 总控助手项。/ The AI assistant entry of the @ candidate list.</summary>
+        public static VsMentionTarget Assistant() => new VsMentionTarget();
+
         public VsMentionTarget(VsInstance instance, int number, string name, string note = null)
         {
             InstanceKey = instance.InstanceKey;
@@ -22,9 +37,9 @@ namespace VSManager
             Name = name ?? "";
             Note = note ?? "";
         }
-        public bool Matches(VsInstance instance) => instance != null && instance.InstanceKey == InstanceKey
+        public bool Matches(VsInstance instance) => !IsAssistant && instance != null && instance.InstanceKey == InstanceKey
             && string.Equals(instance.SolutionPath ?? "", SolutionPath, StringComparison.OrdinalIgnoreCase);
-        public override string ToString() => "#" + Number + " " + Name + (Note.Length == 0 ? "" : " — " + Note);
+        public override string ToString() => IsAssistant ? "@" + Name + " — " + Note : "#" + Number + " " + Name + (Note.Length == 0 ? "" : " — " + Note);
     }
 
     public sealed class MentionResolution
@@ -56,7 +71,8 @@ namespace VSManager
         {
             string label = Regex.Replace(target.Name, @"[\r\n\[\]|@]", " ");
             string token;
-            do token = "@[#" + target.Number + " " + label + "|" + Guid.NewGuid().ToString("N").Substring(0, 6) + "]";
+            do token = (target.IsAssistant ? "@[" + VsMentionTarget.AssistantName : "@[#" + target.Number + " " + label)
+                    + "|" + Guid.NewGuid().ToString("N").Substring(0, 6) + "]";
             while (_tokens.ContainsKey(token));
             _tokens.Add(token, target);
             return token;
@@ -64,7 +80,8 @@ namespace VSManager
 
         public bool TryGetTarget(string token, out VsMentionTarget target) => _tokens.TryGetValue(token ?? "", out target);
 
-        private static readonly Regex TokenPattern = new Regex(@"@\[(#\d+ [^\]\|\r\n]*)\|[0-9a-f]{6,12}\]", RegexOptions.Compiled);
+        private static readonly Regex TokenPattern = new Regex(@"@\[((?:#\d+ [^\]\|\r\n]*)|小维)\|[0-9a-f]{6,12}\]", RegexOptions.Compiled);
+        private static readonly Regex AssistantPattern = new Regex(@"\G@(?:\[小维\|[0-9a-f]{6,12}\]|小维)", RegexOptions.Compiled);
 
         /// <summary>已确认令牌在输入框中的位置及显示标签（不含内部标识）。/ Positions and display labels (without the internal id) of confirmed tokens in the input.</summary>
         public IEnumerable<(int Start, int Length, string Label)> Chips(string text)
@@ -99,9 +116,41 @@ namespace VSManager
         /// <summary>只有从列表确认的 @[…] 令牌才算提及；裸 @（包括后面为空或普通文字）按普通文字发送。
         /// / Only @[…] tokens confirmed from the list are mentions; a bare @ (empty or followed by plain text) is sent as plain text.</summary>
         public static IEnumerable<int> TokenStarts(string text) =>
-            Starts(text).Where(i => i + 1 < text.Length && text[i + 1] == '[');
+            Starts(text).Where(i => i + 1 < text.Length && text[i + 1] == '[' && !AssistantPattern.Match(text, i).Success);
 
+        /// <summary>是否含指向 VS 的提及（@小维 不算）。/ Whether the text mentions a VS (@小维 does not count).</summary>
         public static bool HasIntent(string text) => TokenStarts(text).Any();
+
+        /// <summary>
+        /// @小维 提及的位置：手动输入的 @小维 或从列表选择的 @[小维|标识]；反引号代码、@@ 等普通文字规则同 VS 提及。
+        /// Positions of @小维 mentions: typed @小维 or the @[小维|id] token chosen from the list; backtick code, @@ and other literal rules match VS mentions.
+        /// </summary>
+        public static IEnumerable<(int Start, int Length)> AssistantMentions(string text)
+        {
+            text = text ?? "";
+            if (text.IndexOf(VsMentionTarget.AssistantName, StringComparison.Ordinal) < 0) yield break;
+            foreach (int i in Starts(text))
+            {
+                var m = AssistantPattern.Match(text, i);
+                if (m.Success) yield return (i, m.Length);
+            }
+        }
+
+        /// <summary>是否用 @小维 明确交给 AI 总控助手。/ Whether the text is explicitly addressed to the AI assistant via @小维.</summary>
+        public static bool AddressesAssistant(string text) => AssistantMentions(text).Any();
+
+        /// <summary>去掉所有 @小维 提及并整理空白。/ Removes every @小维 mention and tidies whitespace.</summary>
+        public static string StripAssistant(string text)
+        {
+            var sb = new StringBuilder(text ?? "");
+            foreach (var m in AssistantMentions(text).Reverse())
+            {
+                int start = m.Start, length = m.Length;
+                if (start + length < sb.Length && (sb[start + length] == ' ' || sb[start + length] == '\u3000')) length++;
+                sb.Remove(start, length);
+            }
+            return sb.ToString().Trim();
+        }
 
         public MentionResolution Resolve(string text, IEnumerable<VsInstance> instances, bool hasAttachments = false)
         {

@@ -282,7 +282,8 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, Task<string>>)ActivateVs, "activate_vs"),
                 AIFunctionFactory.Create((Func<Task<string>>)DockPanes, "dock_copilot_panes"),
                 AIFunctionFactory.Create((Func<Task<string>>)GetDisplays, "get_displays"),
-                AIFunctionFactory.Create((Func<string, int, int, bool, bool, Task<string>>)ArrangeWorkspace, "arrange_workspace_layout"),
+                AIFunctionFactory.Create((Func<string, int, int, bool, bool, bool, Task<string>>)ArrangeWorkspace, "arrange_workspace_layout"),
+                AIFunctionFactory.Create((Func<string, Task<string>>)PlaceWorkspace, "place_workspace_windows"),
                 AIFunctionFactory.Create((Func<Task<string>>)RestoreWorkspaceLayout, "restore_workspace_layout"),
 AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
 AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
@@ -296,7 +297,25 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
                 AIFunctionFactory.Create((Func<bool, bool, Task<string>>)PauseTaskQueue, "pause_task_queue"),
                 AIFunctionFactory.Create((Func<int, string, bool, bool, bool, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
+                AIFunctionFactory.Create((Func<int, string, string, Task<string>>)ContinueTask, "continue_task"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)EditTaskResult, "edit_task_result"),
+                AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)RestartVsManagerForTesting, "restart_vsmanager_for_testing"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)ListTestChecklists, "list_test_checklists"),
+                AIFunctionFactory.Create((Func<Task<string>>)ProbeWindowState, "get_window_state"),
+                AIFunctionFactory.Create((Func<Task<string>>)ProbeForeground, "get_foreground_window"),
+                AIFunctionFactory.Create((Func<bool, Task<string>>)ProbeTrayIcons, "list_tray_icons"),
+                AIFunctionFactory.Create((Func<Task<string>>)ProbeRestartHandoff, "read_restart_handoff"),
+                AIFunctionFactory.Create((Func<string, int, string, Task<string>>)ReadVsManagerLog, "read_vsmanager_log"),
+                AIFunctionFactory.Create((Func<int, string, Task<string>>)ReadAgentChat, "read_agent_chat"),
+                AIFunctionFactory.Create((Func<string, string[], string, string>)CreatePlan, "create_plan"),
+                AIFunctionFactory.Create((Func<int, string, string, int, string>)UpdatePlanStep, "update_plan_step"),
+                AIFunctionFactory.Create((Func<int, string>)ReadPlan, "read_plan"),
+                AIFunctionFactory.Create((Func<string, int, bool, string>)CompletePlan, "complete_plan"),
+                AIFunctionFactory.Create((Func<string, string, string, string, int, string, Task<string>>)PrepareRestartScenario, "prepare_restart_scenario"),
+                AIFunctionFactory.Create((Func<int, int, bool, string, Task<string>>)MarkTestItem, "mark_test_item"),
+                AIFunctionFactory.Create((Func<string, int, Task<string>>)StartSelfIteration, "start_self_iteration"),
+                AIFunctionFactory.Create((Func<int, int, string, string, int, Task<string>>)StartSkillGapLoop, "start_skill_gap_loop"),
+                AIFunctionFactory.Create((Func<string, string>)StopSelfIteration, "stop_self_iteration"),
                 AIFunctionFactory.Create((Func<int, string, bool, Task<string>>)RetryTask, "retry_task"),
                 AIFunctionFactory.Create((Func<int, int, Task<string>>)ReadTaskReply, "read_task_reply"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
@@ -323,6 +342,15 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCardStyleSamples, "add_note_card_styles"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)PreviewNotionPlan, "preview_notion_plan"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)DispatchNotionPlan, "dispatch_notion_plan"),
+                AIFunctionFactory.Create((Func<string, string, Task<string>>)SetCadDebugDrawing, "set_cad_debug_drawing"),
+                AIFunctionFactory.Create((Func<string, string>)GetCadDebugDrawing, "get_cad_debug_drawing"),
+                AIFunctionFactory.Create((Func<string, string, string, CancellationToken, Task<string>>)RunCadActions, "run_cad_actions"),
+                AIFunctionFactory.Create((Func<string>)ListCadAdapters, "list_cad_adapters"),
+                AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)ListVerifyChecks, "list_verify_checks"),
+                AIFunctionFactory.Create((Func<string, string, string, int, int, CancellationToken, Task<string>>)RunVerifyCheck, "run_verify_check"),
+                AIFunctionFactory.Create((Func<string>)ListMcpServers, "list_mcp_servers"),
+                AIFunctionFactory.Create((Func<Task<string>>)ReconnectMcpServers, "reconnect_mcp_servers"),
+                AIFunctionFactory.Create((Func<string, string>)LoadTools, new AIFunctionFactoryOptions { Name = AgentToolGroups.LoaderName, Description = LoadToolsDescription() }),
             };
         }
 
@@ -364,6 +392,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     f.MaximumIterationsPerRequest = iterations;
                     f.AllowConcurrentInvocation = false;
                     f.IncludeDetailedErrors = true;
+                    // 按需加载时未公布的内置工具仍可按名调用 / With on-demand groups, unadvertised built-in tools stay invocable by name
+                    f.AdditionalTools = _tools;
                 })
                 .Build();
             _clientKey = ck;
@@ -420,6 +450,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             _cts?.Cancel();
             bool had = _history.Count > 0 || Transcript.Messages.Count > 0;
             _history.Clear();
+            ResetToolGroups();
             _notebookPromptLoaded = false;
             lock (_attachments) _attachments.Clear();
             Transcript.Messages.Clear();
@@ -427,7 +458,31 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             Changed?.Invoke();
         }
 
-        private readonly Queue<KeyValuePair<string, string>> _notices = new Queue<KeyValuePair<string, string>>();
+        private readonly Queue<Tuple<string, string, string>> _notices = new Queue<Tuple<string, string, string>>();
+
+        /// <summary>是否还有排队未处理的系统通知。/ Whether system notices are still queued.</summary>
+        public bool HasPendingNotices => _notices.Count > 0;
+
+        private bool _holdNotices;
+
+        /// <summary>
+        /// 暂缓处理排队通知（重启 VSManager 前设置，让通知随重启带到新进程而不是在旧进程里开新一轮）；取消时立即处理积压的通知。
+        /// Holds queued notices (set before a VSManager restart so they are carried to the new process instead of starting a new round here); releasing processes the backlog.
+        /// </summary>
+        public bool HoldNotices
+        {
+            get => _holdNotices;
+            set
+            {
+                if (_holdNotices == value) return;
+                _holdNotices = value;
+                if (!value && !Running && _notices.Count > 0) ProcessNotices();
+            }
+        }
+
+        /// <summary>复制当前排队的通知（不出队），用于重启前保存。/ Copies the queued notices (without dequeuing) so they can be saved before a restart.</summary>
+        public List<CarriedNotice> PendingNotices() =>
+            _notices.Select(n => new CarriedNotice { Display = n.Item1, Content = n.Item2, Scope = n.Item3 }).ToList();
 
         /// <summary>
         /// 界面对话最多保留的消息条数（完整记录已写入归档 chat\ai-*.jsonl，不受影响）。
@@ -446,10 +501,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// 系统通知（如任务完成）：开启自动跟进时作为一轮对话交给模型处理；否则只记入对话与上下文。
         /// 必须在界面线程调用；助手正在运行时排队，结束后依次处理。
         /// </summary>
-        public void Notify(string display, string content)
+        /// <param name="scope">通知所属项目（会话隔离用），null 表示全局。/ Project the notice belongs to (for session isolation); null = global.</param>
+        public void Notify(string display, string content, string scope = null)
         {
             if (_disposed) return;
-            _notices.Enqueue(new KeyValuePair<string, string>(display, content));
+            _notices.Enqueue(Tuple.Create(display, content, scope));
             if (!Running) ProcessNotices();
         }
 
@@ -470,16 +526,19 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             try
             {
                 await Task.Delay(400);
-                while (!_disposed && !Running && _notices.Count > 0)
+                while (!_disposed && !Running && !_holdNotices && _notices.Count > 0)
                 {
                     var n = _notices.Dequeue();
-                    if (Configured && _settings().AgentAutoFollowUp) { await RunAsync(n.Value, n.Key); continue; }
+                    if (Configured && _settings().AgentAutoFollowUp) { await RunAsync(n.Item2, n.Item1, null, n.Item3 ?? ""); continue; }
                     var m = new ChatMessage { Role = ChatRole.Assistant };
-                    m.Parts.Add(new ChatPart { Text = n.Key });
+                    m.Parts.Add(new ChatPart { Text = n.Item1 });
                     Transcript.Messages.Add(m);
                     TrimTranscript();
-                    Record("notice", n.Key, n.Value);
-                    _history.Add(new AIMessage(AIRole.User, n.Value));
+                    string noticeScope = SessionIsolation ? AgentSessionScopes.Key(n.Item3) : null;
+                    Record("notice", n.Item1, n.Item2, scope: noticeScope);
+                    var noticeMessage = new AIMessage(AIRole.User, n.Item2);
+                    SetScope(noticeMessage, noticeScope);
+                    _history.Add(noticeMessage);
                     TrimHistory();
                     Changed?.Invoke();
                 }
@@ -495,10 +554,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// 执行一轮对话。内部未处理异常不会抛出：记录日志、复位状态并触发 <see cref="Faulted"/>。
         /// Runs one round. Internal unhandled exceptions are not thrown: they are logged, the state is reset and <see cref="Faulted"/> is raised.
         /// </summary>
-        public async Task RunAsync(string text, string display = null, IReadOnlyList<AttachmentRef> attachments = null)
+        /// <param name="scope">本轮所属项目（会话隔离）：null 时按文字推断，空字符串表示全局。/ Project of this round (session isolation): null infers it from the text, empty means global.</param>
+        public async Task RunAsync(string text, string display = null, IReadOnlyList<AttachmentRef> attachments = null, string scope = null)
         {
             int gen = _generation;
-            try { await RunCoreAsync(text, display, gen, attachments); }
+            try { await RunCoreAsync(text, display, gen, attachments, scope); }
             catch (Exception ex)
             {
                 AppLog.Error(LogFile, "对话内部异常 / Internal error in a round", ex);
@@ -510,11 +570,14 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             }
         }
 
-        private async Task RunCoreAsync(string text, string display, int gen, IReadOnlyList<AttachmentRef> attachments = null)
+        private async Task RunCoreAsync(string text, string display, int gen, IReadOnlyList<AttachmentRef> attachments = null, string scope = null)
         {
             text = (text ?? "").Trim();
             var files = (attachments ?? new AttachmentRef[0]).Where(a => a != null).ToArray();
             if (Running || (text.Length == 0 && files.Length == 0)) return;
+            // 会话层隔离：确定本轮所属项目 / Session isolation: decide which project this round belongs to
+            scope = !SessionIsolation ? null : scope == null ? InferScope(text) : AgentSessionScopes.Key(scope);
+            CurrentScope = scope;
             if (files.Length > 0) RememberAttachments(files);
             string links = AttachmentLinks(files);
             var user = new ChatMessage { Role = ChatRole.User };
@@ -523,8 +586,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             Transcript.Messages.Add(user);
             Transcript.Messages.Add(reply);
             TrimTranscript();
-            if (string.IsNullOrWhiteSpace(display)) Record("user", text + links);
-            else Record("notice", display, text);
+            if (string.IsNullOrWhiteSpace(display)) Record("user", text + links, scope: scope);
+            else Record("notice", display, text, scope: scope);
 
             IChatClient client;
             try { client = Client(); }
@@ -543,11 +606,15 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             Changed?.Invoke();
 
             LoadNotebookPromptForConversation();
+            BeginToolRound(text);
             var userMessage = UserModelMessage(text, files, files.Any(a => a.IsImage) && ModelAcceptsImages());
             bool sentImages = userMessage.Contents.OfType<DataContent>().Any();
+            SetScope(userMessage, scope);
             _history.Add(userMessage);
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
+            var toolLog = new List<AgentToolCall>();
+            var toolLogById = new Dictionary<string, AgentToolCall>();
             var toolNames = new List<string>();
             // 本轮工具返回（工具名, 文字），用于核对「已入队」说法 / This round's tool results (name, text), used to check enqueue claims
             var callNames = new Dictionary<string, string>();
@@ -564,10 +631,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             try
             {
                 var messages = new List<AIMessage> { new AIMessage(AIRole.System, SystemPrompt()) };
-                messages.AddRange(_history);
-                // 必须调用工具的一轮（更正、【直发】）强制首次回复调用工具，不能只写文字 / Rounds that must use a tool (corrections, direct sends) force a tool call first
+                messages.AddRange(ContextForRound(scope));
+                // ??????????????????????????????????? / Rounds that must use a tool (corrections, direct sends) force a tool call first
                 var required = RequiredToolMode(text, correctionRound);
-                var options = new ChatOptions { Tools = _tools, ToolMode = required ?? ChatToolMode.Auto, Temperature = 0.3f };
+                var options = new ChatOptions { Tools = ToolsForRound(), ToolMode = required ?? ChatToolMode.Auto, Temperature = 0.3f };
                 int maxOut = MaxOutputTokens;
                 if (maxOut > 0) options.MaxOutputTokens = maxOut;
                 for (int attempt = 0; ; attempt++)
@@ -591,8 +658,14 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                         {
                             string step = DescribeCall(fc);
                             if (!string.IsNullOrEmpty(fc.CallId)) calls[fc.CallId] = step;
-                            if (!string.IsNullOrEmpty(fc.Name)) toolNames.Add(fc.Name);
-                            if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name)) callNames[fc.CallId] = fc.Name;
+                            if (!string.IsNullOrEmpty(fc.Name))
+                            {
+                                toolNames.Add(fc.Name);
+                                NoteToolUsed(fc.Name);
+                                var logged = new AgentToolCall { Name = fc.Name, Args = ArgsJson(fc.Arguments) };
+                                toolLog.Add(logged);
+                                if (!string.IsNullOrEmpty(fc.CallId)) { toolLogById[fc.CallId] = logged; callNames[fc.CallId] = fc.Name; }
+                            }
                             AddStep(reply, "⚙ " + step);
                             Activity = step + "…";
                         }
@@ -601,6 +674,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                             string full = fr.Exception?.Message ?? fr.Result?.ToString() ?? "";
                             if (!string.IsNullOrEmpty(fr.CallId) && callNames.TryGetValue(fr.CallId, out var calledName))
                                 toolResults.Add(new KeyValuePair<string, string>(calledName, full));
+                            if (!string.IsNullOrEmpty(fr.CallId) && toolLogById.TryGetValue(fr.CallId, out var logged))
+                                logged.Result = Clip(full, MaxRecordedToolResult);
                             string result = OneLine(full, 160);
                             AddStep(reply, "↳ " + (result.Length == 0 ? "完成" : result));
                             Activity = "思考中…";
@@ -649,13 +724,16 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 }
                 StripLeakedToolMarkup(reply);
                 if (error == null) claim = CheckToolClaims(reply, toolNames, toolResults, userRound, text);
+                StripFakeToolLog(reply);
+                // ???????????????????????? / Fabricated replies leave the context, or the model keeps imitating them
                 if (claim != null && claim.Verdict == ClaimVerdict.Fabricated) RetractFromHistory(historyStart);
                 if (reply.Parts.Count == 0) AddText(reply, "（没有返回内容）");
                 try
                 {
                     Record("assistant",
                         string.Join("\n\n", reply.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim())), null,
-                        reply.Parts.Where(p => p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim()).ToList(), error);
+                        reply.Parts.Where(p => p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim()).ToList(), error,
+                        calls: toolLog.Where(c => c.Result != null).ToList());
                 }
                 catch { }
                 Running = false;
@@ -673,7 +751,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (claim != null && claim.Verdict == ClaimVerdict.Fabricated && !correctionRound)
             {
                 int next = NextTaskIdSource?.Invoke() ?? 0;
-                Notify(ToolClaimCheck.Notice(claim), ToolClaimCheck.Correction(claim, next));
+                Notify(ToolClaimCheck.Notice(claim), ToolClaimCheck.Correction(claim, next), scope ?? "");
             }
             if (internalError != null)
                 RaiseFault(AgentFaultKind.Exception, internalError.GetType().Name + "：" + OneLine(internalError.Message, 160));
@@ -692,11 +770,37 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// 笔记助手的对话只保留在内存中，不写入总控助手的记录。/ Note-assistant conversations stay in memory and never go into the manager's records.
         /// </summary>
         private void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null,
-            bool local = false, bool reset = false)
+            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null)
         {
             if (Profile == AgentProfile.Notes) return;
             try { Archive.Ai(role, content, detail, steps, error); } catch { }
-            try { AgentChatLog.Append(role, content, detail, steps, error, local, reset); } catch { }
+            try { AgentChatLog.Append(role, content, detail, steps, error, local, reset, calls, scope); } catch { }
+        }
+
+        /// <summary>对话记录中每条工具结果保留的最大字符数。/ Max characters kept per tool result in the chat record.</summary>
+        private const int MaxRecordedToolResult = 800;
+
+        private static string ArgsJson(IDictionary<string, object> args)
+        {
+            try { return System.Text.Json.JsonSerializer.Serialize(args ?? new Dictionary<string, object>()); }
+            catch { return "{}"; }
+        }
+
+        private static string Clip(string s, int max) => s == null ? null : s.Length <= max ? s : s.Substring(0, max) + "…";
+
+        /// <summary>去掉模型手写的「〔工具记录…〕」并提示。/ Removes model-written "〔工具记录…〕" blocks and says so.</summary>
+        private static void StripFakeToolLog(ChatMessage m)
+        {
+            bool removed = false;
+            foreach (var p in m.Parts.Where(x => !x.IsStep && x.Text != null).ToList())
+            {
+                string t = p.Text;
+                if (!ToolClaimCheck.StripFakeToolLog(ref t)) continue;
+                removed = true;
+                p.Text = t;
+                if (t.Length == 0) m.Parts.Remove(p);
+            }
+            if (removed) m.Parts.Add(new ChatPart { IsStep = true, Text = "⚠ 已移除助手自行编写的「工具记录」，它不代表真实的工具调用 / Removed a tool log the assistant wrote itself; it is not a real tool call" });
         }
 
         /// <summary>
@@ -808,6 +912,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             string Arg(string k) => fc.Arguments != null && fc.Arguments.TryGetValue(k, out var v) && v != null ? v.ToString() : "";
             string vs = Arg("vs");
             string target = vs.Length > 0 ? "「" + TargetName(vs) + "」" : "";
+            string mcp = DescribeMcpCall(fc.Name);
+            if (mcp != null) return mcp;
             switch (fc.Name)
             {
                 case "list_vs": return "查看所有 VS 状态";
@@ -824,6 +930,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "dock_copilot_panes": return "把 Copilot 切换为工具窗模式";
                 case "get_displays": return "读取显示器数量、尺寸与当前屏幕 / Read displays and current screen";
                 case "arrange_workspace_layout": return "自动布局 VS 主窗口、Copilot 与附属窗格 / Arrange VS workspace";
+                case "place_workspace_windows": return "按 AI 设计摆放 VS 窗口与窗格 / Place VS windows as designed by the AI";
                 case "restore_workspace_layout": return "还原 VS 工作区布局 / Restore VS workspace layout";
                 case "arrange_copilot_panes":
                 {
@@ -851,7 +958,19 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     return Arg("paused").Equals("false", StringComparison.OrdinalIgnoreCase) ? "继续任务队列 / Resume task queue"
                         : "暂停任务队列" + (Arg("interrupt_running").Equals("true", StringComparison.OrdinalIgnoreCase) ? "并中断执行中的任务（需用户确认）" : "") + " / Pause task queue";
                 case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
+                case "continue_task": return "发布任务 #" + Arg("id") + " 的接续任务：" + OneLine(Arg("remaining"), 50) + " / Continue task";
                 case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
+                case "restart_vsmanager_for_testing": return "预编译并重启 VSManager 以测试新程序 / Pre-build and restart VSManager for testing";
+                case "start_self_iteration": return "开始自迭代 VSManager：" + OneLine(Arg("goal"), 50) + " / Start self-iteration";
+                case "start_skill_gap_loop": return "补 skill 闭环：任务 #" + Arg("taskId") + " 第 " + Arg("item") + " 项 · " + OneLine(Arg("skill"), 40) + " / Start skill-gap loop";
+                case "stop_self_iteration": return "结束自迭代 / Stop self-iteration";
+                case "get_window_state": return "读取 VSManager 主窗口状态 / Read the main window state";
+                case "get_foreground_window": return "读取当前前台窗口 / Read the foreground window";
+                case "list_tray_icons": return "列出托盘图标" + (Arg("openOverflow").Equals("false", StringComparison.OrdinalIgnoreCase) ? "" : "（会短暂展开隐藏的图标）") + " / List tray icons";
+                case "read_restart_handoff": return "读取重启交接文件 / Read the restart handoff files";
+                case "prepare_restart_scenario": return "造出重启测试场景 / Set up a restart test scenario";
+                case "list_test_checklists": return (Arg("taskId").Length > 0 && Arg("taskId") != "0" ? "查看任务 #" + Arg("taskId") + " 的测试清单" : "查看全部测试清单") + " / List test checklists";
+                case "mark_test_item": return (Arg("passed").Equals("false", StringComparison.OrdinalIgnoreCase) ? "取消勾选" : "勾选") + "任务 #" + Arg("taskId") + " 的测试项 " + Arg("item") + " / Mark test item";
                 case "retry_task": return "重试任务 #" + Arg("id") + (Arg("note").Length > 0 ? "：" + OneLine(Arg("note"), 50) : "") + " / Retry task";
                 case "read_task_reply": return "读取任务 #" + Arg("id") + " 的完整 Copilot 回复 / Read the whole task reply";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
@@ -861,6 +980,14 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "search_file_contents": return "搜索已脱敏文件内容 / Search redacted file contents";
                 case "list_directory": return "列出授权目录 / List granted directory";
                 case "set_vs_note": return "记录" + target + "的职责：" + OneLine(Arg("note"), 40);
+                case "set_cad_debug_drawing":
+                    return Arg("drawing").Trim().Length == 0 ? "清除" + target + "的 CAD 调试图纸 / Clear the CAD debug drawing"
+                        : "记录" + target + "的 CAD 调试图纸：" + OneLine(CadDrawingLabel(Arg("drawing")), 40) + " / Record the CAD debug drawing";
+                case "get_cad_debug_drawing": return "查看" + target + "的 CAD 调试图纸 / Show the CAD debug drawing";
+                case "run_cad_actions": return "在" + target + "的 CAD 中执行动作：" + OneLine(DescribeCadActions(Arg("actions")), 60) + " / Run CAD actions";
+                case "list_cad_adapters": return "查看 CAD 适配包与代理状态 / List CAD adapters and agent status";
+                case "list_verify_checks": return "查看" + target + "所调试项目的验证检查项 / List verification checks";
+                case "run_verify_check": return "在" + target + "的调试进程中执行验证检查「" + OneLine(Arg("check"), 40) + "」/ Run verification check";
                 case "list_solutions": return "查看解决方案登记表 / List registered solutions";
                 case "open_solution": return "打开解决方案「" + OneLine(Arg("solution"), 60) + "」/ Open solution";
                 case "close_vs": return "关闭 VS「" + OneLine(Arg("target"), 60) + "」/ Close VS";
@@ -875,6 +1002,13 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "add_note_card": return "添加笔记卡片「" + OneLine(Arg("title"), 40) + "」/ Add note card";
                 case "add_note_card_styles": return "添加卡片样式对比「" + OneLine(Arg("title"), 40) + "」/ Add card style samples";
                 case "read_current_note": return "读取当前笔记 / Read the current note";
+                case "create_plan": return "创建执行计划「" + OneLine(Arg("title"), 40) + "」/ Create execution plan";
+                case "update_plan_step": return "更新执行计划第 " + Arg("step") + " 步 → " + Arg("status") + " / Update plan step";
+                case "read_plan": return "读取执行计划 / Read execution plan";
+                case "complete_plan": return "完成并释放执行计划 / Complete and release the plan";
+                case "read_agent_chat": return "读取 AI 对话记录与启动恢复记录" + (Arg("since").Length > 0 ? "（" + OneLine(Arg("since"), 16) + " 之后）" : "") + " / Read AI chat and startup records";
+                case "read_vsmanager_log": return "读取 VSManager 日志「" + OneLine(Arg("name"), 40) + "」" + (Arg("date").Length > 0 ? "（" + OneLine(Arg("date"), 12) + "）" : "") + " / Read VSManager log";
+                case AgentToolGroups.LoaderName: return "加载工具组 / Load tool groups：" + OneLine(Arg("groups"), 60);
                 default: return fc.Name;
             }
         }
@@ -907,7 +1041,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         {
             var s = _settings();
             if (Profile == AgentProfile.Notes) return Prompts.NoteAgentSystem(s.IsEnglishVoice, DateTime.Now, DescribeCurrentNote());
-            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel, _notebookPrompt);
+            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel, _notebookPrompt) + PlanPromptBlock();
         }
 
         #endregion
@@ -976,7 +1110,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         private async Task<string> SendTask(
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,
-            [Description("先为任务总结的中文题目，概括要做的事，不超过 20 字、单行、不加标点结尾，用于任务记录。A short Chinese title summarizing the task, at most 20 characters, one line, for task records.")] string title = null,
+            [Description("先为任务总结的中文题目，概括要做的事，不超过 20 字、单行、不加标点结尾，用于任务记录；不必写项目名，保存时自动补全为「项目名 · 事项」。A short Chinese title summarizing the task, at most 20 characters, one line, for task records; the project name is prefixed automatically as \"Project · item\".")] string title = null,
             [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null,
             [Description("目标 VS 正被失败 / 待验证任务阻塞时默认不入队，并提示改用 retry_task_with_info 向阻塞任务补充信息；仅当这是与阻塞任务无关、愿意排在其后的新任务时设为 true。When the target VS is blocked by a failed / awaiting-verification task the task is not queued by default and you are told to supplement the blocker via retry_task_with_info; set true only for an unrelated task that may wait behind it.")] bool queue_behind_blocked = false)
         {
@@ -1026,16 +1160,18 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task + attachmentNote))
                 return "用户拒绝了该操作。";
             string taskTitle = TaskTitle.Normalize(title);
+            string contextKey = parkFor != null ? parkFor.Path : v.Key;
+            string result;
             if (_host is IAgentTitledTaskHost titledHost)
-                return parkFor != null ? await titledHost.ParkTask(parkFor, task, files, taskTitle) : await titledHost.QueueTask(v, task, files, taskTitle);
-            if (files.Length > 0)
+                result = parkFor != null ? await titledHost.ParkTask(parkFor, task, files, taskTitle) : await titledHost.QueueTask(v, task, files, taskTitle);
+            else if (files.Length > 0)
             {
                 if (!(_host is IAgentAttachmentHost attachmentHost))
                     return "当前环境不支持随任务发送附件 / Attachments cannot be sent with tasks in this environment";
-                return parkFor != null ? await attachmentHost.ParkTask(parkFor, task, files) : await attachmentHost.QueueTask(v, task, files);
+                result = parkFor != null ? await attachmentHost.ParkTask(parkFor, task, files) : await attachmentHost.QueueTask(v, task, files);
             }
-            if (parkFor != null) return await _host.ParkTask(parkFor, task);
-            return await _host.QueueTask(v, task);
+            else result = parkFor != null ? await _host.ParkTask(parkFor, task) : await _host.QueueTask(v, task);
+            return await WithProjectContext(result, contextKey, targetName);
         }
 
         [Description("查看任务清单：各任务的编号、目标 VS、状态（排队 / 执行中 / 已完成 / 失败 / 已取消）与结果摘要。")]

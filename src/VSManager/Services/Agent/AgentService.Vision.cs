@@ -93,7 +93,9 @@ namespace VSManager
                 int n = m.Contents.OfType<DataContent>().Count();
                 var kept = m.Contents.Where(c => !(c is DataContent)).ToList();
                 kept.Add(new TextContent("\n（此消息的 " + n + " 张图片已在当时查看，不再重复发送 / " + n + " image(s) of this message were viewed earlier and are not resent）"));
-                history[i] = new AIMessage(m.Role, kept) { AuthorName = m.AuthorName, MessageId = m.MessageId };
+                var replaced = new AIMessage(m.Role, kept) { AuthorName = m.AuthorName, MessageId = m.MessageId };
+                SetScope(replaced, ScopeOf(m));
+                history[i] = replaced;
             }
         }
 

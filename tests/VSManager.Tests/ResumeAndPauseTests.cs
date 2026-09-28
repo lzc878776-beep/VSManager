@@ -71,14 +71,120 @@ namespace VSManager.Tests
                 Assert.AreEqual(AgentService.ResumedNotice, msgs[5].Parts[0].Text);
                 Assert.IsFalse(msgs.Any(m => m.Parts.Any(p => p.Text.Contains("old"))));
 
-                var history = agent.HistoryForTests;
+                var history = Restored(agent);
                 Assert.AreEqual(3, history.Count, "本机通知与重启说明不进上下文 / local and restart notices stay out");
                 Assert.AreEqual(AIRole.User, history[0].Role);
                 Assert.AreEqual("question", history[0].Text);
                 Assert.AreEqual("[任务通知] full body", history[1].Text);
                 Assert.AreEqual(AIRole.Assistant, history[2].Role);
-                Assert.AreEqual("answer", history[2].Text);
+                StringAssert.StartsWith(history[2].Text, "answer");
+                Assert.IsFalse(history[2].Text.Contains("⚙"), "工具步骤不以文字进入上下文 / tool steps never enter the context as text");
             }
+        }
+
+        /// <summary>去掉开头的恢复说明后的上下文。/ Context without the leading restore note.</summary>
+        private static List<Microsoft.Extensions.AI.ChatMessage> Restored(AgentService agent)
+        {
+            var h = agent.HistoryForTests;
+            Assert.AreEqual(AgentService.RestoredContextNote, h[0].Text, "恢复的上下文先说明来源 / the restored context starts with the note");
+            return h.Skip(1).ToList();
+        }
+
+        [TestMethod]
+        public void Restore_ModelContext_KeepsOnlyRecentTail()
+        {
+            var records = new List<AgentChatRecord>();
+            for (int i = 0; i < 60; i++) { records.Add(Rec("user", "q" + i)); records.Add(Rec("assistant", "a" + i)); }
+            using (var agent = NewAgent())
+            {
+                Assert.AreEqual(120, agent.RestoreConversation(records));
+                Assert.AreEqual(121, agent.Transcript.Messages.Count, "界面显示全部 / the transcript shows everything");
+                var h = Restored(agent);
+                Assert.AreEqual(AgentService.RestoredContextRecords, h.Count);
+                Assert.AreEqual(AIRole.User, h[0].Role);
+                Assert.AreEqual("a59", h.Last().Text);
+            }
+        }
+
+        [TestMethod]
+        public void ChatLog_RoundTripsToolCalls()
+        {
+            AgentChatLog.Append(AgentChatLog.RoleAssistant, "ok", steps: new[] { "⚙ x" },
+                calls: new List<AgentToolCall> { new AgentToolCall { Name = "send_task", Args = "{\"vs\":\"1\"}", Result = "已加入任务清单：@7" } });
+            var r = AgentChatLog.ReadAll().Single();
+            Assert.AreEqual(1, r.Calls.Count);
+            Assert.AreEqual("send_task", r.Calls[0].Name);
+            Assert.AreEqual("{\"vs\":\"1\"}", r.Calls[0].Args);
+            Assert.AreEqual("已加入任务清单：@7", r.Calls[0].Result);
+        }
+
+        [TestMethod]
+        public void Restore_RecordedCalls_BecomeStructuredToolMessages()
+        {
+            var answer = Rec("assistant", "已发布 @7", null, false, false, "⚙ 发布任务", "↳ 已加入任务清单：@7");
+            answer.Calls.Add(new AgentToolCall { Name = "send_task", Args = "{\"vs\":\"1\",\"text\":\"fix\"}", Result = "已加入任务清单：@7" });
+            using (var agent = NewAgent())
+            {
+                agent.RestoreConversation(new List<AgentChatRecord> { Rec("user", "发布"), answer });
+                var h = Restored(agent);
+                Assert.AreEqual(4, h.Count);
+                var call = h[1].Contents.OfType<Microsoft.Extensions.AI.FunctionCallContent>().Single();
+                Assert.AreEqual("send_task", call.Name);
+                Assert.AreEqual("1", call.Arguments["vs"].ToString());
+                Assert.AreEqual(AIRole.Tool, h[2].Role);
+                var result = h[2].Contents.OfType<Microsoft.Extensions.AI.FunctionResultContent>().Single();
+                Assert.AreEqual(call.CallId, result.CallId);
+                Assert.AreEqual("已发布 @7", h[3].Text);
+            }
+        }
+
+        [TestMethod]
+        public void Restore_FabricatedReply_IsReplacedByDiscardNote()
+        {
+            var fake = Rec("assistant", "已发布 @149\n〔工具记录：↳ 已加入任务清单：@149〕", null, false, false, "⚠ 核查未通过：@149 不在任务清单中");
+            using (var agent = NewAgent())
+            {
+                agent.RestoreConversation(new List<AgentChatRecord> { Rec("user", "发布"), fake });
+                var h = Restored(agent);
+                Assert.AreEqual(2, h.Count);
+                Assert.AreEqual(ToolClaimCheck.DiscardedReply, h[1].Text);
+                Assert.IsFalse(h.Any(m => m.Text.Contains("@149")));
+            }
+        }
+
+        [TestMethod]
+        public async Task LiveRound_RecordsRealToolCalls()
+        {
+            var settings = new AppSettings { AgentEndpoint = "http://localhost:11434/v1", AgentModel = "test", AgentConfirm = false };
+            var host = new AgentDesktopTests.DesktopHost();
+            host.Queue = new TaskQueue(settings, new MemoryTaskStore(), new RecordingArchive(), () => DateTime.Now);
+            using (var agent = new AgentService(host, () => settings, new ToolCallingClient()))
+            {
+                await agent.RunAsync("看看清单");
+            }
+            var r = AgentChatLog.ReadAll().Last(x => x.Role == AgentChatLog.RoleAssistant);
+            Assert.AreEqual(1, r.Calls.Count, string.Join("|", r.Steps));
+            Assert.AreEqual("list_tasks", r.Calls[0].Name);
+            Assert.IsNotNull(r.Calls[0].Result);
+        }
+
+        /// <summary>第一次请求调用 list_tasks，之后回复文字。/ Calls list_tasks on the first request, then replies with text.</summary>
+        private sealed class ToolCallingClient : IAiClientFactory, Microsoft.Extensions.AI.IChatClient
+        {
+            private int _requests;
+            public Microsoft.Extensions.AI.IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<Microsoft.Extensions.AI.ChatResponse> GetResponseAsync(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, Microsoft.Extensions.AI.ChatOptions options = null, System.Threading.CancellationToken cancellationToken = default) =>
+                throw new NotSupportedException();
+            public async IAsyncEnumerable<Microsoft.Extensions.AI.ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<Microsoft.Extensions.AI.ChatMessage> messages, Microsoft.Extensions.AI.ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] System.Threading.CancellationToken cancellationToken = default)
+            {
+                await Task.Yield();
+                if (_requests++ == 0)
+                    yield return new Microsoft.Extensions.AI.ChatResponseUpdate(AIRole.Assistant, new List<Microsoft.Extensions.AI.AIContent> { new Microsoft.Extensions.AI.FunctionCallContent("c1", "list_tasks", new Dictionary<string, object>()) });
+                else
+                    yield return new Microsoft.Extensions.AI.ChatResponseUpdate(AIRole.Assistant, "done");
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
         }
 
         [TestMethod]

@@ -84,6 +84,25 @@ namespace VSManager
     }
 
     /// <summary>
+    /// 可选宿主能力：生成任务所属项目的摘要（见 <see cref="TaskProjectContext.Summary"/>），附在给 AI 总控助手的任务通知中；未实现或返回 null 时不附加。
+    /// Optional host capability: builds the summary of the task's project (see <see cref="TaskProjectContext.Summary"/>) that is
+    /// appended to task notifications for the AI assistant; nothing is appended when missing or null.
+    /// </summary>
+    /// <summary>
+    /// 可选宿主能力：带项目归属的助手通知（会话层隔离），项目取任务的解决方案名；未实现时退回普通通知。
+    /// Optional host capability: assistant notices carrying the project scope (session isolation), taken from the task's solution name; falls back to plain notices when absent.
+    /// </summary>
+    public interface IScopedAgentNotifyHost
+    {
+        void NotifyAgent(string scope, string title, string body);
+    }
+
+    public interface ITaskProjectContextHost
+    {
+        string ProjectContext(QueuedTask t);
+    }
+
+    /// <summary>
     /// 任务调度器：跟踪执行中的任务，并把每个空闲 VS 最早排队的任务发布出去；失败、完成、取消、重试也在这里处理。
     /// 状态流转统一交给 <see cref="TaskStateMachine"/>，只在界面线程调用。
     /// Task dispatcher: tracks running tasks and publishes the oldest waiting task of every idle VS; also handles failure,
@@ -249,6 +268,8 @@ namespace VSManager
                     if (t.Worktree != null) t.VsKey = v.Key;
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
+                    // 发送过程只记录正文开头，附加的执行方式单独记一行 / The send trace keeps only the start of the text, so log the appended rule separately
+                    if (!t.IsWorktreeMerge) _host.LogEvent(t.VsName, TaskStateMachine.DispatchRuleLog(t, TaskStateMachine.DispatchText(t)));
                     string r;
                     try
                     {
@@ -269,7 +290,7 @@ namespace VSManager
                                     if (_manualWaits.ContainsKey(t)) { _yielded.Add(t); ClearManualWait(t); }
                                     TaskStateMachine.Complete(t, _clock());
                                     CommitCompletion(t);
-                                    _host.NotifyAgent($"工作树合并任务 #{t.Id} 已完成 / Worktree integration completed", t.Result + AutomaticCompletionText(t));
+                                    NotifyAgentFor(t, $"工作树合并任务 #{t.Id}{TitleTag(t)} 已完成 / Worktree integration completed", t.Result + AutomaticCompletionText(t) + ProjectContextText(t));
                                     await TidyAsync(t, v);
                                     continue;
                                 }
@@ -340,8 +361,33 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 _host.SetStatus($"任务清单：「{target}」已打开，暂存任务 #{t.Id} 将在 {secs} 秒后自动推送 / \"{target}\" opened, parked task #{t.Id} will be pushed in {secs} s");
                 _host.AnnounceTask(t, $"{target}已打开，暂存任务即将自动推送", $"{target} is open, the parked task will be pushed shortly");
                 if (t.FromAgent)
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 目标已打开 · {t.VsName}",
-                        $"[任务通知] 暂存任务 #{t.Id} 的目标「{target}」已打开（VS：{t.VsName}），任务将在 {secs} 秒后自动推送，完成后会再通知你。仅供知悉，无需重复发布。");
+                    NotifyAgentFor(t, $"📋 任务 #{t.Id}{TitleTag(t)} 目标已打开 · {t.VsName}",
+                        $"[任务通知] 暂存任务 #{t.Id} 的目标「{target}」已打开（VS：{t.VsName}），任务将在 {secs} 秒后自动推送，完成后会再通知你。仅供知悉，无需重复发布。" + ProjectContextText(t));
+            }
+        }
+
+        /// <summary>按任务所属项目通知助手（会话层隔离）。/ Notifies the assistant under the task's project (session isolation).</summary>
+        private void NotifyAgentFor(QueuedTask t, string title, string body)
+        {
+            if (_host is IScopedAgentNotifyHost scoped) scoped.NotifyAgent(TaskProjectContext.ProjectName(t.VsKey, t.VsName), title, body);
+            else _host.NotifyAgent(title, body);
+        }
+
+        /// <summary>通知标题中的任务题目（含项目名），无题目时为空。/ Task title (with project name) for notification headings; empty without a title.</summary>
+        private static string TitleTag(QueuedTask t) => string.IsNullOrWhiteSpace(t.Title) ? "" : "「" + t.Title.Trim() + "」";
+
+        /// <summary>附在通知正文末尾的项目摘要；宿主不支持或出错时为空。/ Project summary appended to notification bodies; empty when unsupported or failing.</summary>
+        private string ProjectContextText(QueuedTask t)
+        {
+            try
+            {
+                string ctx = (_host as ITaskProjectContextHost)?.ProjectContext(t);
+                return string.IsNullOrEmpty(ctx) ? "" : "\n" + ctx;
+            }
+            catch (Exception ex)
+            {
+                AppLog.Write(AppLog.TasksFile, "生成项目摘要失败 / Project summary failed: " + ex.Message);
+                return "";
             }
         }
 
@@ -413,11 +459,11 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                         + "不要重复发布已排队任务 / Do not duplicate queued tasks."
                     : (content ? TaskFailureAnalyzer.AttemptsNote(_tasks.Items, t) + "\n" : "") + (ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) ? BlockedFailureAdvice(t) :
                         "不要重复发布已排队任务；未经用户同意不要重试 / Do not duplicate queued tasks; do not retry without the user's consent.");
-                _host.NotifyAgent($"📋 任务 #{t.Id} 失败 · {t.VsName} / Task #{t.Id} failed",
+                NotifyAgentFor(t, $"📋 任务 #{t.Id}{TitleTag(t)} 失败 · {t.VsName} / Task #{t.Id} failed",
                     $"[任务失败通知] / [Task failure] 任务 #{t.Id} 在「{t.VsName}」失败 / failed（{FailureKind.Label(t.FailureKind)}）：{TextUtil.Clip(error, 300)}。" +
                     $"任务内容 / Task: {TextUtil.Clip(t.Text, 300)}。{FailurePolicyText}。" +
                     (string.IsNullOrEmpty(t.FailureReason) ? "" : "\n失败原因 / Failure reason：" + t.FailureReason) + reply + issue + "\n" +
-                    TaskFailureAnalyzer.Guidance(t) + "\n" + advice);
+                    TaskFailureAnalyzer.Guidance(t) + "\n" + advice + ProjectContextText(t));
             }
         }
 
@@ -540,24 +586,39 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 bool pending = receipt == TaskReceipt.Unverified;
                 if (pending) _host.LogEvent(t.VsName, $"任务 #{t.Id} 改动已完成，待验证 / Task done, awaiting verification");
                 TaskStateMachine.Complete(t, _clock(), pending);
-                if (pending) t.TestItems = TaskTestChecklist.Parse(result);
+                if (pending)
+                {
+                    t.TestItems = TaskTestChecklist.Parse(result, out int judged, out int rejudged);
+                    AppLog.Write(AppLog.TasksFile, $"任务 #{t.Id} 进入待验证 / Task #{t.Id} awaiting verification：" + TaskTestChecklist.RejudgeLogText(judged, rejudged));
+                }
                 CommitCompletion(t);
+                bool verifyLoop = pending && _startSettings?.Invoke()?.AgentSelfVerify == true;
+                // AI 发布的任务即使未开自验证循环，也附自动验证说明（不含重试）/ AI-published tasks get auto-verify steps (no retry) even without the loop
+                string selfVerify = verifyLoop ? TaskTestChecklist.SelfVerifyNotice(t)
+                    : pending && t.FromAgent ? TaskTestChecklist.SelfVerifyNotice(t, loop: false) : null;
+                // 任务自动接续：待验证或部分完成时让 AI 判断剩余步骤并发布接续任务 / Auto-continue: on awaiting verification or partial completion the AI judges the remaining steps and publishes a continuation
+                string autoContinue = _startSettings?.Invoke()?.AgentAutoContinue == true ? TaskContinuation.Notice(t) : null;
+                if (!t.FromAgent && (selfVerify != null || autoContinue != null))
+                    NotifyAgentFor(t, selfVerify != null ? $"🔁 自验证 · 任务 #{t.Id}{TitleTag(t)} · {t.VsName} / Self-verify" : $"⏭ 自动接续 · 任务 #{t.Id}{TitleTag(t)} · {t.VsName} / Auto-continue",
+                        (selfVerify ?? "") + (selfVerify != null && autoContinue != null ? "\n" : "") + (autoContinue ?? "") + ProjectContextText(t));
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
                     string label = pending ? "待验证" : "已完成";
                     string labelEn = pending ? "awaiting verification" : "completed";
-                    _host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
+                    NotifyAgentFor(t, $"📋 任务 #{t.Id}{TitleTag(t)} {label} · {t.VsName}（{took}）/ Task {labelEn}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
                         (_lateRecovered.Remove(t) ? "\n" + LateReceiptNote : "") +
                         (pending && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
-                        (pending ? "\n结论：待验证（不是失败）。改动已完成，但尚未在运行环境中验证或需要用户测试、确认：请按「待验证」汇报，把测试清单转告用户并等待反馈；不要判为失败，不要说成已实测成功，不要重发，也不要把它当作已验证的依赖。/ Verdict: awaiting verification, not failed. The changes are done but not yet verified at runtime or need user testing or confirmation: report it as awaiting verification, relay the test checklist and wait for feedback; do not call it a failure or a verified success, do not resend, and do not treat it as a verified dependency." : "") +
+                        (pending ? "\n结论：待验证（不是失败）。改动已完成，但尚未在运行环境中验证或需要用户测试、确认：请按「待验证」汇报，先用工具验证清单中的 [AI] 项，再把其余测试清单转告用户并等待反馈；不要判为失败，不要说成已实测成功，不要重发，也不要把它当作已验证的依赖。/ Verdict: awaiting verification, not failed. The changes are done but not yet verified at runtime or need user testing or confirmation: report it as awaiting verification, verify the [AI] items with tools first, then relay the rest of the checklist and wait for feedback; do not call it a failure or a verified success, do not resend, and do not treat it as a verified dependency." : "") +
                         (pending && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
-                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
+                        (selfVerify == null ? "" : "\n" + selfVerify) +
+                        (autoContinue == null ? "" : "\n" + autoContinue) +
+                        $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks." + ProjectContextText(t));
                 }
                 await TidyAsync(t, v);
             }

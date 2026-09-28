@@ -150,7 +150,7 @@ namespace VSManager
             if (testItems != null && testItems.Attribute("type")?.Value != "null")
             {
                 var items = testItems.Elements("item")
-                    .Select(x => new TaskTestItem { Text = x.Element("Text")?.Value, Checked = x.Element("Checked")?.Value == "true" })
+                    .Select(x => new TaskTestItem { Text = x.Element("Text")?.Value, Checked = x.Element("Checked")?.Value == "true", By = x.Element("By")?.Value })
                     .Where(x => !string.IsNullOrWhiteSpace(x.Text)).ToArray();
                 t.TestItems = items.Length > 0 ? items : null;
             }

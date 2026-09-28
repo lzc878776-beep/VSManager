@@ -438,6 +438,65 @@ namespace VSManager.Tests
             Assert.AreEqual(QueueStatus.Running, next.Status);
         }
 
+        [DataTestMethod]
+        [DataRow("用户", true, true)]
+        [DataRow("AI", true, true)]
+        [DataRow("用户", false, false)]
+        public async Task SelfVerifyLoop_NotifiesAiItemsOfPendingTasks(string source, bool loop, bool expected)
+        {
+            var settings = new AppSettings { AgentSelfVerify = loop };
+            var dispatcher = new TaskDispatcher(_queue, _host, _clock.Func, startSettings: () => settings);
+            dispatcher.Start();
+            var v = _host.AddVs("A");
+            var task = _queue.Add("A", "A", "feature", source);
+            await dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult("done\r\n- [ ] [AI] 单元测试全部通过\r\n- [ ] [人工] 点击按钮后弹出窗口\r\n" + TaskStateMachine.UnverifiedReceipt(t));
+            await dispatcher.FinishAsync(task, v, null);
+            Assert.AreEqual(QueueStatus.Unverified, task.Status);
+            Assert.AreEqual(expected, _host.NoticeBodies.Any(b => b.Contains("[自验证循环 / Self-verify loop]") && b.Contains("1. 单元测试全部通过") && b.Contains("2. 点击按钮后弹出窗口")));
+        }
+
+        [DataTestMethod]
+        [DataRow("AI", true)]
+        [DataRow("用户", false)]
+        public async Task AiTaskWithoutLoop_GetsAutoVerifyNoticeForAiItems(string source, bool expected)
+        {
+            var settings = new AppSettings { AgentSelfVerify = false };
+            var dispatcher = new TaskDispatcher(_queue, _host, _clock.Func, startSettings: () => settings);
+            dispatcher.Start();
+            var v = _host.AddVs("A");
+            var task = _queue.Add("A", "A", "feature", source);
+            await dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult("done\r\n- [ ] [人工] 重启后窗口位置与草稿恢复\r\n- [ ] 过渡画面没有闪烁\r\n" + TaskStateMachine.UnverifiedReceipt(t));
+            await dispatcher.FinishAsync(task, v, null);
+            Assert.AreEqual(QueueStatus.Unverified, task.Status);
+            Assert.AreEqual("ai", task.TestItems[0].By, "按文字重判为 AI / Re-judged to AI from its text");
+            Assert.AreEqual(expected, _host.NoticeBodies.Any(b => b.Contains("[自动验证 / Auto-verify]") && b.Contains("1. 重启后窗口位置与草稿恢复") && b.Contains("get_window_state")));
+            Assert.IsFalse(_host.NoticeBodies.Any(b => b.Contains("[自验证循环 / Self-verify loop]")));
+        }
+
+        [DataTestMethod]
+        [DataRow("AI", true, "unverified", true)]
+        [DataRow("用户", true, "unverified", true)]
+        [DataRow("AI", false, "unverified", false)]
+        [DataRow("AI", true, "partial", true)]
+        [DataRow("AI", true, "done", false)]
+        public async Task AutoContinue_NoticeOnPendingOrPartialResults(string source, bool on, string outcome, bool expected)
+        {
+            var settings = new AppSettings { AgentAutoContinue = on };
+            var dispatcher = new TaskDispatcher(_queue, _host, _clock.Func, startSettings: () => settings);
+            dispatcher.Start();
+            var v = _host.AddVs("A");
+            var task = _queue.Add("A", "A", "feature", source);
+            await dispatcher.PumpAsync();
+            _host.AnswerReader = t => Task.FromResult(
+                outcome == "unverified" ? "done\r\n- [ ] [人工] 点击按钮后弹出窗口\r\n" + TaskStateMachine.UnverifiedReceipt(t)
+                : outcome == "partial" ? "登录页已完成，剩余步骤：注册页尚未完成\r\n" + TaskStateMachine.SuccessReceipt(t)
+                : "全部完成\r\n" + TaskStateMachine.SuccessReceipt(t));
+            await dispatcher.FinishAsync(task, v, null);
+            Assert.AreEqual(expected, _host.NoticeBodies.Any(b => b.Contains("[自动接续 / Auto-continue]") && b.Contains("continue_task") && b.Contains("id=" + task.Id)));
+        }
+
         [TestMethod]
         public async Task NeedsUserLevel_NeedsUserBlocks_FailureReleases()
         {

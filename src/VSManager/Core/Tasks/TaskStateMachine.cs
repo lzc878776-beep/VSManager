@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -56,6 +56,13 @@ namespace VSManager
         public static SendDecision ApplySendResult(QueuedTask t, string result, DateTime now)
         {
             var d = SendRetryPolicy.Decide(t.Attempts, result);
+            // 窗格未就绪：每轮都已诊断并尝试修复；超过上限就停止自动重发，改为失败并给出原因
+            // Pane not ready: every round already diagnosed and tried a repair; past the cap, stop resending and fail with the reason
+            if (d == SendDecision.Retry && SendRetryPolicy.IsPaneNotReady(result) && ++t.PaneRepairRounds >= SendRetryPolicy.MaxPaneRepairs)
+            {
+                result += SendRetryPolicy.PaneRepairExhausted(t.PaneRepairRounds);
+                d = SendDecision.Fail;
+            }
             switch (d)
             {
                 case SendDecision.Delivered:
@@ -66,15 +73,18 @@ namespace VSManager
                     t.Interrupted = false;
                     t.ResumeNote = null;
                     t.FreshContext = false;
+                    t.PaneRepairRounds = 0;
                     break;
                 case SendDecision.Fail:
+                    t.PaneRepairRounds = 0;
                     Fail(t, result, now, FailureKind.Delivery);
                     break;
                 default:
                     t.Status = QueueStatus.Waiting;
                     t.Error = result;
                     t.Attempts = Math.Max(0, t.Attempts - 1);
-                    if (!ManualChatProtection.IsWait(result)) t.NextTry = now + SendRetryPolicy.BlockedRetryDelay;
+                    if (SendRetryPolicy.IsPaneNotReady(result)) t.NextTry = now + SendRetryPolicy.PaneRepairDelay(t.PaneRepairRounds);
+                    else if (!ManualChatProtection.IsWait(result)) t.NextTry = now + SendRetryPolicy.BlockedRetryDelay;
                     break;
             }
             return d;
@@ -97,7 +107,24 @@ namespace VSManager
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
             + RetryContext(t)
+            + SuggestedPromptRule + " "
             + FullRules(t);
+
+        /// <summary>
+        /// 每个发布的任务都附加的执行方式：按自动推荐的提示词执行，把任务推进到完成，不停下来等确认。
+        /// Execution rule appended to every published task: follow the automatically suggested prompts and drive the task to completion without stopping for confirmation.
+        /// </summary>
+        public const string SuggestedPromptRule =
+            "【执行方式】请按自动推荐的提示词执行：过程中出现自动推荐的提示词（建议的下一步 / 后续操作）时，直接按推荐内容继续执行，把本任务推进到完成，不要停下来询问或等待确认；只有确实无法继续时才停下，并说明需要用户提供什么。";
+
+        /// <summary>
+        /// 发送日志中的附加规则记录：原样写出本次发送正文附加的「【执行方式】…」全文，便于在 send 日志中核对（发送过程只截取正文开头）。
+        /// Send-log record of the appended rule: writes the "【执行方式】…" text appended to this dispatch verbatim so it can be checked in the send log
+        /// (the send trace only keeps the start of the text).
+        /// </summary>
+        public static string DispatchRuleLog(QueuedTask t, string dispatchText) =>
+            $"任务清单：任务 #{t.Id} 发送正文 {dispatchText?.Length ?? 0} 字，已附加执行方式 / Execution rule appended："
+            + ((dispatchText ?? "").Contains(SuggestedPromptRule) ? SuggestedPromptRule : "（未附加 / not appended）");
 
         /// <summary>本需求当前是第几轮（只算内容类执行）。/ Current round of the request (content runs only).</summary>
         public static int Round(QueuedTask t) => Math.Max(0, t.PriorRuns) + Math.Max(0, t.ContentRuns) + 1;
@@ -134,7 +161,7 @@ namespace VSManager
             "任务队列回执（仅用于确认本次结果，三选一，在最终回复最后单独一行输出）：本任务要求的内容已完成且已验证时输出 " + SuccessReceipt(t)
             + "；改动已完成，但尚未在运行中的程序里实际验证，或需要用户手动测试、运行或确认（你无法自行验证）时，以「" + TaskHoldNote.PendingTag + "」开头单独成段，列出需要用户验证或处理的内容后输出 " + UnverifiedReceipt(t)
             + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，以「" + TaskHoldNote.ReasonTag + "」开头单独成段说明失败原因，再说明已完成的部分与建议的下一步，然后输出 " + FailureReceipt(t)
-            + "。输出待验证回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式。"
+            + "。输出待验证回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式；" + TaskTestChecklist.TagRule
             + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执；回执行之后不要再输出任何文字（包括括号内的补充说明）。";
 
         public static bool TryReadSuccess(QueuedTask t, string answer, out string result) =>

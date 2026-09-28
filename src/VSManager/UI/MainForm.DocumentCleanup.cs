@@ -12,7 +12,9 @@ namespace VSManager
             if (!_settings.SaveAndCloseDocumentsAfterTask || t == null || !t.FromAgent
                 || (t.Status != QueueStatus.Done && t.Status != QueueStatus.Unverified)) return;
             string name = v == null ? t.VsName : NameOf(v);
+            var foreground = ForegroundKeeper.Capture();
             var result = await DteWorker.RunSta(() => VsDocumentCleanup.RunAfterTask(v, message => SendLog.Event(name, message)));
+            RestoreForeground(foreground, v);
             string kept = string.Join("、", result.UnsavedNames.Distinct(StringComparer.OrdinalIgnoreCase)
                 .Select(n => (n ?? "").Replace("\r", " ").Replace("\n", " ")));
             string zh = $"AI 任务 #{t.Id}「{name}」.cs 标签页检查：已关闭 {result.Closed}，未保存保留 {result.SkippedUnsaved}，关闭失败 {result.Failed}，状态未知 {result.Unknown}；未自动保存任何文件"

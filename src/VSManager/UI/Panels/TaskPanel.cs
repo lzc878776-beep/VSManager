@@ -787,7 +787,7 @@ if (c != null)
             string vsLine = t.Status == QueueStatus.WaitingVs ? "→ " + (t.Target ?? t.VsName) + "（等待打开 / waiting to open）" : "→ " + t.VsName;
             TextRenderer.DrawText(g, vsLine, Theme.SemiBold, new Rectangle(x, y, right - x, Dpi.S(18)), active ? Theme.AccentText : Theme.TextSecondary, flags | TextFormatFlags.SingleLine);
             y += Dpi.S(20);
-            string body = OneLine(t.Text);
+            string body = string.IsNullOrWhiteSpace(t.Title) ? OneLine(t.Text) : "▸ " + OneLine(t.Title) + "｜" + OneLine(t.Text);
             // 待确认 / 未验证 / 失败显示记录的待处理内容或失败原因，点击条目可在下方查看全文 / Pending / unverified / failed show the recorded note; click for the full text below
             string tail = TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote) ? "⚑ 待处理：" + OneLine(t.PendingNote)
                 : QueueStatus.Delivered(t.Status) && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)

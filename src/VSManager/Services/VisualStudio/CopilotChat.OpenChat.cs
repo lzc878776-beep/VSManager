@@ -47,7 +47,7 @@ namespace VSManager
                 if ((r.Blocked = BlockingDialogMessage(vs)) != null) { S("被弹窗拦截 / blocked by a dialog：" + r.Blocked); return r; }
 
                 ForgetPane(vs);
-                pane = FindPane(vs);
+                pane = FindPane(vs, allowHistory: true);
                 r.Candidates = _lastPaneCandidates;
                 r.Initial = r.Final = Observe(pane, out string detail);
                 S($"初始 / initial：{CopilotPaneModes.Describe(r.Initial)}，候选 / candidates {r.Candidates}，{detail}");
@@ -162,7 +162,7 @@ namespace VSManager
                 // 窗格缺失或不可见时才丢弃缓存完整搜索（开销大）；否则复用仍有效的缓存元素
                 // Drop the cache for a full (expensive) search only when the pane is missing or hidden; otherwise reuse the still-valid cached element
                 if (pane == null || r.Final == CopilotPaneMode.NotFound || r.Final == CopilotPaneMode.Hidden) ForgetPane(vs);
-                pane = FindPane(vs) ?? pane;
+                pane = FindPane(vs, allowHistory: true) ?? pane;
                 r.Candidates = Math.Max(r.Candidates, _lastPaneCandidates);
                 r.Final = Observe(pane, out detail);
                 if (done(r.Final) || sw.ElapsedMilliseconds >= ms) break;

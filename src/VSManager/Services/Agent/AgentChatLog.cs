@@ -32,8 +32,26 @@ namespace VSManager
         public bool Reset;
         /// <summary>仅本机展示的通知，从未加入模型上下文，接续对话时也不加入。/ Local-only notice that never entered the model context and stays out of it on resume.</summary>
         public bool Local;
+        /// <summary>
+        /// AI 本轮实际执行的工具调用（名称、参数与结果摘录），接续对话时按真实工具调用恢复到上下文；旧记录没有此项。
+        /// Tool calls actually executed in the AI turn (name, arguments, result excerpt), restored as real tool calls when resuming;
+        /// older records do not have it.
+        /// </summary>
+        public List<AgentToolCall> Calls = new List<AgentToolCall>();
+        /// <summary>会话层隔离：本条用户 / 通知消息所属项目（null 为全局，旧记录没有此项）。/ Session isolation: project of this user / notice record (null = global; absent in older records).</summary>
+        public string Scope;
 
         public bool IsUser => Role == AgentChatLog.RoleUser;
+    }
+
+    /// <summary>对话记录中的一次工具调用。/ One tool call in the chat history.</summary>
+    public sealed class AgentToolCall
+    {
+        public string Name;
+        /// <summary>参数 JSON 对象。/ Arguments as a JSON object.</summary>
+        public string Args;
+        /// <summary>结果摘录。/ Result excerpt.</summary>
+        public string Result;
     }
 
     /// <summary>
@@ -97,12 +115,13 @@ namespace VSManager
         /// Appends a record (called on the UI thread; the write is small and synchronous). Failures are recorded, never thrown.
         /// </summary>
         public static void Append(string role, string text, string detail = null, IList<string> steps = null, string error = null,
-            bool local = false, bool reset = false)
+            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null)
         {
-            if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(error)) return;
-            var r = new AgentChatRecord { Time = DateTime.Now, Role = role, Text = text ?? "", Error = string.IsNullOrEmpty(error) ? null : error, Local = local, Reset = reset };
+            if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(error) && (calls == null || calls.Count == 0)) return;
+            var r = new AgentChatRecord { Time = DateTime.Now, Role = role, Text = text ?? "", Error = string.IsNullOrEmpty(error) ? null : error, Local = local, Reset = reset, Scope = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim() };
             if (!string.IsNullOrWhiteSpace(detail) && detail != text) r.Detail = detail;
             if (steps != null) r.Steps = steps.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
+            if (calls != null) r.Calls = calls.Where(c => c != null && !string.IsNullOrEmpty(c.Name)).ToList();
             r.Tasks = FindTaskIds(new[] { r.Text, r.Detail }.Concat(r.Steps).ToArray());
             Append(r);
         }
@@ -251,6 +270,9 @@ namespace VSManager
             if (r.Tasks != null && r.Tasks.Count > 0) d["tasks"] = r.Tasks.ToArray();
             if (r.Local) d["local"] = true;
             if (r.Reset) d["reset"] = true;
+            if (!string.IsNullOrEmpty(r.Scope)) d["scope"] = r.Scope;
+            if (r.Calls != null && r.Calls.Count > 0)
+                d["calls"] = r.Calls.Select(c => new Dictionary<string, object> { ["name"] = c.Name, ["args"] = c.Args ?? "{}", ["result"] = c.Result ?? "" }).ToArray();
             return d;
         }
 
@@ -268,7 +290,8 @@ namespace VSManager
                     Detail = Str(d, "detail"),
                     Error = Str(d, "error"),
                     Local = d.TryGetValue("local", out var l) && l is bool lb && lb,
-                    Reset = d.TryGetValue("reset", out var z) && z is bool zb && zb
+                    Reset = d.TryGetValue("reset", out var z) && z is bool zb && zb,
+                    Scope = Str(d, "scope")
                 };
                 string time = Str(d, "time");
                 if (time == null || !DateTime.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.None, out r.Time)) return null;
@@ -276,6 +299,10 @@ namespace VSManager
                     foreach (var x in steps) if (x is string t) r.Steps.Add(t);
                 if (d.TryGetValue("tasks", out var k) && k is System.Collections.IEnumerable ids && !(k is string))
                     foreach (var x in ids) { try { r.Tasks.Add(Convert.ToInt32(x, CultureInfo.InvariantCulture)); } catch { } }
+                if (d.TryGetValue("calls", out var c) && c is System.Collections.IEnumerable calls && !(c is string))
+                    foreach (var x in calls)
+                        if (x is Dictionary<string, object> cd && Str(cd, "name") is string name && name.Length > 0)
+                            r.Calls.Add(new AgentToolCall { Name = name, Args = Str(cd, "args"), Result = Str(cd, "result") });
                 return r;
             }
             catch { return null; }

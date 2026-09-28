@@ -32,7 +32,7 @@ namespace VSManager
             if (task == null) throw new ArgumentNullException(nameof(task));
             DateTime finished = task.Finished ?? DateTime.Now;
             string day = Day(finished);
-            string summary = TaskTitle.Normalize(task.Title) ?? Summary(task.Text);
+            string summary = TaskTitle.Normalize(task.Title, TaskTitle.MaxStoredLength) ?? Summary(task.Text);
             string detail = CreateDetail(day, "任务 " + task.Id + " - " + TitleSafe(summary), TaskDetail(task, summary, fullReply, day));
             Append(day, Line(finished, summary, detail, task.VsName, false));
             return detail;

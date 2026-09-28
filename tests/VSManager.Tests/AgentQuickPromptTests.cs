@@ -14,14 +14,35 @@ namespace VSManager.Tests
         {
             var field = typeof(AgentPanel).GetField("QuickPrompts", BindingFlags.Static | BindingFlags.NonPublic);
             var items = ((System.ValueTuple<string, string>[])field.GetValue(null)).ToArray();
-            CollectionAssert.AreEqual(new[] { "屏幕布局 / Layout", AgentPanel.SyncGitText, "🔀 worktree 并入主分支" }, items.Select(i => i.Item1).ToArray());
+            CollectionAssert.AreEqual(new[] { "屏幕布局 / Layout", AgentPanel.SyncGitText, "🔀 worktree 并入主分支", AgentPanel.CloseCsTabsText }, items.Select(i => i.Item1).ToArray());
             StringAssert.Contains(items[0].Item2, "get_displays");
-            StringAssert.Contains(items[0].Item2, "arrange_workspace_layout");
+            StringAssert.Contains(items[0].Item2, "place_workspace_windows");
             Assert.IsFalse(items[0].Item2.Contains("send_task"));
             StringAssert.Contains(items[2].Item2, "send_task");
-            foreach (var i in items.Skip(1)) StringAssert.Contains(i.Item2, "不得丢弃");
+            foreach (var i in items.Skip(1).Take(2)) StringAssert.Contains(i.Item2, "不得丢弃");
+            StringAssert.Contains(items[3].Item2, "不保存");
             StringAssert.Contains(AgentPanel.SyncGitTask, "禁止 force push");
             StringAssert.Contains(AgentPanel.MergeWorktreesPrompt, "git worktree list");
+        }
+
+        [TestMethod]
+        public void CloseCsTabsSummary_ReportsUnsavedFilesHonestly()
+        {
+            var a = new VsService.CsTabCloseResult { Found = 3, Closed = 2 };
+            a.Dirty.Add("Dirty.cs");
+            var b = new VsService.CsTabCloseResult { Found = 0 };
+            var c = VsService.CsTabCloseResult.Fail("DTE unavailable");
+            string summary = VsService.CsTabCloseResult.Summarize(new[] { ("#1 A", a), ("#2 B", b), ("#3 C", c) });
+            string[] lines = summary.Split('\n');
+            Assert.AreEqual(4, lines.Length);
+            StringAssert.Contains(lines[0], "关闭 2 个");
+            StringAssert.Contains(lines[0], "1 个有未保存修改已保留（未保存）");
+            StringAssert.Contains(lines[0], "1 个 VS 无法处理");
+            StringAssert.Contains(lines[1], "Dirty.cs");
+            StringAssert.Contains(lines[1], "未保存");
+            StringAssert.Contains(lines[2], "No open .cs tabs");
+            StringAssert.Contains(lines[3], "DTE unavailable");
+            Assert.AreEqual("没有打开的 VS / No open VS", VsService.CsTabCloseResult.Summarize(new (string, VsService.CsTabCloseResult)[0]));
         }
 
         [TestMethod]

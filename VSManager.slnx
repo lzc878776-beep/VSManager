@@ -1,4 +1,6 @@
 <Solution>
+  <Project Path="src/VSManager.AiHost/VSManager.AiHost.csproj" />
+  <Project Path="src/VSManager.CadAgent/VSManager.CadAgent.csproj" />
   <Project Path="src/VSManager/VSManager.csproj" />
   <Project Path="tests/VSManager.Tests/VSManager.Tests.csproj" />
 </Solution>

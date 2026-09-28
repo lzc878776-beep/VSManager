@@ -43,6 +43,35 @@ namespace VSManager
             return CopilotPaneMode.NoInput;
         }
 
+        /// <summary>
+        /// 自动修复失败后的原因诊断与处理建议（中文在前、英文在后），用于发送失败提示，避免只报「无法确认输入安全」。
+        /// Diagnosis and remedy after the automatic repair failed (Chinese first, English second), used for send failures instead of a vague "cannot confirm input".
+        /// </summary>
+        /// <param name="inputMissing">窗格处于会话状态但定位不到可编辑输入框。/ The pane shows a conversation but no editable input was located.</param>
+        public static string Diagnose(CopilotPaneMode m, bool inputMissing = false)
+        {
+            switch (m)
+            {
+                case CopilotPaneMode.NotFound:
+                    return "未找到 Copilot 对话窗格（窗格已关闭或 Copilot 扩展尚未加载），已执行「视图 → GitHub Copilot 对话」仍未出现；请在该 VS 中手动打开对话窗格"
+                        + " / Copilot chat pane not found (closed or extension not loaded yet); View → GitHub Copilot Chat did not bring it up. Open the chat pane in that VS manually";
+                case CopilotPaneMode.Hidden:
+                    return "对话窗格不可见（自动隐藏、被其他标签页覆盖或 VS 最小化），显示命令未能让它可见；请在该 VS 中把对话窗格固定显示"
+                        + " / Chat pane is offscreen (auto-hidden, behind another tab or VS minimized) and the show command did not reveal it. Pin the chat pane visible in that VS";
+                case CopilotPaneMode.History:
+                    return "对话窗格停留在聊天历史列表，自动点击「返回」未生效；请在该 VS 的对话窗格中点「← 返回」或打开一个会话"
+                        + " / Chat pane is stuck on the chat history list and pressing Back automatically did not work. Press \"← Back\" or open a conversation in that VS";
+                case CopilotPaneMode.NoInput:
+                    return "对话窗格可见但没有输入框（可能未登录 GitHub、正在加载或 Copilot 被禁用）；请在该 VS 中确认 Copilot 已登录并可输入"
+                        + " / Chat pane is visible but has no input (signed out, still loading or Copilot disabled). Make sure Copilot is signed in and accepts input in that VS";
+                default:
+                    return inputMissing
+                        ? "对话窗格已显示当前会话，但定位不到可编辑的输入框（可能正在加载或界面结构变化）；请在该 VS 中点击一次输入框确认可输入"
+                            + " / The conversation is shown but no editable input could be located (loading or UI changed). Click the input once in that VS to confirm it accepts text"
+                        : "对话窗格已就绪 / Chat pane is ready";
+            }
+        }
+
         public static string Describe(CopilotPaneMode m)
         {
             switch (m)

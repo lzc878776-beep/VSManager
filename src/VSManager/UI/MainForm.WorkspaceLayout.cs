@@ -21,7 +21,12 @@ namespace VSManager
             var result = CaptureDisplayGeometry(screens);
             result.CurrentScreen = Number(Native.GetForegroundWindow());
             result.ManagerScreen = Number(Handle);
-            result.VsLocations.AddRange(_instances.Select(v => $"VS {NameOf(v)}: 屏幕 / Screen {Number(v.MainHwnd)}"));
+            result.VsLocations.AddRange(_instances.Select((v, i) =>
+            {
+                string rect = Native.IsWindow(v.MainHwnd) && Native.GetWindowRect(v.MainHwnd, out var r)
+                    ? $"; 窗口 / Window=({r.Left},{r.Top},{r.Right - r.Left},{r.Bottom - r.Top})" + (Native.IsIconic(v.MainHwnd) ? " 最小化 / minimized" : "") : "";
+                return $"VS #{i + 1} {NameOf(v)}: 屏幕 / Screen {Number(v.MainHwnd)}{rect}";
+            }));
             return result;
         }
 
@@ -47,7 +52,7 @@ namespace VSManager
                 var result = await DteWorker.Run(() => CaptureDisplayGeometry(ScreenHelper.Ordered()).Signature != displaySignature
                     ? "显示器配置已改变，未移动窗口 / Displays changed; no windows moved"
                     : !plan.TargetsUnchanged ? "目标 VS 已改变，未移动窗口 / Target VS changed; no windows moved"
-                    : VsWorkspaceLayout.Arrange(plan.Placements, plan.IncludeOutput, plan.IncludeErrorList, keyword));
+                    : VsWorkspaceLayout.Arrange(plan.Placements, plan.IncludeOutput, plan.IncludeErrorList, keyword, plan.IncludeSolutionExplorer));
                 foreach (var p in plan.Placements) _chatSvc.PaneRestored(p.Vs.Pid);
                 SetStatus(result.Split('\n')[0]);
                 return plan.Describe() + "\n" + result;

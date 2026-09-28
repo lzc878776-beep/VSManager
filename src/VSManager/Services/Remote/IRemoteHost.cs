@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace VSManager
@@ -20,5 +21,10 @@ namespace VSManager
         Task<string> DockPanes();
         /// <summary>读取错误列表文本。</summary>
         Task<string> ErrorList(VsInstance v, int max);
+        /// <summary>
+        /// 截取目标 VS（或其前台弹窗）为 PNG；requirePreview 为 true 时先弹出预览由用户批准，取消返回 null。
+        /// Captures the target VS (or its foreground popup) as PNG; when requirePreview is true the user approves a preview first, and cancel returns null.
+        /// </summary>
+        Task<byte[]> CaptureScreenshot(VsInstance v, bool requirePreview, CancellationToken cancellationToken);
     }
 }

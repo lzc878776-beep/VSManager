@@ -49,6 +49,7 @@ namespace VSManager
     {
         public const string OutputKind = "{34E76E81-EE4A-11D0-AE2E-00A0C90FFFC3}";
         public const string ErrorListKind = "{D78612C7-9962-4B83-95D9-268046DAD23A}";
+        public const string SolutionExplorerKind = "{3AE79031-E1BC-11D0-8F78-00A0C9110057}";
 
         public static Dictionary<int, object> GetDtesByPid()
         {
@@ -243,6 +244,35 @@ namespace VSManager
         }
 
         /// <summary>
+        /// 该 VS 的调试器当前是否附加在指定进程上（读取 Debugger.DebuggedProcesses）。
+        /// Whether this VS's debugger is currently attached to the given process (reads Debugger.DebuggedProcesses).
+        /// </summary>
+        public static bool DebugsProcess(VsInstance vs, int pid) => pid > 0 && DebuggedProcessIds(vs).Contains(pid);
+
+        /// <summary>
+        /// 该 VS 调试器当前附加的全部进程 ID；读取失败时返回空列表。
+        /// All process ids this VS's debugger is attached to; an empty list when they cannot be read.
+        /// </summary>
+        public static List<int> DebuggedProcessIds(VsInstance vs)
+        {
+            var pids = new List<int>();
+            if (vs?.Dte == null) return pids;
+            try
+            {
+                dynamic dte = vs.Dte;
+                dynamic list = dte.Debugger.DebuggedProcesses;
+                int n = Convert.ToInt32(list.Count);
+                for (int i = 1; i <= n; i++)
+                {
+                    int pid = Convert.ToInt32(list.Item(i).ProcessID);
+                    if (pid > 0 && !pids.Contains(pid)) pids.Add(pid);
+                }
+            }
+            catch { }
+            return pids;
+        }
+
+        /// <summary>
         /// 启动 / 继续调试；从设计模式启动时先识别 CAD 宿主并临时注入 NETLOAD 启动脚本。
         /// Starts / continues debugging; when starting from design mode, detects a CAD host first and temporarily injects the NETLOAD startup script.
         /// </summary>
@@ -313,9 +343,66 @@ namespace VSManager
         /// 关闭指定 VS 中所有已打开的 .cs 文件标签页；有未保存修改的文件不关闭、不保存，只在结果中列出文件名。
         /// Closes every open .cs document tab in the VS; files with unsaved changes are neither closed nor saved, only listed by file name.
         /// </summary>
-        public static string CloseCsDocuments(VsInstance vs)
+        public static string CloseCsDocuments(VsInstance vs) => CloseCsDocumentsDetailed(vs).Text;
+
+        /// <summary>
+        /// 关闭 .cs 标签页的结构化结果：已关闭数、保留的未保存文件、关闭失败的文件或整体错误。
+        /// Structured result of closing .cs tabs: closed count, unsaved files kept open, files that failed, or an overall error.
+        /// </summary>
+        public sealed class CsTabCloseResult
         {
-            if (vs?.Dte == null) return "无法连接到该 VS 的自动化接口 (DTE) / Cannot connect to the VS automation interface (DTE)";
+            public int Found;
+            public int Closed;
+            public readonly List<string> Dirty = new List<string>();
+            public readonly List<string> Failed = new List<string>();
+            /// <summary>整体失败原因（如 DTE 不可用），为 null 表示已执行。/ Overall failure (e.g. DTE unavailable); null when it ran.</summary>
+            public string Error;
+
+            public static CsTabCloseResult Fail(string error) => new CsTabCloseResult { Error = error };
+
+            /// <summary>单个 VS 的结果文字（中文在前，英文在后）。/ Result text of one VS (Chinese first, then English).</summary>
+            public string Text
+            {
+                get
+                {
+                    if (Error != null) return Error;
+                    if (Found == 0) return "没有已打开的 .cs 文件标签页 / No open .cs tabs";
+                    var sb = new System.Text.StringBuilder($"已关闭 {Closed} 个 .cs 文件标签页 / Closed {Closed} .cs tab(s)");
+                    if (Dirty.Count > 0)
+                        sb.Append($"；{Dirty.Count} 个有未保存修改，已保留且未保存 / {Dirty.Count} with unsaved changes kept open, not saved：").Append(string.Join(", ", Dirty));
+                    if (Failed.Count > 0)
+                        sb.Append($"；{Failed.Count} 个关闭失败 / {Failed.Count} failed to close：").Append(string.Join(", ", Failed));
+                    return sb.ToString();
+                }
+            }
+
+            /// <summary>
+            /// 汇总多个 VS 的结果：首行为总计，其后每个 VS 一行明细。
+            /// Summarizes several VS results: the first line is the total, followed by one detail line per VS.
+            /// </summary>
+            public static string Summarize(IList<(string Label, CsTabCloseResult Result)> results)
+            {
+                if (results == null || results.Count == 0) return "没有打开的 VS / No open VS";
+                int closed = results.Sum(r => r.Result.Closed);
+                int dirty = results.Sum(r => r.Result.Dirty.Count);
+                int failed = results.Sum(r => r.Result.Failed.Count);
+                int errors = results.Count(r => r.Result.Error != null);
+                var sb = new System.Text.StringBuilder($"已在 {results.Count} 个 VS 中关闭 {closed} 个 .cs 标签页");
+                if (dirty > 0) sb.Append($"，{dirty} 个有未保存修改已保留（未保存）");
+                if (failed > 0) sb.Append($"，{failed} 个关闭失败");
+                if (errors > 0) sb.Append($"，{errors} 个 VS 无法处理");
+                sb.Append($" / Closed {closed} .cs tab(s) in {results.Count} VS");
+                if (dirty > 0) sb.Append($", {dirty} with unsaved changes kept open (not saved)");
+                if (failed > 0) sb.Append($", {failed} failed to close");
+                if (errors > 0) sb.Append($", {errors} VS could not be processed");
+                foreach (var r in results) sb.Append("\n").Append(r.Label).Append("：").Append(r.Result.Text);
+                return sb.ToString();
+            }
+        }
+
+        public static CsTabCloseResult CloseCsDocumentsDetailed(VsInstance vs)
+        {
+            if (vs?.Dte == null) return CsTabCloseResult.Fail("无法连接到该 VS 的自动化接口 (DTE) / Cannot connect to the VS automation interface (DTE)");
             try
             {
                 dynamic dte = vs.Dte;
@@ -332,32 +419,25 @@ namespace VSManager
                     }
                     catch { }
                 }
-                int closed = 0;
-                var dirty = new List<string>();
-                var failed = new List<string>();
+                var result = new CsTabCloseResult { Found = targets.Count };
                 foreach (dynamic d in targets)
                 {
                     string name = "";
                     try { name = Path.GetFileName((string)d.FullName); } catch { }
                     try
                     {
-                        if (!(bool)d.Saved) { dirty.Add(name); continue; }
+                        // 未保存的文件保留：不关闭也不保存 / Unsaved files stay open: neither closed nor saved
+                        if (!(bool)d.Saved) { result.Dirty.Add(name); continue; }
                         d.Close(2); // vsSaveChanges.vsSaveChangesNo
-                        closed++;
+                        result.Closed++;
                     }
-                    catch { failed.Add(name); }
+                    catch { result.Failed.Add(name); }
                 }
-                if (targets.Count == 0) return "没有已打开的 .cs 文件标签页 / No open .cs tabs";
-                var sb = new System.Text.StringBuilder($"已关闭 {closed} 个 .cs 文件标签页 / Closed {closed} .cs tab(s)");
-                if (dirty.Count > 0)
-                    sb.Append($"；{dirty.Count} 个有未保存修改，已保留 / {dirty.Count} with unsaved changes kept open：").Append(string.Join(", ", dirty));
-                if (failed.Count > 0)
-                    sb.Append($"；{failed.Count} 个关闭失败 / {failed.Count} failed to close：").Append(string.Join(", ", failed));
-                return sb.ToString();
+                return result;
             }
             catch (Exception ex)
             {
-                return "关闭 .cs 文件标签页失败 / Failed to close .cs tabs：" + ex.Message;
+                return CsTabCloseResult.Fail("关闭 .cs 文件标签页失败 / Failed to close .cs tabs：" + ex.Message);
             }
         }
 

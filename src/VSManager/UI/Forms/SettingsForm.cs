@@ -23,6 +23,10 @@ namespace VSManager
             public Action OpenSolutions;
             /// <summary>立即清理过期附件，返回结果摘要。/ Removes expired attachments now; returns the summary.</summary>
             public Func<System.Threading.Tasks.Task<string>> CleanAttachments;
+            /// <summary>MCP 服务器状态文字。/ MCP server status text.</summary>
+            public Func<string> McpStatus;
+            /// <summary>按当前配置重连 MCP 服务器。/ Reconnects MCP servers with the current configuration.</summary>
+            public Action McpReconnect;
         }
 
         private readonly AppSettings _s;
@@ -153,11 +157,12 @@ namespace VSManager
             var voiceCard = BuildVoiceCard(actions);
             var agentCard = BuildAgentCard(actions);
             var fileAccessCard = BuildFileAccessCard();
+            var mcpCard = BuildMcpCard(actions);
             var archiveCard = BuildArchiveCard();
             var sendCard = BuildSendCard();
             var solutionCard = BuildSolutionCard(actions);
 
-            var cards = new[] { screenCard, actCard, agentCard, fileAccessCard, solutionCard, chatCard, sendCard, voiceCard, webCard, archiveCard, winCard };
+            var cards = new[] { screenCard, actCard, agentCard, fileAccessCard, mcpCard, solutionCard, chatCard, sendCard, voiceCard, webCard, archiveCard, winCard };
             for (int i = cards.Length - 1; i >= 0; i--)
             {
                 cards[i].Dock = DockStyle.Top;
@@ -204,6 +209,7 @@ namespace VSManager
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             _webTimer.Stop();
+            _mcpTimer.Stop();
             _autoSave.Stop();
             AppSettings.Saved -= OnSaved;
             CommitPort();
@@ -481,6 +487,99 @@ namespace VSManager
             Changed?.Invoke();
         }
 
+		private TextBox _mcpJson;
+		private Label _mcpStatus, _mcpHint;
+		private readonly Timer _mcpTimer = new Timer { Interval = 1500 };
+
+		/// <summary>
+		/// MCP 服务器卡片：开关、配置 JSON（应用前校验并确认）、连接状态与重连。
+		/// MCP servers card: toggle, configuration JSON (validated and confirmed before applying), status and reconnect.
+		/// </summary>
+		private Card BuildMcpCard(Actions actions)
+		{
+			var grid = NewGrid(1, 6, Dpi.S(40));
+			grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+			grid.RowStyles.Clear();
+			foreach (int h in new[] { 64, 84, 130, 40, 44, 84 }) grid.RowStyles.Add(new RowStyle(SizeType.Absolute, Dpi.S(h)));
+			grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+			grid.Height = Dpi.S(462);
+			grid.Controls.Add(Toggle("为 AI 总控助手挂载 MCP 服务器 / Mount MCP servers for the AI assistant",
+				"默认关闭；开启后按下方已应用的配置连接 / Off by default; when on, connects using the applied configuration below",
+				_s.McpEnabled, v => { _s.McpEnabled = v; RefreshMcp(actions); }), 0, 0);
+			grid.Controls.Add(new Label
+			{
+				Dock = DockStyle.Fill, ForeColor = Theme.TextSecondary,
+				Text = "配置格式与常见客户端相同：{\"mcpServers\":{\"名称\":{command,args,env,cwd} 或 {url,headers}}}，可用 %变量%。本地服务器以当前用户权限运行，不受「AI 文件授权」限制，只添加可信服务器；不预装任何服务器。\r\nSame format as common clients: {\"mcpServers\":{\"name\":{command,args,env,cwd} or {url,headers}}}; %VARS% supported. Local servers run with your permissions outside AI file authorization; add trusted servers only. None are preinstalled."
+			}, 0, 1);
+			_mcpJson = new TextBox
+			{
+				Dock = DockStyle.Fill, Multiline = true, ScrollBars = ScrollBars.Both, WordWrap = false, AcceptsReturn = true,
+				BackColor = Theme.Elevated, ForeColor = Theme.Text, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Consolas", Theme.Small.Size),
+				Text = _s.McpServersJson ?? ""
+			};
+			_mcpJson.TextChanged += (s, e) => { if (!_loading) _mcpHint.Text = "配置修改尚未应用 / Configuration changes have not been applied"; };
+			grid.Controls.Add(_mcpJson, 0, 2);
+			var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty, BackColor = Theme.Surface };
+			foreach (var b in new[]
+			{
+				NewButton("应用并连接 / Apply and connect", () => ApplyMcpConfig(actions)),
+				NewButton("重新连接 / Reconnect", () => { actions?.McpReconnect?.Invoke(); RefreshMcp(actions); }),
+				NewButton("插入示例 / Insert example", () =>
+				{
+					if (_mcpJson.TextLength == 0 || MessageBox.Show(this, "用示例替换当前内容？/ Replace the current text with the example?", "MCP", MessageBoxButtons.OKCancel) == DialogResult.OK)
+						_mcpJson.Text = McpConfig.Example;
+				}),
+			})
+			{
+				b.Dock = DockStyle.None;
+				b.AutoSize = true;
+				b.Margin = new Padding(0, 0, Dpi.S(8), 0);
+				buttons.Controls.Add(b);
+			}
+			grid.Controls.Add(buttons, 0, 3);
+			_mcpHint = new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Text = "AI 不能修改此配置；令牌建议写成 %变量% 引用环境变量。\r\nThe AI cannot change this configuration; reference tokens as %VARS% from environment variables." };
+			grid.Controls.Add(_mcpHint, 0, 4);
+			_mcpStatus = new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextSecondary, AutoEllipsis = true };
+			grid.Controls.Add(_mcpStatus, 0, 5);
+			_mcpTimer.Tick += (s, e) => RefreshMcp(actions);
+			_mcpTimer.Start();
+			RefreshMcp(actions);
+			return NewCard("MCP 服务器 / MCP servers", "把外部 MCP 工具注册给 AI 总控助手 / Registers external MCP tools for the AI assistant", grid);
+		}
+
+		private void RefreshMcp(Actions actions)
+		{
+			if (_mcpStatus == null || _mcpStatus.IsDisposed) return;
+			string text = actions?.McpStatus?.Invoke() ?? (_s.McpEnabled ? "" : "MCP 未启用 / MCP is off");
+			if (_mcpStatus.Text != text) _mcpStatus.Text = text;
+		}
+
+		private void ApplyMcpConfig(Actions actions)
+		{
+			string json = (_mcpJson.Text ?? "").Trim();
+			var specs = McpConfig.Parse(json, out string error);
+			if (specs == null)
+			{
+				_mcpHint.Text = "配置未应用 / Configuration not applied：" + error;
+				return;
+			}
+			if (json == (_s.McpServersJson ?? "").Trim())
+			{
+				_mcpHint.Text = "配置未变化 / Configuration is unchanged";
+				return;
+			}
+			if (specs.Count > 0)
+			{
+				string list = string.Join("\r\n", specs.Select(x => "• " + x.Name + (x.Disabled ? "（停用 / disabled）" : "") + "：" + x.Describe()));
+				if (MessageBox.Show(this, "确认应用 MCP 配置？启用后将以当前用户权限启动或连接以下服务器，其工具可被 AI 助手调用（有副作用的调用仍遵守「操作前确认」）。\r\nApply this MCP configuration? When enabled, these servers start or connect with your permissions and their tools become available to the assistant (side-effect calls still follow confirmation).\r\n\r\n" + list,
+					"确认 MCP 配置 / Confirm MCP configuration", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
+			}
+			_s.McpServersJson = json;
+			_mcpHint.Text = (_s.McpEnabled ? "配置已应用，正在连接 / Applied, connecting" : "配置已保存；打开上方开关后连接 / Saved; turn on the switch above to connect") + "（" + specs.Count + " 个服务器 / servers）";
+			Changed?.Invoke();
+			RefreshMcp(actions);
+		}
+
         private Card BuildAgentCard(Actions actions)
         {
             var grid = new TableLayoutPanel { ColumnCount = 2, Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty };
@@ -502,7 +601,13 @@ namespace VSManager
                 _s.AgentConfirm, v => _s.AgentConfirm = v), Dpi.S(56), true);
             Row(null, Toggle("任务完成自动跟进", "任务清单中的任务完成后，AI 助手自动汇报结果并继续后续步骤",
                 _s.AgentAutoFollowUp, v => _s.AgentAutoFollowUp = v), Dpi.S(56), true);
-            Row(null, Toggle("允许 VS 截图分析 / Allow VS screenshot analysis", "AI 可截取目标 VS 交给当前模型分析界面；需要视觉模型，不保存截图 / AI may capture the target VS for the current model to analyze; vision model needed; no image files",
+            Row(null, Toggle("任务自动接续 / Auto-continue tasks", "任务返回待验证或部分完成时，AI 助手自动判断剩余步骤并向同一 VS 发布接续任务（每条链最多 " + TaskContinuation.MaxDepth + " 次），不停下来等用户；需要开启「任务完成自动跟进」/ When a task returns awaiting verification or partially done, the assistant works out the remaining steps and publishes a continuation to the same VS (at most " + TaskContinuation.MaxDepth + " per chain) instead of waiting; needs task auto follow-up",
+                _s.AgentAutoContinue, v => _s.AgentAutoContinue = v), Dpi.S(56), true);
+            Row(null, Toggle("按需加载工具组 / Load tool groups on demand", "每轮只向模型提供核心工具与相关的工具组，其余由 AI 用 load_tools 按需加载，减少请求体积、让模型更专注；关闭则每轮提供全部工具 / Each round offers the model only core tools and relevant groups, the AI loads the rest with load_tools, shrinking requests and keeping it focused; off offers every tool each round",
+                _s.AgentToolGrouping, v => _s.AgentToolGrouping = v), Dpi.S(56), true);
+            Row(null, Toggle("按项目隔离会话 / Isolate sessions per project", "各项目的任务通知与对话分开进入 AI 上下文，避免不同项目的结论、文件路径与错误信息互相串扰；全局对话只看各项目摘要 / Each project's notices and conversation form a separate AI context so conclusions, file paths and errors do not leak across projects; global rounds see only per-project digests",
+                _s.AgentSessionIsolation, v => _s.AgentSessionIsolation = v), Dpi.S(56), true);
+            Row(null, Toggle("允许 VS 截图分析 / Allow VS screenshot analysis", "AI 可截取目标 VS 交给当前模型分析界面；需要视觉模型，不保存截图；也控制本机 AI Skill 的 screenshot 命令（保存到 %TEMP%）/ AI may capture the target VS for the current model to analyze; vision model needed; no image files. Also controls the local AI Skill screenshot command (saved under %TEMP%)",
                 _s.AgentScreenshotEnabled, v => _s.AgentScreenshotEnabled = v), Dpi.S(56), true);
             Row(null, Toggle("截图需逐张预览批准 / Preview every screenshot", "开启后 AI 不能直接读取 VS 截图（read_vs_screenshot），每张都要预览批准；关闭时直接截图分析（仍遵守「操作前确认」）/ When on, AI cannot read VS screenshots directly; when off, screenshots are analyzed directly (still honoring Confirm before acting)",
                 _s.AgentScreenshotRequirePreview, v => _s.AgentScreenshotRequirePreview = v), Dpi.S(56), true);
@@ -1087,7 +1192,7 @@ namespace VSManager
                 "默认开启；已完成、待验证、失败任务与手动对话按天记录，按项目分组为可筛选表格，点击查看详情 / On by default; done, awaiting-verification, failed tasks and manual chats are recorded daily in filterable project tables with linked details",
                 _s.RecordCompletedTasksInNotebook, v => _s.RecordCompletedTasksInNotebook = v), Dpi.S(72), true);
             Row(null, Toggle("CAD 调试自动加载 DLL / Auto-load DLL for CAD debugging",
-                "默认开启；启动程序为 AutoCAD / ZWCAD / GstarCAD / BricsCAD 时，点击调试临时加入 /b 启动脚本 NETLOAD 启动项目 DLL，启动后恢复原参数 / On by default; when the start program is AutoCAD / ZWCAD / GstarCAD / BricsCAD, Debug temporarily adds a /b startup script that NETLOADs the startup project DLL and restores the original arguments after launch",
+                "默认开启；启动程序为 AutoCAD / ZWCAD / GstarCAD / BricsCAD 时，点击调试临时加入 /b 启动脚本 NETLOAD 启动项目 DLL，并打开 AI 助手记录的调试图纸（找不到则打开新图），启动后恢复原参数 / On by default; when the start program is AutoCAD / ZWCAD / GstarCAD / BricsCAD, Debug temporarily adds a /b startup script that NETLOADs the startup project DLL, opens the debug drawing recorded by the AI assistant (or a new drawing if missing) and restores the original arguments after launch",
                 _s.CadDebugAutoLoad, v => _s.CadDebugAutoLoad = v), Dpi.S(72), true);
             Row(null, Toggle("发送前关闭已保存文档 / Close saved documents before sending",
                 "默认关闭；跳过未保存、状态未知和调试中的文档，不关闭工具窗口 / Off by default; skip unsaved, unknown and debugging states; never close tool windows",

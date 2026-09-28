@@ -9,6 +9,7 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
+using VSManager.CadAgent;
 
 namespace VSManager
 {
@@ -191,7 +192,10 @@ namespace VSManager
             }
             if (req.Headers.TryGetValue("Content-Length", out var cl) && int.TryParse(cl, out int len) && len > 0)
             {
-                if (len > 256 * 1024) return null;
+                // CAD 代理回传的结果可含截图，允许更大的请求体与更长的上传时间。/ CAD agent results may carry screenshots, so they allow a larger body and a longer upload.
+                bool large = req.Path == CadResultPath;
+                if (len > (large ? CadResultMaxBytes : 256 * 1024)) return null;
+                if (large) deadline = DateTime.Now.AddSeconds(120);
                 var body = new MemoryStream();
                 int have = all.Length - headerEnd - 4;
                 body.Write(all, headerEnd + 4, have);
@@ -272,6 +276,8 @@ namespace VSManager
                 return JsonRes(new { ok = false, msg = "访问密钥无效，请在 VSManager 中重新扫码" }, 401);
             }
             lock (_fails) _fails.Remove(ip);
+            // CAD 动作通道只服务本机，且不计入手机端活动。/ The CAD action channel is local-only and does not count as phone activity.
+            if (req.Path.StartsWith("/api/cad/", StringComparison.Ordinal)) return await RouteCad(req, ip).ConfigureAwait(false);
             Interlocked.Exchange(ref _lastApi, DateTime.Now.Ticks);
 
             var body = string.IsNullOrEmpty(req.Body) ? new Dictionary<string, object>() : Json.Deserialize<Dictionary<string, object>>(req.Body) ?? new Dictionary<string, object>();
@@ -405,6 +411,25 @@ namespace VSManager
                         return JsonRes(new { ok = true, copilot = State(v), reply = LastReply(v) });
                     }
 
+                    case "/api/screenshot":
+                    {
+                        var s = _settings();
+                        string denied = ScreenshotDenial(ip, s);
+                        if (denied != null) return JsonRes(new { ok = false, msg = denied });
+                        var v = Vs();
+                        if (v == null) return JsonRes(new { ok = false, msg = "未找到该 VS / VS not found" });
+                        byte[] png;
+                        using (var cts = new CancellationTokenSource(TimeSpan.FromMinutes(5)))
+                        {
+                            try { png = await _host.CaptureScreenshot(v, s.AgentScreenshotRequirePreview, cts.Token).ConfigureAwait(false); }
+                            catch (Exception ex) { return JsonRes(new { ok = false, msg = "截图失败 / Screenshot failed: " + ex.Message }); }
+                        }
+                        if (png == null) return JsonRes(new { ok = false, msg = "用户取消了截图共享 / The user cancelled screenshot sharing" });
+                        if (png.Length == 0 || png.Length > ChatImage.MaxBytes) return JsonRes(new { ok = false, msg = "截图数据无效或过大 / Invalid or oversized screenshot" });
+                        _host.Log("📷 AI Skill 已读取「" + _host.NameOf(v) + "」的截图 / AI Skill read a screenshot of this VS");
+                        return JsonRes(new { ok = true, name = _host.NameOf(v), bytes = png.Length, png = Convert.ToBase64String(png) });
+                    }
+
                     case "/api/wait":
                     {
                         var v = Vs();
@@ -449,6 +474,94 @@ namespace VSManager
         };
 
         private static string State(VsInstance v) => v.Copilot == CopilotState.Busy ? "busy" : v.Copilot == CopilotState.Idle ? "idle" : "none";
+
+        internal const string CadResultPath = "/api/cad/agent/result";
+        internal const int CadResultMaxBytes = 32 * 1024 * 1024;
+
+        /// <summary>CAD 动作中转（测试可替换）。/ CAD action broker (replaceable by tests).</summary>
+        internal CadActionBroker Cad = CadActionBroker.Default;
+
+        /// <summary>只允许本机客户端；允许时返回 null。/ Allows local clients only; returns null when allowed.</summary>
+        internal static string LocalDenial(string ip)
+        {
+            if (!IPAddress.TryParse(ip ?? "", out var address) || !IPAddress.IsLoopback(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address))
+                return "CAD 动作接口只允许本机调用 / The CAD action API is available to local clients only";
+            return null;
+        }
+
+        private static Response CadRes(string json, int code = 200) =>
+            new Response { Code = code, Body = Encoding.UTF8.GetBytes(json) };
+
+        /// <summary>
+        /// CAD 动作通道（复用本 Web API 与访问密钥）：ai.exe 调用 exec，CAD 代理调用 agent/hello、agent/next、agent/result。
+        /// CAD action channel (reuses this Web API and its access key): ai.exe calls exec; the CAD agent calls agent/hello, agent/next and agent/result.
+        /// </summary>
+        private async Task<Response> RouteCad(Request req, string ip)
+        {
+            string deny = LocalDenial(ip);
+            if (deny != null) return JsonRes(new { ok = false, msg = deny }, 403);
+            if (req.Method != "POST" && req.Path != "/api/cad/status") return JsonRes(new { ok = false, msg = "请使用 POST / Use POST" }, 405);
+            try
+            {
+                switch (req.Path)
+                {
+                    case "/api/cad/status":
+                    {
+                        var a = Cad.Agent;
+                        return JsonRes(new { ok = true, connected = a != null, status = Cad.StatusText, pid = a?.Pid ?? 0, host = a?.Host ?? "", adapter = a?.Adapter ?? "" });
+                    }
+                    case "/api/cad/agent/hello":
+                        return CadRes(CadJson.Serialize(Cad.Hello(CadJson.Deserialize<CadAgentHello>(req.Body))));
+                    case "/api/cad/agent/next":
+                        return CadRes(CadJson.Serialize(await Cad.NextAsync(CadJson.Deserialize<CadAgentMessage>(req.Body)).ConfigureAwait(false)));
+                    case CadResultPath:
+                        return CadRes(CadJson.Serialize(Cad.Result(CadJson.Deserialize<CadAgentMessage>(req.Body))));
+                    case "/api/cad/exec":
+                    {
+                        var r = CadJson.Deserialize<CadActionRequest>(req.Body);
+                        if (r == null) return CadRes(CadJson.Serialize(CadActionResult.Fail(CadErrors.InvalidArgs, "空请求 / Empty request")), 400);
+                        string solution = null;
+                        if (!string.IsNullOrWhiteSpace(r.Vs))
+                        {
+                            var v = ResolveCadTarget(r.Vs);
+                            if (v == null) return CadRes(CadJson.Serialize(CadActionResult.Fail(CadErrors.NotFound, "未找到该 VS / VS not found: " + r.Vs)));
+                            solution = v.SolutionPath;
+                        }
+                        return CadRes(CadJson.Serialize(await Cad.ExecAsync(r, solution).ConfigureAwait(false)));
+                    }
+                }
+            }
+            catch (System.Runtime.Serialization.SerializationException ex)
+            {
+                return CadRes(CadJson.Serialize(CadActionResult.Fail(CadErrors.InvalidArgs, "JSON 无效 / Invalid JSON: " + ex.Message)), 400);
+            }
+            return JsonRes(new { ok = false, msg = "不支持的请求" }, 404);
+        }
+
+        /// <summary>按进程 ID、编号或名称解析目标 VS。/ Resolves the target VS by process ID, number or name.</summary>
+        internal VsInstance ResolveCadTarget(string vs)
+        {
+            var list = _host.Instances.ToList();
+            string key = (vs ?? "").Trim().TrimStart('#');
+            if (key.StartsWith("pid:", StringComparison.OrdinalIgnoreCase)) key = key.Substring(4).Trim();
+            if (key.Length == 0) return null;
+            if (int.TryParse(key, out int n))
+                return list.FirstOrDefault(x => x.Pid == n) ?? (n >= 1 && n <= list.Count ? list[n - 1] : null);
+            return list.FirstOrDefault(x => _host.NameOf(x).IndexOf(key, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        /// <summary>
+        /// 截图接口只服务本机客户端（AI Skill），且须开启「AI 截图」；允许时返回 null，否则返回拒绝原因。
+        /// The screenshot API serves only local clients (AI Skill) and requires the AI screenshot setting; returns null when allowed, otherwise the reason.
+        /// </summary>
+        internal static string ScreenshotDenial(string ip, AppSettings settings)
+        {
+            if (!IPAddress.TryParse(ip ?? "", out var address) || !IPAddress.IsLoopback(address.IsIPv4MappedToIPv6 ? address.MapToIPv4() : address))
+                return "截图只允许本机调用 / Screenshots are available to local clients only";
+            if (settings == null || !settings.AgentScreenshotEnabled)
+                return "截图工具已关闭，请在 属性 → AI 助手 中开启 / Screenshot tool is disabled; enable it in Properties → AI assistant";
+            return null;
+        }
 
         private static bool TokenEquals(string a, string b)
         {

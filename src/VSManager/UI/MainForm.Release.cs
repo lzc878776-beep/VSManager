@@ -8,7 +8,7 @@ namespace VSManager
     /// 任务队列放行等级：顶栏滑块、任务菜单与 AI 工具共用的宿主实现。
     /// Task queue release level: host implementation shared by the header slider, the task menu and the AI tools.
     /// </summary>
-    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentWorkflowHost, IAgentTaskControlHost, IAgentBlockedTaskHost
+    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentWorkflowHost, IAgentTaskControlHost, IAgentBlockedTaskHost, IAgentContinuationHost
     {
         bool IAgentWorkflowHost.WorkflowStarted => _dispatcher.IsStarted;
 
@@ -100,6 +100,40 @@ namespace VSManager
                 + (freshContext ? "；已标记对话重置，Copilot 会先重新阅读相关内容 / marked as a fresh conversation" : "");
             return $"已为任务 #{id} 插入补充信息并在原条目重新排队（第 {t.SupplementCount} 次补充{(fromUser ? "，来自用户" : $"，AI 自主上限 {TaskStateMachine.MaxSupplements}")}），阻塞随之解除，完成后会再通知你 / "
                 + $"Task #{id} requeued in place with info (supplement {t.SupplementCount}{(fromUser ? ", from the user" : $", AI limit {TaskStateMachine.MaxSupplements}")}); the block is lifted and you will be notified" + how;
+        });
+
+        /// <summary>
+        /// 任务自动接续：向原任务的 VS 发布只做剩余步骤的接续任务；原任务阻塞同一 VS 时放行（测试清单保持待验证），以免接续任务排在它后面卡住。
+        /// Task auto-continue: publishes a continuation covering only the remaining steps to the original task's VS; a blocking original is released
+        /// (its checklist stays pending) so the continuation is not stuck behind it.
+        /// </summary>
+        Task<string> IAgentContinuationHost.ContinueTask(int id, string remaining, string title) => OnUiAsync(async () =>
+        {
+            var t = _tasks.Find(id);
+            if (TaskContinuation.Check(_tasks.Items, t, id, remaining) is string refused)
+            {
+                AppLog.Write(AppLog.TasksFile, $"拒绝接续任务 #{id} / Refused continuation: " + TextUtil.Clip(refused, 200));
+                return NotPushed(refused);
+            }
+            var v = _instances.FirstOrDefault(i => i.Key == t.VsKey);
+            if (v == null)
+                return NotPushed($"任务 #{id} 的目标 VS「{t.VsName}」未打开，请先打开或把剩余步骤告诉用户 / The target VS of task #{id} is not open; open it first or tell the user the remaining steps");
+            string text = TaskContinuation.Compose(t, remaining) + AgentService.OpenSourceSuffixFor(v, _settings.IsEnglishVoice);
+            string item = t.Title;
+            int dot = item?.IndexOf(" · ", System.StringComparison.Ordinal) ?? -1;
+            if (dot >= 0) item = item.Substring(dot + 3);
+            string taskTitle = TaskTitle.Normalize(string.IsNullOrWhiteSpace(title) ? (string.IsNullOrEmpty(item) ? "接续 #" + id : item + " 接续") : title);
+            string queued = EnqueueTextTask(v, text, "AI", out var admitted, null, taskTitle);
+            if (admitted == null) return queued;
+            admitted.ContinuedFrom = t.Id;
+            admitted.ContinuationDepth = System.Math.Max(0, t.ContinuationDepth) + 1;
+            _tasks.Commit();
+            string released = "";
+            if (TaskStateMachine.IsHoldOutcome(t) && !t.Released && _dispatcher.Release(t, out _))
+                released = $"\n已放行原任务 #{id}（测试清单保持待验证），接续任务不会被它阻塞 / Released original #{id} (checklist stays pending) so the continuation is not blocked";
+            AppLog.Write(AppLog.TasksFile, $"AI 助手为任务 #{id} 发布接续任务 #{admitted.Id}（第 {admitted.ContinuationDepth}/{TaskContinuation.MaxDepth} 次）/ Continuation #{admitted.Id} of task #{id}");
+            _taskPanel.RefreshItems();
+            return await ConfirmPushAsync(admitted, $"接续任务 #{admitted.Id} ← #{id}（第 {admitted.ContinuationDepth}/{TaskContinuation.MaxDepth} 次）/ Continuation #{admitted.Id} of #{id}\n" + queued + released);
         });
 
         Task<string> IAgentTaskResultHost.EditTaskResult(int id, string text) => OnUi(() =>

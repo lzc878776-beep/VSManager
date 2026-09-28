@@ -16,7 +16,7 @@ namespace VSManager
     {
         public VsInstance Vs;
         public string Name;
-        public Rectangle MainBounds, CopilotBounds, OutputBounds, ErrorListBounds;
+        public Rectangle MainBounds, CopilotBounds, OutputBounds, ErrorListBounds, SolutionExplorerBounds;
     }
 
     /// <summary>
@@ -29,10 +29,10 @@ namespace VSManager
         private static readonly WorkspaceLayoutEngine Engine = new WorkspaceLayoutEngine(new WindowsWorkspaceBackend());
         public static int SavedCount { get { lock (Gate) return Engine.SavedCount; } }
 
-        public static string Arrange(IList<VsWorkspacePlacement> placements, bool includeOutput, bool includeErrorList, string keyword)
+        public static string Arrange(IList<VsWorkspacePlacement> placements, bool includeOutput, bool includeErrorList, string keyword, bool includeSolutionExplorer = false)
         {
             RequireSta();
-            lock (Gate) return Engine.Arrange(placements, includeOutput, includeErrorList, keyword);
+            lock (Gate) return Engine.Arrange(placements, includeOutput, includeErrorList, keyword, includeSolutionExplorer);
         }
 
         public static string Restore(IList<VsInstance> live)
@@ -48,7 +48,7 @@ namespace VSManager
         }
     }
 
-    internal enum WorkspacePane { Copilot, Output, ErrorList }
+    internal enum WorkspacePane { Copilot, Output, ErrorList, SolutionExplorer }
 
     internal sealed class WorkspacePaneSnapshot
     {
@@ -94,7 +94,7 @@ namespace VSManager
             ex is InvalidOperationException || ex is ArgumentException || ex is NotSupportedException ||
             ex is UnauthorizedAccessException || ex is RuntimeBinderException || ex is ElementNotAvailableException;
 
-        internal string Arrange(IList<VsWorkspacePlacement> placements, bool output, bool errors, string keyword)
+        internal string Arrange(IList<VsWorkspacePlacement> placements, bool output, bool errors, string keyword, bool solution = false)
         {
             var lines = new List<string>();
             var seen = new HashSet<int>();
@@ -104,9 +104,11 @@ namespace VSManager
                 var requested = new List<Tuple<WorkspacePane, Rectangle>>();
                 if (target != null)
                 {
-                    requested.Add(Tuple.Create(WorkspacePane.Copilot, target.CopilotBounds));
-                    if (output) requested.Add(Tuple.Create(WorkspacePane.Output, target.OutputBounds));
-                    if (errors) requested.Add(Tuple.Create(WorkspacePane.ErrorList, target.ErrorListBounds));
+                    // 空矩形表示该窗格不移动（AI 自定义布局可只安排部分窗格）/ An empty rectangle leaves that pane alone (custom AI layouts may place only some panes)
+                    if (!target.CopilotBounds.IsEmpty) requested.Add(Tuple.Create(WorkspacePane.Copilot, target.CopilotBounds));
+                    if (output && !target.OutputBounds.IsEmpty) requested.Add(Tuple.Create(WorkspacePane.Output, target.OutputBounds));
+                    if (errors && !target.ErrorListBounds.IsEmpty) requested.Add(Tuple.Create(WorkspacePane.ErrorList, target.ErrorListBounds));
+                    if (solution && !target.SolutionExplorerBounds.IsEmpty) requested.Add(Tuple.Create(WorkspacePane.SolutionExplorer, target.SolutionExplorerBounds));
                 }
                 try
                 {
@@ -290,6 +292,13 @@ namespace VSManager
         {
             Validate(vs);
             dynamic window = Find(vs, pane, keyword, null);
+            if (window == null && pane != WorkspacePane.Copilot)
+            {
+                // 内置窗格（输出 / 错误列表 / 解决方案资源管理器）尚未创建时按 GUID 创建；快照记录创建后的可见状态，还原时恢复为隐藏。
+                // Built-in panes (Output / Error List / Solution Explorer) not yet created are created by GUID; the snapshot records the post-creation visibility so restore hides them again.
+                ((dynamic)vs.Dte).Windows.Item(KindOf(pane));
+                window = Find(vs, pane, keyword, null);
+            }
             if (window == null)
                 throw new InvalidOperationException("未找到窗格，原状态未知，未执行打开命令 / pane missing; original state unknown, no open command executed");
             var snapshot = new WorkspacePaneSnapshot { Pane = pane, Keyword = keyword, Kind = (string)window.ObjectKind,
@@ -390,7 +399,7 @@ namespace VSManager
                 if (found != null) CheckTool(found, (string)((dynamic)found).ObjectKind);
                 return found;
             }
-            string kind = capturedKind ?? (pane == WorkspacePane.Output ? VsService.OutputKind : ErrorListKind);
+            string kind = capturedKind ?? KindOf(pane);
             object match = null;
             foreach (dynamic window in dte.Windows)
             {
@@ -401,6 +410,11 @@ namespace VSManager
             }
             return match;
         }
+
+        internal static string KindOf(WorkspacePane pane) =>
+            pane == WorkspacePane.Output ? VsService.OutputKind
+            : pane == WorkspacePane.SolutionExplorer ? VsService.SolutionExplorerKind
+            : ErrorListKind;
 
         private static bool SameGuid(string a, string b) => Guid.TryParse(a, out var ga) && Guid.TryParse(b, out var gb) && ga == gb;
 

@@ -17,8 +17,21 @@ namespace VSManager
         public string Host { get; internal set; }
         public string Dll { get; internal set; }
         public string Script { get; internal set; }
+        /// <summary>本次打开的调试图纸；null 表示按默认新建图纸。/ Debug drawing opened this time; null means the default new drawing.</summary>
+        public string Drawing { get; internal set; }
+        /// <summary>已记录但找不到的图纸路径（改为新建图纸）。/ Recorded drawing path that could not be found (a new drawing is used instead).</summary>
+        public string MissingDrawing { get; internal set; }
         /// <summary>"project"（项目调试属性 / project debug properties）或 / or "launchSettings"。</summary>
         public string Source { get; internal set; }
+        /// <summary>匹配的项目适配包名称；null 表示未匹配。/ Matched project adapter name; null when none matched.</summary>
+        public string Adapter { get; internal set; }
+        /// <summary>已加入启动脚本的 AI 动作代理引导 DLL。/ AI action agent boot DLL added to the startup script.</summary>
+        public string AgentBoot { get; internal set; }
+        /// <summary>适配包或代理的补充说明。/ Extra remark about the adapter or agent.</summary>
+        public string AgentNote { get; internal set; }
+        /// <summary>启动前由 0 改为 1 的 FILEDIA 所在产品（AutoCAD 注册表）；空表示无需修改。/ Products whose FILEDIA was changed from 0 to 1 before launch (AutoCAD registry); empty when nothing changed.</summary>
+        public IReadOnlyList<string> FileDiaFixed { get; internal set; } = new string[0];
+        internal string ExtraArgs;
         internal int Pid;
         internal Action RestoreAction;
         private int _restored;
@@ -43,6 +56,18 @@ namespace VSManager
     {
         /// <summary>是否启用（由设置同步）。/ Whether enabled (synced from settings).</summary>
         public static volatile bool Enabled = true;
+
+        /// <summary>
+        /// 按解决方案路径查询已记录的调试图纸（由 MainForm 接到设置）；返回 null 表示未记录。
+        /// Looks up the recorded debug drawing by solution path (wired to settings by MainForm); null means none recorded.
+        /// </summary>
+        public static Func<string, string> DrawingLookup;
+
+        /// <summary>
+        /// 写入 CAD 代理连接文件并返回路径（由 MainForm 接到设置）；null 表示不加载 AI 动作代理。
+        /// Writes the CAD agent connection file and returns its path (wired to settings by MainForm); null disables the AI action agent.
+        /// </summary>
+        public static Func<string> AgentConnection;
 
         private static readonly TimeSpan MaxWait = TimeSpan.FromMinutes(15);
         private static readonly List<CadDebugSession> Active = new List<CadDebugSession>();
@@ -81,18 +106,21 @@ namespace VSManager
             dynamic cfg = null;
             try { cfg = proj.ConfigurationManager.ActiveConfiguration.Properties; } catch { }
 
-            string host = null, args = "", source = null;
+            string host = null, args = "", source = null, program = null;
             var json = ReadLaunchProfile(vs, projectPath);
             if (json != null)
             {
                 host = CadDebugPlan.DetectHost(json.Program);
-                if (host != null) { args = json.Args; source = "launchSettings"; }
+                if (host != null) { args = json.Args; source = "launchSettings"; program = json.Program; }
             }
             if (host == null && cfg != null)
             {
                 dynamic c = cfg;
                 if (Int(() => c.Item("StartAction").Value, 0) == 1)
-                    host = CadDebugPlan.DetectHost(Str(() => c.Item("StartProgram").Value));
+                {
+                    program = Str(() => c.Item("StartProgram").Value);
+                    host = CadDebugPlan.DetectHost(program);
+                }
                 if (host != null) { args = Str(() => c.Item("StartArguments").Value); source = "project"; }
             }
             if (host == null) return null;
@@ -111,9 +139,32 @@ namespace VSManager
 
             Directory.CreateDirectory(ScriptRoot);
             string script = Path.Combine(ScriptRoot, CadDebugPlan.ScriptFileName(name));
-            WriteScript(script, CadDebugPlan.BuildScript(new[] { dll }));
-            string injected = CadDebugPlan.Inject(args, script);
-            var session = new CadDebugSession { Host = host, Dll = dll, Script = script, Source = source, Pid = vs.Pid };
+            var agent = PrepareAgent(vs, projectPath, host, program, dll);
+            // FILEDIA=0 时无法自动加载 DLL：启动前改注册表，脚本首行再兜底改回 1。/ FILEDIA=0 breaks auto-loading: fix the registry before launch, and the script's first line sets it back to 1 as a fallback.
+            var fileDia = CadFileDia.EnsureEnabled(host, program);
+            WriteScript(script, CadDebugPlan.FileDiaGuard + CadDebugPlan.BuildScript(agent.Dlls, agent.Commands));
+            string drawing = null, missing = null;
+            if (!CadDebugPlan.HasUserDrawing(CadDebugPlan.StripInjected(args, agent.ExtraArgs)))
+            {
+                string wanted = null;
+                try { wanted = string.IsNullOrEmpty(vs.SolutionPath) ? null : DrawingLookup?.Invoke(vs.SolutionPath); } catch { }
+                if (string.IsNullOrWhiteSpace(wanted)) wanted = agent.Adapter?.Launch?.Drawing;
+                if (!string.IsNullOrWhiteSpace(wanted))
+                {
+                    string full = null;
+                    try { full = Path.GetFullPath(Environment.ExpandEnvironmentVariables(wanted.Trim())); } catch { }
+                    if (full != null && CadDebugPlan.IsDrawingPath(full) && File.Exists(full)) drawing = full;
+                    else missing = wanted.Trim();
+                }
+            }
+            string injected = CadDebugPlan.Inject(CadDebugPlan.StripInjected(args, agent.ExtraArgs), script, drawing, agent.ExtraArgs);
+            var session = new CadDebugSession
+            {
+                Host = host, Dll = dll, Script = script, Drawing = drawing, MissingDrawing = missing, Source = source, Pid = vs.Pid,
+                Adapter = agent.Adapter?.Name, AgentBoot = agent.Boot, AgentNote = agent.Note, ExtraArgs = agent.ExtraArgs,
+                FileDiaFixed = fileDia,
+            };
+            string extra = agent.ExtraArgs;
 
             if (source == "launchSettings")
             {
@@ -132,7 +183,7 @@ namespace VSManager
                         && ps.TryGetValue(profileName, out var pr) && pr is Dictionary<string, object> profile
                         && profile.TryGetValue("commandLineArgs", out var a))
                     {
-                        profile["commandLineArgs"] = CadDebugPlan.StripInjected(Convert.ToString(a));
+                        profile["commandLineArgs"] = CadDebugPlan.StripInjected(Convert.ToString(a), extra);
                         File.WriteAllText(file, new JavaScriptSerializer().Serialize(root), new UTF8Encoding(false));
                     }
                 };
@@ -142,12 +193,12 @@ namespace VSManager
             else
             {
                 dynamic c = cfg;
-                string restoreTo = CadDebugPlan.StripInjected(args);
+                string restoreTo = CadDebugPlan.StripInjected(args, extra);
                 c.Item("StartArguments").Value = injected;
                 session.RestoreAction = () =>
                 {
                     string now = Str(() => c.Item("StartArguments").Value);
-                    c.Item("StartArguments").Value = now == injected ? restoreTo : CadDebugPlan.StripInjected(now);
+                    c.Item("StartArguments").Value = now == injected ? restoreTo : CadDebugPlan.StripInjected(now, extra);
                 };
             }
             lock (Active) Active.Add(session);
@@ -155,9 +206,74 @@ namespace VSManager
             return session;
         }
 
-        private static string Describe(CadDebugSession s) =>
-            "检测到 " + s.Host + " 调试环境，启动后自动 NETLOAD " + Path.GetFileName(s.Dll)
-            + " / " + s.Host + " debugging detected; " + Path.GetFileName(s.Dll) + " will be NETLOADed after start";
+        private static string SafeName(string path)
+        {
+            try { return Path.GetFileName(path); } catch (ArgumentException) { return path; }
+        }
+
+        private static string Describe(CadDebugSession s)
+        {
+            string dll = Path.GetFileName(s.Dll);
+            string zh = s.Drawing != null ? "，打开图纸 " + Path.GetFileName(s.Drawing)
+                : s.MissingDrawing != null ? "；未找到调试图纸 " + SafeName(s.MissingDrawing) + "，改为打开新图" : "";
+            string en = s.Drawing != null ? " and " + Path.GetFileName(s.Drawing) + " will be opened"
+                : s.MissingDrawing != null ? "; debug drawing " + SafeName(s.MissingDrawing) + " not found, a new drawing is used" : "";
+            return "检测到 " + s.Host + " 调试环境，启动后自动 NETLOAD " + dll + zh
+                + (s.AgentBoot != null ? "；已按适配包「" + s.Adapter + "」加载 AI 动作代理" : "")
+                + (s.FileDiaFixed.Count > 0 ? "；已把系统变量 FILEDIA 从 0 改为 1" : "")
+                + " / " + s.Host + " debugging detected; " + dll + " will be NETLOADed after start" + en
+                + (s.AgentBoot != null ? "; the AI action agent is loaded for adapter " + s.Adapter : "")
+                + (s.FileDiaFixed.Count > 0 ? "; system variable FILEDIA was changed from 0 to 1" : "")
+                + (s.AgentNote != null ? "（" + s.AgentNote + "）" : "");
+        }
+
+        private sealed class AgentPlan
+        {
+            public List<string> Dlls = new List<string>();
+            public List<string> Commands = new List<string>();
+            public CadAgent.CadAdapter Adapter;
+            public string Boot, Note, ExtraArgs;
+        }
+
+        /// <summary>
+        /// 按项目适配包准备附加 DLL、启动命令与 AI 动作代理引导 DLL；没有匹配的适配包时只加载项目 DLL（原行为）。
+        /// Prepares extra DLLs, startup commands and the AI action agent boot DLL from the project adapter; without a matching adapter only the project DLL loads (previous behavior).
+        /// </summary>
+        private static AgentPlan PrepareAgent(VsInstance vs, string projectPath, string host, string program, string dll)
+        {
+            var plan = new AgentPlan();
+            try { plan.Adapter = CadAgent.CadAdapterStore.Match(new[] { vs.SolutionPath, projectPath }); }
+            catch (Exception ex) { plan.Note = "适配包读取失败 / Adapter load failed: " + ex.Message; }
+            var a = plan.Adapter;
+            var launch = a?.Launch;
+            foreach (var raw in launch?.ExtraDlls ?? new List<string>())
+            {
+                if (string.IsNullOrWhiteSpace(raw)) continue;
+                string p;
+                try { p = Path.GetFullPath(Environment.ExpandEnvironmentVariables(raw.Trim().Trim('"'))); } catch { p = null; }
+                if (p != null && File.Exists(p) && p.IndexOf('"') < 0) plan.Dlls.Add(p);
+                else plan.Note = "附加 DLL 不存在 / Extra DLL missing: " + SafeName(raw);
+            }
+            plan.Dlls.Add(dll);
+            if (a == null) return plan;
+            string conn = null;
+            try { conn = AgentConnection?.Invoke(); } catch (Exception ex) { plan.Note = "代理连接文件写入失败 / Agent connection file failed: " + ex.Message; }
+            if (conn != null)
+            {
+                string cadExe = string.IsNullOrWhiteSpace(launch?.CadPath) ? program : launch.CadPath;
+                var boot = CadAgent.CadBootCompiler.Compile(new CadAgent.CadBootOptions
+                {
+                    CadExe = cadExe, Host = host, Adapter = a, ConnectionFile = conn, Solution = vs.SolutionPath,
+                });
+                if (boot.Ok) { plan.Boot = boot.BootDll; plan.Dlls.Add(boot.BootDll); }
+                else plan.Note = "AI 动作代理未加载 / AI action agent not loaded: " + boot.Error;
+                AppLog.Write("cad.log", "引导 DLL / Boot DLL adapter=" + a.Name + " ok=" + boot.Ok + (boot.Cached ? " cached" : "") + (boot.Error == null ? "" : " error=" + boot.Error));
+            }
+            foreach (var cmd in launch?.StartupCommands ?? new List<string>())
+                if (!string.IsNullOrWhiteSpace(cmd)) plan.Commands.Add(cmd.Trim());
+            plan.ExtraArgs = string.IsNullOrWhiteSpace(launch?.Args) ? null : launch.Args.Trim();
+            return plan;
+        }
 
         private static void WriteScript(string path, string content)
         {

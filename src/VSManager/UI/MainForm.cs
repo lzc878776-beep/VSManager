@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost, ITaskInstanceHost, ITaskRoundHost, IAgentTaskReplyHost
+	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost, ITaskInstanceHost, ITaskRoundHost, IAgentTaskReplyHost, IScopedAgentNotifyHost
 	{
 		private readonly AppSettings _settings = AppSettings.Load();
 		private volatile List<VsInstance> _instances = new List<VsInstance>();
@@ -115,12 +115,15 @@ namespace VSManager
 			// 归档目录需在任务清单 / 发送日志开始写入前确定；保存一次以确保 settings.json 中有 ArchiveRoot
 			_archiveWarning = Archive.Configure(_settings);
 			VsCadDebug.Enabled = _settings.CadDebugAutoLoad;
+			VsCadDebug.DrawingLookup = solution => _settings.GetCadDrawing(solution);
+			VsCadDebug.AgentConnection = () => CadActionBroker.WriteConnection(_settings);
 			_settings.Save();
 
 			_voice = new DoubaoVoice(() => _settings);
 			_voice.Failed += err => SafeInvoke(() => SetStatus("豆包语音播报失败：" + err));
 			_voice.Notice += msg => SafeInvoke(() => SetStatus("🔊 " + msg));
 			_agent = new AgentService(this, () => _settings);
+			_mcp.Apply(_settings.McpEnabled, _settings.McpServersJson);
 			_agent.NotebookPromptSource = () => NotebookAgentPrompt.Load(new NotebookStore());
 			_agentSupervisor = new AgentSupervisor(_agent, () => _settings);
 			_agentSupervisor.Notice += msg => SafeInvoke(() =>
@@ -162,6 +165,8 @@ namespace VSManager
 			_web = new WebRemote(this, () => _settings);
 			_web.StatusChanged += () => SafeInvoke(() => _header.Invalidate());
 			_chatSvc.RemoteActive = () => _web.Active;
+			// 后台刷新已安装的 AI Skill，使新命令无需重新安装即可使用 / Refresh installed AI Skills in the background so new commands work without reinstalling
+			Task.Run(() => { try { SkillInstaller.RefreshInstalled(); } catch (Exception) { } });
 
 			_monitor = new CopilotMonitor(() => _instances, () => _settings);
 			_monitor.StateChanged += vs => SafeInvoke(() => UpdateRow(vs));
@@ -276,8 +281,11 @@ namespace VSManager
 			_list.SelectedIndexChanged += (s, e) => BeginInvoke(new Action(OnSelectionChanged));
 			_list.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left && _settings.ClickToActivate && ItemAt(e.Location) is VsInstance v) ActivateVs(v); };
 			_list.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left && ItemAt(e.Location) is VsInstance v) ActivateVs(v); };
+			_list.MouseDown += (s, e) => NoteUserNavigation("用户在 VS 列表中选择 / user picked in the VS list");
 			_list.KeyDown += (s, e) =>
 			{
+				if (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.Home || e.KeyCode == Keys.End || e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown)
+					NoteUserNavigation("用户用键盘在 VS 列表中选择 / user moved in the VS list with the keyboard");
 				if (e.KeyCode == Keys.F2) RenameSelected();
 				else if (e.KeyCode == Keys.Enter && Selected != null) ActivateVs(Selected);
 			};
@@ -295,7 +303,7 @@ namespace VSManager
 			// AI 总控助手：侧边栏卡片 + 主区域对话
 			_agentCard.Dock = DockStyle.Top;
 			_agentCard.Bind(_agent);
-			_agentCard.Click += (s, e) => ShowAgent(true);
+			_agentCard.Click += (s, e) => { NoteUserNavigation("用户点击 AI 总控卡片 / user clicked the AI card"); ShowAgent(true); };
 			_tips.SetToolTip(_agentCard, "AI 总控助手：统一管理所有 VS、发布任务");
 			_agentPanel.Dock = DockStyle.Fill;
 			_agentPanel.Visible = false;
@@ -305,6 +313,7 @@ namespace VSManager
 			try { _agent.RestoreConversation(); }
 			catch (Exception ex) { AppLog.Error(AgentService.LogFile, "接续上次对话失败 / Failed to resume the previous conversation", ex); }
 			_agentPanel.SettingsRequested += OpenSettings;
+			_agentPanel.CloseCsTabsRequested = CloseCsTabsInAllVsAsync;
 			_taskPanel.SetReleaseLevel(_settings.ReleaseLevel);
 			_taskPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
 
@@ -385,6 +394,10 @@ namespace VSManager
 				_taskPanel.RefreshItems();
 			};
 			_testPanel.ActionRequested += OnTaskAction;
+			// 测试清单分为 AI 可验证 / 必须人工验证两类；AI 验证与自验证循环 / Checklist split into AI-verifiable and manual items; AI verify and the self-verify loop
+			_testPanel.SetSelfVerify(_settings.AgentSelfVerify);
+			_testPanel.AiVerifyRequested += () => RequestAiVerify(false);
+			_testPanel.SelfVerifyToggled += SetSelfVerifyLoop;
 			// 主对话栏与测试清单之间的分隔条：拖动调整测试清单宽度并保存 / Splitter between the main chat and the test checklist: drag to resize, width is saved
 			if (_settings.TestChecklistWidth > 0) _testPanel.Width = Math.Max(Dpi.S(200), _settings.TestChecklistWidth);
 			var testSplitter = new Splitter { Dock = DockStyle.Right, Width = Dpi.S(4), BackColor = Theme.Background, MinSize = Dpi.S(200), MinExtra = Dpi.S(360), Visible = _testPanel.Visible };
@@ -1022,8 +1035,9 @@ namespace VSManager
 
 		#region Copilot 对话
 
-		/// <summary>在主区域显示 AI 总控助手（true）或 VS 对话（false）。</summary>
-		private bool ShowAgent(bool on)
+		/// <summary>在主区域显示 AI 总控助手（true）或 VS 对话（false）。/ Shows the AI assistant (true) or the VS chat (false) in the main area.</summary>
+		/// <param name="source">切换来源，记入页面切换记录供 get_window_state 对照；null 时沿用最近一次用户操作或「程序」。/ Source of the switch, recorded for get_window_state; null uses the latest user action or "program".</param>
+		private bool ShowAgent(bool on, string source = null)
 		{
 			on &= _settings.AgentEnabled;
 			if (_workspaceNavigation != null && !_workspaceNavigation.Select(on ? WorkspacePage.Agent : WorkspacePage.VisualStudio))
@@ -1031,6 +1045,7 @@ namespace VSManager
 				SetStatus("笔记未保存，无法切换，请查看笔记本底部的错误。 / Note not saved; check the notebook status before switching.");
 				return false;
 			}
+			if (_agentMode != on) NotePageChange(on, source);
 			_agentMode = on;
 			_agentCard.Selected = on;
 			if (on && _list.SelectedIndex >= 0) { _list.ClearSelected(); OnSelectionChanged(); }
@@ -1326,6 +1341,8 @@ namespace VSManager
 			if (_sending) { SendLog.Event(NameOf(v), "发送被拒绝：另一条消息正在发送"); return "另一条消息正在发送，请稍后再试"; }
 			if (v.Copilot == CopilotState.Busy) { SendLog.Event(NameOf(v), "发送被拒绝：Copilot 状态为运行中"); return "Copilot 正在运行，请等待完成或先停止"; }
 			_sending = true;
+			// 在文档清理等任何 DTE 调用之前记录前台窗口 / Record the foreground before any DTE call such as the document cleanup
+			var foreground = ForegroundKeeper.Capture();
 			if (queueGuard == null && !string.IsNullOrWhiteSpace(text))
 			{
 				_recentSends.RemoveAll(x => (DateTime.Now - x.At).TotalMinutes > 30);
@@ -1360,6 +1377,7 @@ namespace VSManager
 				_chatSvc.Paused = false;
 				_sending = false;
 				_chat.SetSending(false);
+				RestoreForeground(foreground, v);
 			}
 			if (SendRetryPolicy.IsDelivered(r))
 			{
@@ -1371,6 +1389,22 @@ namespace VSManager
 			UpdateChatHeader();
 			_chatSvc.Poke();
 			return r;
+		}
+
+		/// <summary>
+		/// 操作结束后，若前台被这些 VS 抢走则切回操作前的窗口，并记入发送日志。必须在界面线程调用。
+		/// After an operation, switches back to the previous window if these VS took the foreground, and logs it. Call on the UI thread.
+		/// </summary>
+		private void RestoreForeground(ForegroundKeeper keeper, params VsInstance[] vs)
+		{
+			if (keeper == null || IsDisposed || !IsHandleCreated) return;
+			try
+			{
+				var targets = vs.Where(x => x != null).ToArray();
+				string r = keeper.RestoreIfStolen(targets.Select(x => x.Pid), Handle, TopMost);
+				if (r != null) SendLog.Event(targets.Length == 1 ? NameOf(targets[0]) : "VSManager", r);
+			}
+			catch (Exception ex) { SendLog.Event("VSManager", "切回前台窗口失败 / Failed to restore the foreground window：" + ex.Message); }
 		}
 
 		#region IRemoteHost（网页远程控制，均可在后台线程调用）
@@ -1441,10 +1475,13 @@ namespace VSManager
 
 		/// <summary>所有文本任务只入队，由计时调度发布。/ All text tasks enqueue only; the timer-driven dispatcher publishes them.</summary>
 		/// <summary>为新任务记录题目（已有题目的复用任务保持不变）。/ Records the title on a task that has none yet.</summary>
+		/// <remarks>题目自动补全为「项目名 · 事项」；未提供题目时取正文首句。/ The title is completed as "Project · item"; without one the first sentence of the text is used.</remarks>
 		private void ApplyTitle(QueuedTask q, string title)
 		{
-			if (q == null || title == null || !string.IsNullOrEmpty(q.Title)) return;
-			q.Title = title;
+			if (q == null || !string.IsNullOrEmpty(q.Title)) return;
+			string full = TaskProjectContext.TitleWithProject(TaskProjectContext.ProjectName(q.VsKey, q.VsName), title, q.Text);
+			if (full == null) return;
+			q.Title = full;
 			_tasks.Commit();
 		}
 
@@ -1532,6 +1569,8 @@ namespace VSManager
 			int taskText = AppSettings.ClampQuota(nameof(AppSettings.AgentMaxTaskText), _settings.AgentMaxTaskText);
 			var items = _tasks.Items.Where(t => QueueStatus.Active(t.Status))
 				.Concat(_tasks.Items.Where(t => t.IsWorktreeMerge && !QueueStatus.Delivered(t.Status)))
+				// 待验证任务不论新旧都列出，避免测试清单只显示最近几条 / Tasks awaiting verification are always listed so older checklists are not dropped
+				.Concat(_tasks.Items.Where(TaskTestChecklist.Pending))
 				.Concat(_tasks.Items.Where(t => !QueueStatus.Active(t.Status)).OrderByDescending(t => t.Finished ?? t.Created).Take(recent)).Distinct().ToList();
 			if (items.Count == 0) return "任务清单为空。";
 			var sb = new System.Text.StringBuilder();
@@ -1545,8 +1584,9 @@ namespace VSManager
 			{
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(_dispatcher.StartStateText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
 				if (!string.IsNullOrEmpty(t.Result) && QueueStatus.Delivered(t.Status)) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
-				if (TaskTestChecklist.Pending(t) && t.TestItems != null && t.TestItems.Length > 0)
-					sb.Append(" | 测试清单 / Test checklist: ").Append(string.Join("; ", t.TestItems.Where(i => i != null).Select(i => (i.Checked ? "[x] " : "[ ] ") + i.Text)));
+				var checks = TaskTestChecklist.Ensure(t);
+				if (checks.Length > 0)
+					sb.Append(" | 测试清单 / Test checklist: ").Append(string.Join("; ", checks.Select((i, n) => i == null ? null : (n + 1) + ". " + (i.Checked ? "[x] " : "[ ] ") + (TaskTestChecklist.IsAi(i) ? "[AI] " : "[人工] ") + i.Text).Where(s => s != null)));
 				if (!string.IsNullOrEmpty(t.Error) && !QueueStatus.Delivered(t.Status)) sb.Append(" | 错误：").Append(t.Error);
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason)) sb.Append(" | 失败原因 / Reason：").Append(Clip(t.FailureReason, 400));
 				if (TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote)) sb.Append(" | 待处理 / Pending：").Append(Clip(t.PendingNote, 400));
@@ -1725,8 +1765,12 @@ namespace VSManager
 				return;
 			}
 			_settings.Save();
+			RestartUi.Save(CaptureUiState());
+			// 尚未处理的通知（如其他 VS 的任务完成通知）带到新进程补发 / Carry unprocessed notices (e.g. other VS completions) to the new process
+			string noticeErr = CarriedNotices.Save(_agent.PendingNotices(), DateTime.UtcNow);
+			if (noticeErr != null) AppLog.Write(ProcessWatchdog.LogFile, "待处理通知未保存 / Queued notices not saved: " + noticeErr);
 			string err = ProcessWatchdog.LaunchReplacement();
-			if (err != null) { SetStatus("重启失败 / Restart failed：" + err); return; }
+			if (err != null) { RestartUi.Discard(); CarriedNotices.Discard(); SetStatus("重启失败 / Restart failed：" + err); return; }
 			ProcessWatchdog.MarkCleanExit();
 			_exiting = true;
 			Close();
@@ -1766,7 +1810,9 @@ namespace VSManager
 				VoiceTest = (key, res, spk, text, en) => _voice.TestAsync(key, res, spk, text, en),
 				AgentTest = AgentService.TestAsync,
 				OpenSolutions = () => OpenSolutionRegistry(Form.ActiveForm ?? this),
-				CleanAttachments = () => RunAttachmentCleanup(true)
+				CleanAttachments = () => RunAttachmentCleanup(true),
+				McpStatus = () => _mcp.StatusText(),
+				McpReconnect = () => _ = _mcp.Reconnect()
 			};
 			using (var f = new SettingsForm(_settings, v == null ? null : NameOf(v), acts))
 			{
@@ -1787,6 +1833,8 @@ namespace VSManager
 			if (archiveWarning != null && archiveWarning != _archiveWarning) SetStatus("⚠ " + archiveWarning);
 			_archiveWarning = archiveWarning;
 			VsCadDebug.Enabled = _settings.CadDebugAutoLoad;
+			RefreshCadAgentConnection();
+			_mcp.Apply(_settings.McpEnabled, _settings.McpServersJson);
 			if (!_settings.MonitorCopilot)
 				foreach (var v in _instances) v.Copilot = CopilotState.Unknown;
 			UpdateChatHint();
@@ -2054,7 +2102,7 @@ namespace VSManager
 
 		/// <summary>该 VS 当前能否接收新任务：Copilot 空闲、没有正在发送或刚送达等待响应的消息、不是刚刚完成。</summary>
 		private bool CanDispatch(VsInstance v) =>
-			v.Copilot != CopilotState.Busy && !v.Building
+			_selfRestart == null && v.Copilot != CopilotState.Busy && !v.Building
 			&& !(_awaitReply.TryGetValue(v.Pid, out var until) && DateTime.Now < until)
 			&& !_pendingSend.ContainsKey(v.Pid)
 			&& !(v.CompletedAt.HasValue && (DateTime.Now - v.CompletedAt.Value).TotalSeconds < 3);
@@ -2227,6 +2275,7 @@ namespace VSManager
 		void ITaskDispatchHost.SetStatus(string text) => SetStatus(text);
 		void ITaskDispatchHost.LogEvent(string vsName, string text) => SendLog.Event(vsName, text);
 		void ITaskDispatchHost.NotifyAgent(string title, string body) => _agent.Notify(title, body);
+		void IScopedAgentNotifyHost.NotifyAgent(string scope, string title, string body) => _agent.Notify(title, body, scope ?? "");
 		void ITaskDispatchHost.QueueActivityChanged(bool anyActive)
 		{
 			_taskTimer.Enabled = anyActive && _dispatcher.HasDispatchActivity;
@@ -2456,6 +2505,7 @@ namespace VSManager
 		private async void OnCopilotCompleted(VsInstance v, TimeSpan dur)
 		{
 			SettleExternals(v);
+			if (DeferCompletionForRestart(v, dur)) return;
 			var queued = _tasks.Items.FirstOrDefault(x => x.Status == QueueStatus.Running
 				&& (x.HasExplicitTarget ? x.MatchesExplicitTarget(v) : x.VsKey == v.Key && FindTaskVs(x) == v));
 			if (queued != null)
@@ -2705,9 +2755,15 @@ namespace VSManager
 			_taskPanel.SetQueuePaused(_dispatcher.IsPaused);
 			if (_dispatcher.IsPaused) SetStatus(TaskDispatcher.PausedText);
 			_dispatcher.ApplyAutomaticStart();
+			// 按测试项文字重判已有清单的可验证性 / Re-judge the verifiability of existing checklists from their text
+			RejudgeChecklists();
+			// 自测重启后恢复本会话的启动授权并续跑测试 / After a self-test restart, restore session grants and resume the tests
+			ResumeAfterSelfRestart();
 			UpdateTaskTimer();
 			_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
 			_taskPanel.SetCollapsed(false); _testPanel.SetSuppressed(false);
+			// 重启前的页面、选中的 VS 与输入草稿 / Page, selected VS and input draft from before the restart
+			ApplyRestoredUi();
 		}
 
 		protected override void OnResize(EventArgs e)
@@ -2765,6 +2821,7 @@ namespace VSManager
 			_voice.Dispose();
 			_agent.Dispose();
 			_noteAgent?.Dispose();
+			_mcp.Dispose();
 			CleanupVoice();
 			for (int i = 1; i <= 9; i++) Native.UnregisterHotKey(Handle, i);
 			Native.UnregisterHotKey(Handle, ShowHotkeyId);

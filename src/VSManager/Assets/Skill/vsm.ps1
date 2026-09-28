@@ -12,6 +12,7 @@
 	vsm.ps1 new    <vs>
 	vsm.ps1 dock
 	vsm.ps1 note   <vs> ["<role description>"] [-Clear]
+	vsm.ps1 screenshot <vs> [-Out <file.png>]
   <vs> = index shown by "list" (1, 2, ...), "#2", a PID via -VsPid, or part of the VS name.
 #>
 param(
@@ -23,7 +24,8 @@ param(
 	[int]$Timeout = 600,
 	[int]$Max = 50,
 	[switch]$Json,
-	[switch]$Clear
+	[switch]$Clear,
+	[string]$Out
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,5 +143,20 @@ switch ($Command.ToLowerInvariant()) {
 		foreach ($k in $q.Keys) { $body[$k] = $q[$k] }
 		Emit (Call "note" $null $body)
 	}
-	default { Write-Error "Unknown command '$Command'. Commands: list send wait reply chat debug errors stop new dock note"; exit 2 }
+	"screenshot" {
+		# 截图保存为 PNG 并输出路径；默认写入 %TEMP%\VSManager\screenshots，只保留最近 20 张。
+		# Saves the PNG and prints its path; defaults to %TEMP%\VSManager\screenshots and keeps the latest 20.
+		$q = Target
+		$r = Call "screenshot" $q $null 330
+		if ($r.ok -eq $false) { Write-Output ("ERROR: " + $r.msg); exit 1 }
+		$dir = Join-Path $env:TEMP "VSManager\screenshots"
+		$file = if ($Out) { $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out) } else { Join-Path $dir ("vs-" + (Get-Date -Format "yyyyMMdd-HHmmss-fff") + ".png") }
+		$parent = Split-Path $file -Parent
+		if ($parent -and -not (Test-Path $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+		[IO.File]::WriteAllBytes($file, [Convert]::FromBase64String($r.png))
+		if (-not $Out) { Get-ChildItem $dir -Filter "vs-*.png" | Sort-Object LastWriteTime -Descending | Select-Object -Skip 20 | Remove-Item -Force -ErrorAction SilentlyContinue }
+		if ($Json) { [pscustomobject]@{ ok = $true; name = $r.name; bytes = $r.bytes; file = $file } | ConvertTo-Json; break }
+		"Screenshot of '$($r.name)' saved: $file"
+	}
+	default { Write-Error "Unknown command '$Command'. Commands: list send wait reply chat debug errors stop new dock note screenshot"; exit 2 }
 }

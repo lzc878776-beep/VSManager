@@ -78,6 +78,48 @@ namespace VSManager
             _host.QueueActivityChanged(HasDispatchActivity);
         }
 
+        /// <summary>是否有任务正在收尾或合并（此时不宜重启）。/ Whether a task is being finished or integrated (not a good moment to restart).</summary>
+        public bool IsFinishingWork => _finishing.Count > 0 || _integrating.Count > 0;
+
+        /// <summary>
+        /// 自测重启前记录本会话的启动授权（全部 / AI 自动、单任务手动授权、流程是否已启动）。
+        /// Captures this session's start grants (automatic, per-task manual, workflow started) before a self-test restart.
+        /// </summary>
+        public void CaptureGrants(SelfRestartHandoff handoff)
+        {
+            if (handoff == null) return;
+            handoff.WorkflowStarted = IsStarted;
+            handoff.AutoGrants = _automatic.Where(g => _tasks.Find(g.Key.Id) == g.Key && QueueStatus.Active(g.Key.Status))
+                .Select(g => new SelfRestartGrant { Id = g.Key.Id, All = g.Value }).ToList();
+            handoff.ManualGrants = _manual.Where(t => _tasks.Find(t.Id) == t && QueueStatus.Active(t.Status)).Select(t => t.Id).ToList();
+        }
+
+        /// <summary>
+        /// 自测重启后恢复启动授权：只恢复仍在活动队列中的任务，不改变任务来源、状态与顺序；返回恢复的授权数。
+        /// Restores start grants after a self-test restart: only tasks still active are restored, without changing their source,
+        /// state or order; returns how many grants were restored.
+        /// </summary>
+        public int RestoreGrants(SelfRestartHandoff handoff)
+        {
+            if (handoff == null) return 0;
+            int n = 0;
+            foreach (var g in handoff.AutoGrants ?? new List<SelfRestartGrant>())
+            {
+                var task = g == null ? null : _tasks.Find(g.Id);
+                if (task == null || !QueueStatus.Active(task.Status) || _automatic.ContainsKey(task)) continue;
+                _automatic.Add(task, g.All);
+                n++;
+            }
+            foreach (int id in handoff.ManualGrants ?? new List<int>())
+            {
+                var task = _tasks.Find(id);
+                if (task != null && QueueStatus.Active(task.Status) && _manual.Add(task)) n++;
+            }
+            if (handoff.WorkflowStarted) Start();
+            _host.QueueActivityChanged(HasDispatchActivity);
+            return n;
+        }
+
         // 暂存前序未获启动资格时仍按实际目标阻塞；只映射副本，不推进其状态。/ Parked predecessors still block by resolved target; map copies without advancing their state.
         private QueuedTask DispatchBlocker(QueuedTask task)
         {

@@ -132,6 +132,12 @@ namespace VSManager
             try { _cleanExit?.Set(); } catch { }
         }
 
+        /// <summary>撤销「正常退出」信号（计划中的重启未发生时调用），看门狗恢复守护。/ Withdraws the clean-exit signal (when a planned restart did not happen) so the watchdog guards again.</summary>
+        public static void ClearCleanExit()
+        {
+            try { _cleanExit?.Reset(); } catch { }
+        }
+
         /// <summary>
         /// 启动一个新实例替换当前实例（新实例会等待当前进程退出后再启动）。返回错误信息，成功时返回 null。
         /// Starts a new instance to replace this one (it waits for this process to exit first). Returns an error or null.

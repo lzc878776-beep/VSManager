@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
@@ -106,6 +106,44 @@ namespace VSManager.Tests
             Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(3, "失败"));
             Assert.AreEqual(SendDecision.Fail, SendRetryPolicy.Decide(4, "失败"));
             Assert.AreEqual(SendDecision.Delivered, SendRetryPolicy.Decide(3, "已发送"));
+        }
+
+        [TestMethod]
+        public void PaneNotReady_RetriesWithPauseThenStopsWithDiagnosis()
+        {
+            // 窗格未就绪：诊断 → 修复 → 间隔重试，达到上限即失败并保留诊断原因，不无限重发
+            // Pane not ready: diagnose → repair → paused retry; at the cap it fails keeping the diagnosis instead of resending forever
+            var t = Waiting();
+            string r = SendRetryPolicy.PaneNotReadyPrefix + CopilotPaneModes.Diagnose(CopilotPaneMode.History);
+            Assert.IsTrue(SendRetryPolicy.IsBlocked(r));
+            Assert.IsFalse(ManualChatProtection.IsWait(r));
+            for (int round = 1; round < SendRetryPolicy.MaxPaneRepairs; round++)
+            {
+                TaskStateMachine.BeginSend(t, "A");
+                Assert.AreEqual(SendDecision.Retry, TaskStateMachine.ApplySendResult(t, r, T0));
+                Assert.AreEqual(QueueStatus.Waiting, t.Status);
+                Assert.AreEqual(T0 + SendRetryPolicy.PaneRepairDelay(round), t.NextTry);
+                Assert.IsTrue(t.NextTry > T0 + SendRetryPolicy.BlockedRetryDelay);
+            }
+            TaskStateMachine.BeginSend(t, "A");
+            Assert.AreEqual(SendDecision.Fail, TaskStateMachine.ApplySendResult(t, r, T0));
+            Assert.AreEqual(QueueStatus.Failed, t.Status);
+            StringAssert.Contains(t.Error, "返回");
+            StringAssert.Contains(t.Error, "停止自动重发");
+            Assert.AreEqual(0, t.PaneRepairRounds);
+        }
+
+        [TestMethod]
+        public void PaneNotReady_DeliveryResetsRepairRounds()
+        {
+            var t = Waiting();
+            TaskStateMachine.BeginSend(t, "A");
+            TaskStateMachine.ApplySendResult(t, SendRetryPolicy.PaneNotReadyPrefix + "x", T0);
+            Assert.AreEqual(1, t.PaneRepairRounds);
+            t.NextTry = DateTime.MinValue;
+            TaskStateMachine.BeginSend(t, "A");
+            Assert.AreEqual(SendDecision.Delivered, TaskStateMachine.ApplySendResult(t, "已发送", T0));
+            Assert.AreEqual(0, t.PaneRepairRounds);
         }
 
         [TestMethod]
@@ -343,6 +381,10 @@ namespace VSManager.Tests
             Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, "Completed\r\n" + oldReceipt, out _));
             StringAssert.Contains(TaskStateMachine.DispatchText(t), TaskStateMachine.SuccessReceipt(t));
             StringAssert.Contains(TaskStateMachine.DispatchText(t), TaskStateMachine.FailureReceipt(t));
+            // 每个发布的任务都强调按自动推荐的提示词执行，且位于回执规则之前 / Every task stresses following suggested prompts, before the receipt rules
+            string text = TaskStateMachine.DispatchText(t);
+            StringAssert.Contains(text, "请按自动推荐的提示词执行");
+            Assert.IsTrue(text.IndexOf(TaskStateMachine.SuggestedPromptRule) < text.IndexOf("任务队列回执"));
         }
 
         [TestMethod]

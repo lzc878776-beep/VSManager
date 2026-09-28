@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ai.exe：不持有模型的动作序列执行器，逐条经 VSManager 本地 Web API 下发 CAD 动作并汇总结果。 -->
+  <!-- ai.exe: a model-free action-sequence executor that sends CAD actions one by one through VSManager's local Web API and summarizes the results. -->
+  <PropertyGroup>
+	<OutputType>Exe</OutputType>
+	<TargetFramework>net48</TargetFramework>
+	<LangVersion>latest</LangVersion>
+	<AssemblyName>ai</AssemblyName>
+	<RootNamespace>VSManager.AiHost</RootNamespace>
+	<GenerateDocumentationFile>false</GenerateDocumentationFile>
+	<Version>1.0.0</Version>
+	<Prefer32Bit>false</Prefer32Bit>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<ProjectReference Include="..\VSManager.CadAgent\VSManager.CadAgent.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<InternalsVisibleTo Include="VSManager" />
+	<InternalsVisibleTo Include="VSManager.Tests" />
+  </ItemGroup>
+
+</Project>

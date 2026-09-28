@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- CAD 侧动作代理与动作协议（不引用任何 CAD 程序集，由 VSManager 在调试时按 CAD 版本即时编译引导 DLL）。 -->
+  <!-- CAD-side action agent and action protocol (references no CAD assembly; VSManager compiles a boot DLL for the CAD version when debugging). -->
+  <PropertyGroup>
+	<TargetFramework>net48</TargetFramework>
+	<LangVersion>latest</LangVersion>
+	<AssemblyName>VSManager.CadAgent</AssemblyName>
+	<RootNamespace>VSManager.CadAgent</RootNamespace>
+	<GenerateDocumentationFile>false</GenerateDocumentationFile>
+	<Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<Reference Include="System.Runtime.Serialization" />
+	<Reference Include="System.Drawing" />
+	<Reference Include="System.Windows.Forms" />
+  </ItemGroup>
+
+  <ItemGroup>
+	<InternalsVisibleTo Include="VSManager" />
+	<InternalsVisibleTo Include="VSManager.Tests" />
+	<InternalsVisibleTo Include="ai" />
+  </ItemGroup>
+
+</Project>

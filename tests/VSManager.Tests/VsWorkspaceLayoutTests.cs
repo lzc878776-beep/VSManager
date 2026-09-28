@@ -37,12 +37,33 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Arrange_SolutionExplorer_IsCapturedMovedAndRestored()
+        {
+            var backend = new FakeBackend();
+            var engine = new WorkspaceLayoutEngine(backend);
+            var target = Target();
+            target.SolutionExplorerBounds = new Rectangle(-400, 930, 400, 200);
+            string result = engine.Arrange(new[] { target }, true, true, "chat", true);
+            CollectionAssert.AreEqual(new[] { "capture-main", "capture-Copilot", "capture-Output", "capture-ErrorList", "capture-SolutionExplorer",
+                "move-main", "move-Copilot", "move-Output", "move-ErrorList", "move-SolutionExplorer" }, backend.Events);
+            StringAssert.Contains(result, "SolutionExplorer: 已验证 / verified");
+            Assert.IsTrue(backend.Panes[WorkspacePane.SolutionExplorer].Floating);
+            engine.Restore(new[] { target.Vs });
+            Assert.IsFalse(backend.Panes[WorkspacePane.SolutionExplorer].Floating);
+            Assert.IsTrue(backend.Panes[WorkspacePane.SolutionExplorer].AutoHides);
+            Assert.AreEqual(0, engine.SavedCount);
+            Assert.AreEqual(VsService.SolutionExplorerKind, WindowsWorkspaceBackend.KindOf(WorkspacePane.SolutionExplorer));
+        }
+
+        [TestMethod]
         public void Arrange_OptionalPanesAreNotReadOrChanged()
         {
             var backend = new FakeBackend();
             var engine = new WorkspaceLayoutEngine(backend);
-            engine.Arrange(new[] { Target() }, false, false, null);
-            Assert.IsFalse(backend.Events.Any(e => e.Contains("Output") || e.Contains("ErrorList")));
+            var target = Target();
+            target.SolutionExplorerBounds = new Rectangle(-400, 930, 400, 200);
+            engine.Arrange(new[] { target }, false, false, null);
+            Assert.IsFalse(backend.Events.Any(e => e.Contains("Output") || e.Contains("ErrorList") || e.Contains("SolutionExplorer")));
         }
 
         [TestMethod]
@@ -194,12 +215,26 @@ namespace VSManager.Tests
             var backend = new FakeBackend();
             var engine = new WorkspaceLayoutEngine(backend);
             var target = Target();
-            target.CopilotBounds = Rectangle.Empty;
+            target.CopilotBounds = new Rectangle(10, 10, 0, 100);
             string result = engine.Arrange(new[] { target, target }, false, false, null);
             StringAssert.Contains(result, "invalid physical bounds");
             StringAssert.Contains(result, "duplicate target");
             Assert.AreEqual(1, backend.Events.Count(e => e == "move-main"));
             Assert.IsFalse(backend.Events.Contains("move-Copilot"));
+        }
+
+        [TestMethod]
+        public void EmptyPaneBounds_LeavePaneUntouched()
+        {
+            var backend = new FakeBackend();
+            var engine = new WorkspaceLayoutEngine(backend);
+            var target = Target();
+            target.CopilotBounds = Rectangle.Empty;
+            target.OutputBounds = Rectangle.Empty;
+            string result = engine.Arrange(new[] { target }, true, false, null);
+            Assert.AreEqual(1, backend.Events.Count(e => e == "move-main"));
+            Assert.IsFalse(backend.Events.Any(e => e.StartsWith("move-", StringComparison.Ordinal) && e != "move-main"));
+            Assert.IsFalse(result.Contains("invalid physical bounds"));
         }
 
         [TestMethod]
@@ -399,7 +434,7 @@ namespace VSManager.Tests
             {
                 foreach (WorkspacePane pane in Enum.GetValues(typeof(WorkspacePane)))
                     Panes.Add(pane, new WorkspacePaneSnapshot { Pane = pane, AutoHides = true, Linkable = false,
-                        Kind = pane == WorkspacePane.Output ? VsService.OutputKind : WindowsWorkspaceBackend.ErrorListKind });
+                        Kind = WindowsWorkspaceBackend.KindOf(pane) });
             }
 
             public void Validate(VsInstance vs)

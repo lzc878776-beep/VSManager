@@ -35,6 +35,15 @@
 	<EmbeddedResource Include="Assets\Skill\vsm.ps1" LogicalName="VSManager.Skill.vsm.ps1" />
   </ItemGroup>
 
+  <!-- CAD 动作代理与 ai.exe 执行器随 VSManager.exe 输出；适配包模板复制到 adapters\_template。 / The CAD action agent and the ai.exe executor ship next to VSManager.exe; the adapter template is copied to adapters\_template. -->
+  <ItemGroup>
+	<ProjectReference Include="..\VSManager.CadAgent\VSManager.CadAgent.csproj" />
+	<ProjectReference Include="..\VSManager.AiHost\VSManager.AiHost.csproj" />
+	<None Include="..\..\adapters\**\*" LinkBase="adapters" CopyToOutputDirectory="PreserveNewest" />
+	<!-- 验证接口 SDK 源文件复制到 sdk\，供目标项目嵌入。 / The verification SDK source is copied to sdk\ for target projects to embed. -->
+	<None Include="..\VSManager.CadAgent\Verify\VsmVerify.cs" Link="sdk\VsmVerify.cs" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
 	<InternalsVisibleTo Include="VSManager.Tests" />
   </ItemGroup>
