@@ -8,6 +8,7 @@ namespace VSManager.Tests
     [TestClass]
     public class PushCheckTests
     {
+        private TempDataFolder _data;
         private FakeClock _clock;
         private MemoryTaskStore _store;
         private TaskQueue _queue;
@@ -17,6 +18,8 @@ namespace VSManager.Tests
         [TestInitialize]
         public void Init()
         {
+            // 日志写入临时目录，不污染真实的 %APPDATA%\VSManager / Logs go to a temp folder, never the real %APPDATA%\VSManager
+            _data = new TempDataFolder();
             _clock = new FakeClock();
             _store = new MemoryTaskStore();
             _queue = new TaskQueue(new AppSettings(), _store, new RecordingArchive(), _clock.Func);
@@ -24,6 +27,9 @@ namespace VSManager.Tests
             _dispatcher = new TaskDispatcher(_queue, _host, _clock.Func) { PushDelay = _ => Task.CompletedTask };
             _dispatcher.Start();
         }
+
+        [TestCleanup]
+        public void Cleanup() => _data.Dispose();
 
         [TestMethod]
         public async Task Delivered_ReportsPushSuccess()
