@@ -84,6 +84,27 @@ namespace VSManager
         /// <summary>清空剪贴板。/ Clears the clipboard.</summary>
         public static void Clear(int timeoutMs = DefaultTimeoutMs) => Write(timeoutMs, new Tuple<uint, byte[]>[0]);
 
+        /// <summary>
+        /// 写入后先等 <paramref name="settleMs"/>（让监听程序开始读取），再等剪贴板连续两次无人打开，最长 <paramref name="timeoutMs"/>。
+        /// 返回是否确认已释放（超时也继续，由调用方的附件确认兜底）。
+        /// After a write, waits <paramref name="settleMs"/> (so listeners start reading), then until nobody has the clipboard
+        /// open for two consecutive polls, at most <paramref name="timeoutMs"/>. Returns whether release was confirmed (callers
+        /// continue on timeout; their attachment confirmation is the backstop).
+        /// </summary>
+        public static bool WaitReleased(int settleMs, int timeoutMs)
+        {
+            if (settleMs > 0) Thread.Sleep(settleMs);
+            var sw = Stopwatch.StartNew();
+            int free = 0;
+            while (sw.ElapsedMilliseconds < Math.Max(0, timeoutMs))
+            {
+                free = GetOpenClipboardWindow() == IntPtr.Zero ? free + 1 : 0;
+                if (free >= 2) return true;
+                Thread.Sleep(30);
+            }
+            return false;
+        }
+
         /// <summary>当前占用剪贴板的进程名（无法确定时为 null），用于诊断。/ Name of the process holding the clipboard open (null if unknown), for diagnostics.</summary>
         public static string Holder()
         {

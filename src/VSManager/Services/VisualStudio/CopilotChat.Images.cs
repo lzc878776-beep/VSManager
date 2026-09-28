@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -13,6 +13,17 @@ namespace VSManager
     public partial class CopilotChat
     {
         [DllImport("user32.dll")] private static extern uint GetClipboardSequenceNumber();
+
+        /// <summary>写入剪贴板后等监听程序开始读取的时长。/ Time for clipboard listeners to start reading after a write.</summary>
+        private const int ClipboardSettleMs = 150;
+        /// <summary>等待监听程序释放剪贴板的上限。/ Upper bound for waiting until listeners release the clipboard.</summary>
+        private const int ClipboardReleaseTimeoutMs = 2000;
+        /// <summary>单张图片等待附件出现的总时长。/ Total time to wait for one image's attachment.</summary>
+        private const int ImageConfirmTimeoutMs = 12000;
+        /// <summary>这么久仍没有新附件时补粘一次。/ Paste once more when no attachment has appeared after this long.</summary>
+        private const int RepasteAfterMs = 3000;
+        /// <summary>图片确认后、粘贴下一张前的间隔。/ Pause after an image is confirmed, before the next paste.</summary>
+        private const int ImageSettleMs = 300;
 
         private string SendImages(VsInstance vs, AutomationElement pane, AutomationElement edit,
             string text, IReadOnlyList<ChatImage> images, IntPtr returnTo)
@@ -115,49 +126,86 @@ namespace VSManager
                 if (!WaitText(edit, value => PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, value)), ConfirmTimeoutMs))
                     return "未能确认文字已粘贴，未发送（请检查 VS 草稿后重试）";
 
+                // 附件按数量确认：附件列表重新渲染时 UI 自动化的 RuntimeId 可能变化，按 ID 比对会把本程序刚粘贴的图片误判为「被改动」。
+                // Attachments are confirmed by count: UI Automation RuntimeIds may change when the chip list re-renders, so an ID
+                // comparison would mistake the images this program just pasted for "changed" ones.
+                int baseline = before.Count;
+                int confirmedCount = 0;
                 var addedIds = new HashSet<string>();
-                foreach (var image in images)
+                for (int index = 0; index < images.Count; index++)
                 {
+                    var image = images[index];
                     if (!Refocus(vs, edit) || GetClipboardSequenceNumber() != clipboardVersion)
                         return "焦点或剪贴板已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
                     using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
                     clipboardVersion = GetClipboardSequenceNumber();
+                    // 剪贴板监听程序收到变更后会短暂占用剪贴板；此时按 Ctrl+V，VS 读不到图片，这一张会被静默丢弃。
+                    // Clipboard listeners briefly hold the clipboard after a change; a Ctrl+V at that moment reads nothing and the image is silently dropped.
+                    bool released = DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
+                    if (GetClipboardSequenceNumber() != clipboardVersion)
+                    {
+                        using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
+                        clipboardVersion = GetClipboardSequenceNumber();
+                        released = DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
+                    }
+                    T($"图片 / image {index + 1}/{images.Count}：已写入剪贴板 / clipboard written，剪贴板空闲 / released={released}，当前附件 / attachments={baseline + confirmedCount}");
                     if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
                     blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
                     if (blocked != null) return blocked;
                     Combo(VK_CONTROL, VK_V);
-                    var until = DateTime.UtcNow.AddSeconds(8);
-                    bool confirmed = false;
+                    var started = DateTime.UtcNow;
+                    var until = started.AddMilliseconds(ImageConfirmTimeoutMs);
+                    bool repasted = false;
+                    var state = ImagePasteState.Pending;
+                    HashSet<string> current = null;
                     do
                     {
                         Thread.Sleep(100);
-                        HashSet<string> current;
                         if (_queueGuard != null)
                         {
                             if (!TryAttachmentIds(pane, out current))
                                 return ManualChatProtection.UncertainPrefix + "无法读取附件，请检查草稿 / Cannot read attachments; inspect the draft";
                         }
                         else current = AttachmentIds(pane);
-                        var added = current.Except(before).Except(addedIds).ToArray();
-                        if (_queueGuard != null && (added.Length > 1 || !addedIds.IsSubsetOf(current)))
-                            return ManualChatProtection.UncertainPrefix + "附件在上传时发生变化，请检查草稿 / Attachments changed during upload; inspect the draft";
-                        if (added.Length == 1 && addedIds.All(current.Contains) && before.All(current.Contains))
+                        state = ImagePasteCheck.Evaluate(baseline, confirmedCount, current.Count);
+                        if (state != ImagePasteState.Pending) break;
+                        // 一直没有新附件：这次粘贴没被 VS 接收（未加入任何内容），重新写入并再粘贴一次，只补粘一次。
+                        // Still no new attachment: VS did not take this paste (nothing was added), so write and paste once more, only once.
+                        if (!repasted && DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(RepasteAfterMs) && current.Count == baseline + confirmedCount)
                         {
-                            addedIds.Add(added[0]);
-                            confirmed = true;
-                            break;
+                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
+                            if (GetClipboardSequenceNumber() != clipboardVersion)
+                            {
+                                using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
+                                clipboardVersion = GetClipboardSequenceNumber();
+                            }
+                            DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
+                            T($"图片 / image {index + 1}/{images.Count}：{RepasteAfterMs} ms 内未出现附件，重新粘贴 / no attachment yet, pasting again");
+                            Combo(VK_CONTROL, VK_V);
+                            repasted = true;
                         }
                     } while (DateTime.UtcNow < until && ForegroundIs(vs));
-                    if (!confirmed)
-                        return "未能确认图片附件已加入，未发送。请确认该 VS / 模型支持图片，并检查 VS 草稿后重试";
+                    if (state == ImagePasteState.Unexpected)
+                        return (_queueGuard != null ? ManualChatProtection.UncertainPrefix : "") + $"附件数量异常（期望 {baseline + confirmedCount + 1}，实际 {current?.Count}），请检查草稿 / Unexpected attachment count; inspect the draft";
+                    if (state != ImagePasteState.Confirmed)
+                    {
+                        T($"图片 / image {index + 1}/{images.Count}：未能确认附件 / not confirmed，附件 / attachments={current?.Count}，前台 / foreground={ForegroundIs(vs)}");
+                        return $"未能确认第 {index + 1}/{images.Count} 张图片附件已加入，未发送。请确认该 VS / 模型支持图片，并检查 VS 草稿后重试";
+                    }
+                    confirmedCount = current.Count - baseline;
+                    addedIds = new HashSet<string>(current.Except(before));
+                    T($"图片 / image {index + 1}/{images.Count}：已确认 / confirmed，附件 / attachments={current.Count}" + (repasted ? "（补粘 / after re-paste）" : ""));
                     if (!ForegroundIs(vs)) return "前台窗口已改变，未发送（请检查 VS 草稿后重试）";
+                    // 等 Copilot 处理完刚加入的图片再粘下一张 / Let Copilot finish the image just added before pasting the next one
+                    Thread.Sleep(ImageSettleMs);
                     if (!Refocus(vs, edit)) return "无法重新聚焦输入框，未发送（请检查 VS 草稿后重试）";
                 }
 
                 var finalIds = AttachmentIds(pane);
-                if (!Refocus(vs, edit) || !addedIds.All(finalIds.Contains) ||
+                if (!Refocus(vs, edit) || finalIds.Count != baseline + confirmedCount ||
                     !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
+                addedIds = new HashSet<string>(finalIds.Except(before));
 
                 blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
                 if (blocked != null) return blocked;
@@ -169,7 +217,7 @@ namespace VSManager
                     bool cancel = HasCancel(pane);
                     string remaining = GetEditText(edit);
                     if (cancel || (ManualChatProtection.IsEmptyInput(remaining) &&
-                        !AttachmentIds(pane).Overlaps(addedIds)))
+                        AttachmentIds(pane).Count <= baseline))
                         return "已发送文字和图片（已短暂切换到 VS）";
                     Thread.Sleep(100);
                 } while (DateTime.UtcNow < sentUntil);

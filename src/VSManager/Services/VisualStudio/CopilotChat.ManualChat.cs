@@ -128,9 +128,10 @@ namespace VSManager
             string expected, IEnumerable<string> expectedAttachments)
         {
             if (_queueGuard == null) return null;
-            // 文字必须无附件，图片必须恰为本次确认加入的集合；未知状态也保留草稿。/ Text requires no attachments; images require exactly this send's confirmed set; unknown state also preserves the draft.
+            // 文字必须无附件，图片必须恰为本次确认加入的数量（附件列表重新渲染时 RuntimeId 会变，按数量比对）；未知状态也保留草稿。
+            // Text requires no attachments; images require exactly the count this send confirmed (RuntimeIds change when the list re-renders, so compare counts); unknown state also preserves the draft.
             if (!_queueGuard() || !TryAttachmentIds(pane, out var attachments)
-                || expectedAttachments == null || !attachments.SetEquals(expectedAttachments)
+                || expectedAttachments == null || attachments.Count != expectedAttachments.Count()
                 || HasCancel(pane) || InputComposition(target) != false
                 || !PasteVerifier.IsConfirmed(PasteVerifier.Classify(expected, null, GetEditText(edit))))
                 return ManualChatProtection.UncertainPrefix + "目标、输入或附件在写入后发生变化或无法确认，请检查草稿 / Target, input or attachments changed or cannot be confirmed after writing; inspect the draft";
