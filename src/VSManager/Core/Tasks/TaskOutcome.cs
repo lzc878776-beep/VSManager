@@ -11,9 +11,11 @@ namespace VSManager
         None,
         /// <summary>本任务已完成。/ The task is complete.</summary>
         Success,
-        /// <summary>改动已完成，但需要用户测试或确认（VS 无法自行验证）。/ Changes are done but need user testing or confirmation.</summary>
-        NeedsUser,
-        /// <summary>功能已实现且构建 / 测试通过，仅未在运行中的程序里实际验证。/ Implemented with build / tests passing; only not verified in the running app.</summary>
+        /// <summary>
+        /// 待验证：改动已完成，但尚未在运行环境中验证，或需要用户测试、运行或确认（旧回执 NEEDS_USER 也归入此类）。
+        /// Awaiting verification: changes are done but not yet verified at runtime, or need user testing, running or confirmation
+        /// (the legacy NEEDS_USER receipt maps here too).
+        /// </summary>
         Unverified,
         /// <summary>本任务本身未能完成。/ The task itself could not be completed.</summary>
         Failed
@@ -288,7 +290,7 @@ namespace VSManager
             {
                 var t = stack.Pop();
                 if (!seen.Add(t.Id)) continue;
-                bool ran = (t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)) || (t.Status == QueueStatus.Done && t.NeedsUser);
+                bool ran = (t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)) || t.Status == QueueStatus.Unverified || (t.Status == QueueStatus.Done && t.NeedsUser);
                 // 旧数据没有计数时至少计最近一次 / Older records without the counter count at least the latest run
                 n += Math.Max(Math.Max(0, t.ContentRuns), ran ? 1 : 0);
                 if (t.Replaces == null) continue;

@@ -442,27 +442,25 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                     }
                     if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
                 }
-                bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
                 t.FullResult = result;
-                bool unverified = receipt == TaskReceipt.Unverified;
-                if (unverified) _host.LogEvent(t.VsName, $"任务 #{t.Id} 已实现但未实际验证 / Task implemented but not verified at runtime");
-                TaskStateMachine.Complete(t, _clock(), needsUser, unverified);
-                if (needsUser || unverified) t.TestItems = TaskTestChecklist.Parse(result);
+                bool pending = receipt == TaskReceipt.Unverified;
+                if (pending) _host.LogEvent(t.VsName, $"任务 #{t.Id} 改动已完成，待验证 / Task done, awaiting verification");
+                TaskStateMachine.Complete(t, _clock(), pending);
+                if (pending) t.TestItems = TaskTestChecklist.Parse(result);
                 CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    string label = unverified ? "未验证" : needsUser ? "已完成（待用户验证）" : "已完成";
-                    string labelEn = unverified ? "unverified" : needsUser ? "completed (awaiting verification)" : "completed";
+                    string label = pending ? "待验证" : "已完成";
+                    string labelEn = pending ? "awaiting verification" : "completed";
                     _host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
-                        ((needsUser || unverified) && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
-                        (unverified ? "\n结论：未验证（不是失败）。Copilot 说明功能已实现，只是尚未在运行中的程序里实际验证；请按「未验证」汇报并列出未验证项，不要判为失败，也不要说成已实测成功。/ Verdict: unverified, not failed. The work is implemented but not yet verified in the running app; report it as unverified with the pending checks, neither as a failure nor as a verified success." : "") +
-                        (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
-                        ((needsUser || unverified) && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
+                        (pending && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
+                        (pending ? "\n结论：待验证（不是失败）。改动已完成，但尚未在运行环境中验证或需要用户测试、确认：请按「待验证」汇报，把测试清单转告用户并等待反馈；不要判为失败，不要说成已实测成功，不要重发，也不要把它当作已验证的依赖。/ Verdict: awaiting verification, not failed. The changes are done but not yet verified at runtime or need user testing or confirmation: report it as awaiting verification, relay the test checklist and wait for feedback; do not call it a failure or a verified success, do not resend, and do not treat it as a verified dependency." : "") +
+                        (pending && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");

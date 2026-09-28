@@ -787,10 +787,10 @@ if (c != null)
                 case QueueStatus.Running:
                     text = "执行中 · " + Dur(DateTime.Now - (t.Started ?? DateTime.Now)); fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Done:
-    text = (t.NeedsUser ? "✓ 待验证" : "✓ 已完成") + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
-    fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
+    text = "✓ 已完成" + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+    fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; break;
 case QueueStatus.Unverified:
-                    text = "◐ 未验证" + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+                    text = "◐ 待验证" + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
                     fg = Theme.UnverifiedFg; bg = Theme.UnverifiedBg; dot = Theme.UnverifiedDot; break;
                 case QueueStatus.Failed:
                     text = t.Released ? "失败 · 已放行" : "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;

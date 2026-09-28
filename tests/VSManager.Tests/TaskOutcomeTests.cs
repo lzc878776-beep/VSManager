@@ -49,12 +49,15 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void ReadReceipt_DistinguishesSuccessNeedsUserFailedAndNone()
+        public void ReadReceipt_DistinguishesSuccessUnverifiedFailedAndNone()
         {
             var t = Sent();
             Assert.AreEqual(TaskReceipt.Success, TaskStateMachine.ReadReceipt(t, "ok\n" + TaskStateMachine.SuccessReceipt(t), out string r));
             Assert.AreEqual("ok", r);
-            Assert.AreEqual(TaskReceipt.NeedsUser, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.NeedsUserReceipt(t), out r));
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.UnverifiedReceipt(t), out r));
+            Assert.AreEqual("请手动运行验证", r);
+            // 旧回执 NEEDS_USER 仍识别为待验证 / The legacy NEEDS_USER receipt still reads as awaiting verification
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "请手动运行验证\r\n" + TaskStateMachine.NeedsUserReceipt(t), out r));
             Assert.AreEqual("请手动运行验证", r);
             Assert.AreEqual(TaskReceipt.Failed, TaskStateMachine.ReadReceipt(t, "无法实现\n" + TaskStateMachine.FailureReceipt(t), out r));
             Assert.AreEqual("无法实现", r);
@@ -63,7 +66,9 @@ namespace VSManager.Tests
             Assert.AreEqual(TaskReceipt.None, TaskStateMachine.ReadReceipt(t, "x " + TaskStateMachine.NeedsUserReceipt(t), out _));
             Assert.IsFalse(TaskStateMachine.TryReadSuccess(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t), out _));
             string text = TaskStateMachine.DispatchText(t);
-            StringAssert.Contains(text, TaskStateMachine.NeedsUserReceipt(t));
+            StringAssert.Contains(text, TaskStateMachine.UnverifiedReceipt(t));
+            Assert.IsFalse(text.Contains(TaskStateMachine.NeedsUserReceipt(t)), "规则只保留三种回执 / Rules list three receipts only");
+            StringAssert.Contains(text, "三选一");
             StringAssert.Contains(text, "无关的遗留");
         }
 
@@ -74,7 +79,7 @@ namespace VSManager.Tests
             Assert.AreEqual(TaskReceipt.Success, TaskStateMachine.ReadReceipt(t, "done\n" + TaskStateMachine.SuccessReceipt(t) + "\n\n(This turn has no user-facing reply.)", out string r));
             Assert.AreEqual("done", r);
             Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "待处理：重启验证\r\n" + TaskStateMachine.UnverifiedReceipt(t) + "\r\n*This turn has no user-facing reply*", out _));
-            Assert.AreEqual(TaskReceipt.NeedsUser, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t) + "\n（本轮没有面向用户的回复）", out _));
+            Assert.AreEqual(TaskReceipt.Unverified, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.NeedsUserReceipt(t) + "\n（本轮没有面向用户的回复）", out _));
             Assert.AreEqual(TaskReceipt.None, TaskStateMachine.ReadReceipt(t, "x\n" + TaskStateMachine.SuccessReceipt(t) + "\n还有其他内容", out _));
             StringAssert.Contains(TaskStateMachine.DispatchText(t), "回执行之后不要再输出任何文字");
         }
@@ -104,10 +109,10 @@ namespace VSManager.Tests
         public async Task NeedsUserReceipt_CompletesAsAwaitingVerification()
         {
             var t = await RunWithAnswer("实现导出功能", q => "改动已完成，请手动测试导出按钮\n" + TaskStateMachine.NeedsUserReceipt(q));
-            Assert.AreEqual(QueueStatus.Done, t.Status);
-            Assert.IsTrue(t.NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, t.Status);
+            Assert.IsFalse(t.NeedsUser);
             Assert.IsNull(t.FailureKind);
-            Assert.AreEqual("已完成（待用户验证）", TaskStateMachine.StatusText(t, _clock.Now));
+            Assert.AreEqual("待验证", TaskStateMachine.StatusText(t, _clock.Now));
             StringAssert.Contains(_host.NoticeBodies.Last(), "do not resend");
         }
 
@@ -238,7 +243,8 @@ namespace VSManager.Tests
             var store = new JsonTaskStore(path);
             Assert.IsNull(store.Save(new[] { t, f }));
             var back = store.Load(new List<string>());
-            Assert.IsTrue(back[0].NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, back[0].Status, "旧记录迁移为待验证 / Legacy record migrates to awaiting verification");
+            Assert.IsFalse(back[0].NeedsUser);
             Assert.AreEqual("#0：x", back[0].PriorFailure);
             Assert.AreEqual(FailureKind.NoReceipt, back[1].FailureKind);
             Assert.IsFalse(back[1].NeedsUser);

@@ -42,7 +42,7 @@ namespace VSManager.Tests
         {
             var failed = Waiting(1); TaskStateMachine.Fail(failed, "x", T0);
             var afterFailed = Waiting(2);
-            var verify = Waiting(3, "B"); verify.Status = QueueStatus.Running; TaskStateMachine.Complete(verify, T0, needsUser: true);
+            var verify = Waiting(3, "B"); verify.Status = QueueStatus.Running; TaskStateMachine.Complete(verify, T0, pending: true);
             var afterVerify = Waiting(4, "B");
             var done = Waiting(5, "C"); done.Status = QueueStatus.Running; TaskStateMachine.Complete(done, T0);
             var afterDone = Waiting(6, "C");

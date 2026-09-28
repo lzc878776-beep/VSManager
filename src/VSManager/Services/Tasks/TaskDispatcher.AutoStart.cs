@@ -120,7 +120,7 @@ namespace VSManager
                         && SolutionMatcher.SamePath(t.Worktree?.Root, task.Worktree.Root)))
                         _pendingMaintenance[merge] = all;
                 GrantSavedMaintenance();
-                _host.AnnounceTask(task, $"任务 {task.Id} {(task.Status == QueueStatus.Unverified ? "未验证（已实现，待实际验证）" : "已完成")}，启动方式：{(all ? "全部任务自动" : "AI 自动")}" + (_yielded.Contains(task) ? "，已礼让手动对话" : ""),
+                _host.AnnounceTask(task, $"任务 {task.Id} {(task.Status == QueueStatus.Unverified ? "待验证" : "已完成")}，启动方式：{(all ? "全部任务自动" : "AI 自动")}" + (_yielded.Contains(task) ? "，已礼让手动对话" : ""),
                     $"Task {task.Id} {(task.Status == QueueStatus.Unverified ? "unverified (implemented, pending runtime check)" : "completed")}; start mode: {(all ? "all-tasks automatic" : "AI automatic")}" + (_yielded.Contains(task) ? "; yielded to manual chat" : ""));
             }
             else if (_yielded.Contains(task))

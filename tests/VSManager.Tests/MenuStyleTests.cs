@@ -30,7 +30,7 @@ namespace VSManager.Tests
                     var verify = queue.Add("A", "A", "verify", "AI");
                     verify.Status = QueueStatus.Running;
                     verify.Result = "待处理：检查托盘图标";
-                    TaskStateMachine.Complete(verify, DateTime.Now, needsUser: true);
+                    TaskStateMachine.Complete(verify, DateTime.Now, pending: true);
                     var ok = queue.Add("A", "A", "ok", "AI");
                     ok.Status = QueueStatus.Running;
                     TaskStateMachine.Complete(ok, DateTime.Now);

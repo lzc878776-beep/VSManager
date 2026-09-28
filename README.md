@@ -124,7 +124,7 @@ VSManager/
 
 ### 分层架构
 
-- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 未验证 / 失败 / 已取消；「未验证」`unverified` 表示功能已实现、构建 / 测试通过，仅尚未在运行中的程序里实际验证，在接续等级中按「待确认」处理（「已完成」「待确认」两挡会暂停后续），可右键「标记为已验证」或在任务清单旁的「测试清单」逐项勾选（`TaskTestChecklist`，全部勾选即完成）转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
+- **Core（领域层）**：任务模型 `QueuedTask`、状态机 `TaskStateMachine`（排队 → 发送中 → 执行中 → 已完成 / 待验证 / 失败 / 已取消；「待验证」`unverified` 表示改动已完成，但尚未在运行中的程序里实际验证，或需要用户手动测试、运行或确认（旧版「已完成（待用户验证）」记录读取时自动迁移为待验证），在接续等级中按「待确认」处理（「已完成」「待确认」两挡会暂停后续），可右键「标记为已验证」或在任务清单旁的「测试清单」逐项勾选（`TaskTestChecklist`，全部勾选即完成）转为已完成；旧版本读取到该状态会视为无法识别并暂停）、发送重试判定 `SendRetryPolicy`、任务清单 `TaskQueue`（编号分配、历史裁剪、归档流水）。只依赖接口 `ITaskStore`、`ITaskArchiveSink` 与可替换时钟，可直接单元测试。
 - **Services（服务层）**：VS 管理、Copilot 消息发送、AI 助手、语音、归档、发布。`TaskDispatcher` 负责任务调度，通过 `ITaskDispatchHost` 与主窗口交互；外部依赖通过 `IVsOperations`、`ICopilotChannel`、`IVoiceService`、`IAiClientFactory` 抽象。
 - **Infrastructure（基础设施层）**：Win32 封装、配置与数据目录、文件系统抽象 `IFileSystem` 与原子写入 `AtomicFile`、统一日志 `AppLog`（含未处理异常记录到 crash.log）、HTTP 客户端创建。
 - **UI（界面层）**：窗体与控件，只负责展示与交互，业务动作委托给服务层。
@@ -449,7 +449,7 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 
 ### 任务回执
 
-任务清单派发的每条任务都有本轮回执 ID（GUID），Copilot 在最终回复最后一行输出三选一的回执：`SUCCESS`（已完成）、`NEEDS_USER`（改动已完成，需要用户测试或确认，显示为「待验证」）、`FAILED`（任务本身未完成；无关的遗留问题不算失败）。
+任务清单派发的每条任务都有本轮回执 ID（GUID），Copilot 在最终回复最后一行输出三选一的回执：`SUCCESS`（已完成且已验证）、`UNVERIFIED`（改动已完成，但尚未实际验证或需要用户测试 / 确认，显示为「待验证」；旧回执 `NEEDS_USER` 仍按待验证识别）、`FAILED`（任务本身未完成；无关的遗留问题不算失败）。
 
 回执规则附在每条任务消息的末尾。VS 2026 的 Copilot 代理（内置 Copilot CLI）不会加载 `copilot-instructions.md` 等自定义指令文件，所以规则不能靠指令文件下发，每条任务都会带上完整规则。
 
@@ -644,7 +644,7 @@ All source files still share the single namespace `VSManager`; folders only grou
 
 ### Layered architecture
 
-- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / unverified / failed / cancelled; `unverified` means implemented with build / tests passing but not yet verified in the running app, counts as awaiting confirmation for the continuation level (the Completed and Awaiting confirmation levels pause successors), and can be turned into done via "Mark as verified" or by checking off every item in the "Test checklist" beside the task list (`TaskTestChecklist`); older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
+- **Core (domain)**: the task model `QueuedTask`, the state machine `TaskStateMachine` (waiting → sending → running → done / awaiting verification / failed / cancelled; `unverified` ("awaiting verification") means the changes are done but not yet verified in the running app, or the user must test, run or confirm them (legacy "done (awaiting user verification)" records migrate to it on load), counts as awaiting confirmation for the continuation level (the Completed and Awaiting confirmation levels pause successors), and can be turned into done via "Mark as verified" or by checking off every item in the "Test checklist" beside the task list (`TaskTestChecklist`); older versions treat it as unrecognized and pause it), the send retry rules `SendRetryPolicy` and the task list `TaskQueue` (id allocation, history trimming, archive journal). It only depends on the `ITaskStore` and `ITaskArchiveSink` interfaces and a replaceable clock, so it can be unit-tested directly.
 - **Services**: VS management, Copilot messaging, AI assistant, voice, archive and publishing. `TaskDispatcher` dispatches tasks and talks to the main window through `ITaskDispatchHost`; external dependencies are abstracted by `IVsOperations`, `ICopilotChannel`, `IVoiceService` and `IAiClientFactory`.
 - **Infrastructure**: Win32 wrappers, settings and data folder, the file-system abstraction `IFileSystem` with atomic writes `AtomicFile`, the unified log `AppLog` (unhandled exceptions go to crash.log) and HTTP client creation.
 - **UI**: forms and controls only handle display and interaction; business actions are delegated to the service layer.
@@ -928,7 +928,7 @@ Closes every open .cs file tab in a VS at once (only files with the `.cs` extens
 
 ### Task receipts
 
-Every task dispatched from the task list has a receipt ID (GUID) for the round. Copilot ends its final reply with one of three receipts: `SUCCESS` (done), `NEEDS_USER` (changes done, the user must test or confirm; shown as "awaiting verification") or `FAILED` (the task itself was not completed; unrelated pre-existing issues do not count).
+Every task dispatched from the task list has a receipt ID (GUID) for the round. Copilot ends its final reply with one of three receipts: `SUCCESS` (done and verified), `UNVERIFIED` (changes done but not yet verified, or the user must test / confirm; shown as "awaiting verification"; the legacy `NEEDS_USER` receipt is still read as awaiting verification) or `FAILED` (the task itself was not completed; unrelated pre-existing issues do not count).
 
 The receipt rules are appended to the end of every task message. The VS 2026 Copilot agent (a bundled Copilot CLI) does not load custom instructions files such as `copilot-instructions.md`, so the rules cannot be delivered that way; every task carries the full rules.
 

@@ -53,6 +53,10 @@ namespace VSManager.Tests
 
             var n = Task(QueueStatus.Done, needsUser: true);
             n.Result = "请验证：\n- 打开窗口";
+            // 旧的「已完成（待用户验证）」迁移为待验证 / Legacy done-awaiting-verification migrates to awaiting verification
+            Assert.IsFalse(TaskTestChecklist.Pending(n));
+            TaskStateMachine.MigrateLegacy(n);
+            Assert.AreEqual(QueueStatus.Unverified, n.Status);
             Assert.IsTrue(TaskTestChecklist.Pending(n));
             Assert.AreEqual("打开窗口", TaskTestChecklist.Ensure(n).Single().Text);
             Assert.IsTrue(TaskStateMachine.MarkVerified(n));
@@ -101,9 +105,10 @@ namespace VSManager.Tests
             var unverified = Task();
             var needsUser = Task(QueueStatus.Done, true); needsUser.Id = 8; needsUser.TestItems = TaskTestChecklist.Parse("- [ ] A");
             var legacyNeedsUser = Task(QueueStatus.Done, true); legacyNeedsUser.Id = 9;
+            TaskStateMachine.MigrateLegacy(needsUser); TaskStateMachine.MigrateLegacy(legacyNeedsUser);
             var done = Task(QueueStatus.Done); done.Id = 10;
             var ids = TestChecklistPanel.ListedTasks(new[] { unverified, needsUser, legacyNeedsUser, done }, null).Select(t => t.Id).ToArray();
-            CollectionAssert.AreEquivalent(new[] { 7, 8 }, ids);
+            CollectionAssert.AreEquivalent(new[] { 7, 8, 9 }, ids);
         }
 
         [TestMethod]

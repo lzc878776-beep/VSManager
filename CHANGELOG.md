@@ -7,6 +7,8 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- 「未验证」与「已完成（待用户验证）」合并为同一个「待验证」状态（`unverified`）：发给 Copilot 的回执规则改为三选一 `SUCCESS` / `UNVERIFIED` / `FAILED`，旧回执 `NEEDS_USER` 仍按待验证识别；tasks.json 中旧的「已完成 + 待用户验证」记录读取时自动迁移为待验证。任务清单、测试清单、悬停提示、AI 助手汇报与归档统一显示「待验证」。
+  "Unverified" and "Done (awaiting user verification)" are merged into one "awaiting verification" status (`unverified`): the receipt rules sent to Copilot now offer three options, `SUCCESS` / `UNVERIFIED` / `FAILED`, and the legacy `NEEDS_USER` receipt is still read as awaiting verification; legacy done + needs-user records in tasks.json migrate on load. The task list, test checklist, tooltips, AI assistant reports and the archive all show "awaiting verification".
 - 接续滑槽只保留任务清单顶部的一个，AI 助手面板标题栏的重复滑槽已移除。「未验证」回执在接续等级中按「待确认」处理：「已完成」「待确认」两挡会暂停同一 VS 的后续任务（可右键放行或补充信息重试），与「只有成功才放行」的说明一致。
   Only the continuation slider at the top of the task list remains; the duplicate in the AI assistant panel header is gone. An `UNVERIFIED` result now counts as awaiting confirmation: the Completed and Awaiting confirmation levels pause later tasks on the same VS (release or retry with info from the context menu), matching "only success releases".
 - AI 助手可取消任意非发送中的任务（包括失败、未验证等已结束的任务，记录保留），并新增 `delete_task` 工具；取消与删除无论「操作前确认」设置如何都会先弹窗展示任务摘要请用户确认。任务清单右键菜单同样可取消已结束的任务。

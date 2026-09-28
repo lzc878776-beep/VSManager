@@ -18,7 +18,7 @@ namespace VSManager
     public sealed partial class AgentService
     {
         [Description("取消任务清单中的任务：排队中、等待目标 VS、执行中（只停止跟踪，不会停止 Copilot；需要停止请用 stop_copilot），" +
-            "以及已结束的失败、未验证、待确认或已完成任务（保留结果与失败记录，不再暂停同一 VS 的后续任务）。发送中的任务不能取消。" +
+            "以及已结束的失败、待验证或已完成任务（保留结果与失败记录，不再暂停同一 VS 的后续任务）。发送中的任务不能取消。" +
             "每次调用都会先弹窗请用户确认（不受「操作前确认」设置影响），用户拒绝时不要重复调用。")]
         internal async Task<string> CancelTask([Description("任务编号，如 3")] int id)
         {

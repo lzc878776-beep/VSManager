@@ -277,7 +277,7 @@ namespace VSManager.Tests
             Assert.IsTrue(_dispatcher.MarkVerified(task));
             Assert.AreEqual(QueueStatus.Done, task.Status);
             Assert.IsFalse(task.Result.Contains(":FAILED]"));
-            StringAssert.Contains(_host.Notices[0], "未验证");
+            StringAssert.Contains(_host.Notices[0], "待验证");
         }
 
         [TestMethod]
@@ -401,7 +401,7 @@ namespace VSManager.Tests
             _host.AnswerReader = t => Task.FromResult("please test the UI\r\n" + TaskStateMachine.NeedsUserReceipt(t));
             await _dispatcher.PumpAsync();
             await _dispatcher.FinishAsync(first, v, null);
-            Assert.IsTrue(first.NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, first.Status, "旧回执 NEEDS_USER 归入待验证 / Legacy NEEDS_USER maps to awaiting verification");
             Assert.AreEqual(QueueStatus.Waiting, next.Status);
             StringAssert.Contains(_host.NoticeBodies.Last(), "release_task");
 
@@ -417,11 +417,11 @@ namespace VSManager.Tests
             var a = _host.AddVs("A");
             var verify = _queue.Add("A", "A", "verify", "AI");
             var afterVerify = _queue.Add("A", "A", "after verify", "AI");
-            _host.AnswerReader = t => Task.FromResult("please test the UI\r\n" + TaskStateMachine.NeedsUserReceipt(t));
+            _host.AnswerReader = t => Task.FromResult("please test the UI\r\n" + TaskStateMachine.UnverifiedReceipt(t));
             await _dispatcher.PumpAsync();
             await _dispatcher.FinishAsync(verify, a, null);
             await _dispatcher.PumpAsync();
-            Assert.IsTrue(verify.NeedsUser);
+            Assert.AreEqual(QueueStatus.Unverified, verify.Status);
             Assert.AreEqual(QueueStatus.Waiting, afterVerify.Status, "待确认阻塞后续 / awaiting confirmation blocks");
             StringAssert.Contains(_host.NoticeBodies.Last(), "release_task");
 

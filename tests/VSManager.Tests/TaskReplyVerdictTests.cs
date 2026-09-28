@@ -51,11 +51,11 @@ namespace VSManager.Tests
         public void UnverifiedTask_PersistsThroughClone_AndResetsOnRequeue()
         {
             var t = Task();
-            Assert.IsTrue(TaskStateMachine.Complete(t, System.DateTime.Now, unverified: true));
+            Assert.IsTrue(TaskStateMachine.Complete(t, System.DateTime.Now, pending: true));
             Assert.AreEqual(QueueStatus.Unverified, t.Status);
             Assert.AreEqual(QueueStatus.Unverified, t.Clone().Status);
             Assert.IsTrue(QueueStatus.Known(t.Status) && !QueueStatus.Active(t.Status) && QueueStatus.Delivered(t.Status));
-            Assert.AreEqual("未验证", TaskStateMachine.StatusText(t, System.DateTime.Now));
+            Assert.AreEqual("待验证", TaskStateMachine.StatusText(t, System.DateTime.Now));
             Assert.IsTrue(TaskStateMachine.MarkVerified(t));
             Assert.AreEqual(QueueStatus.Done, t.Status);
             Assert.IsFalse(TaskStateMachine.MarkVerified(t));

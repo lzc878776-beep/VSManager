@@ -47,9 +47,10 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void DoneAwaitingUser_IsTreatedAsUnverified()
+        public void LegacyDoneAwaitingUser_IsTreatedAsUnverified()
         {
             var t = new QueuedTask { Id = 9, Text = "x", Status = QueueStatus.Done, NeedsUser = true, Result = "改好了\n- [ ] 重启后检查" };
+            TaskStateMachine.MigrateLegacy(t);
             string tip = TaskTooltip.Build(t, "待验证");
             StringAssert.Contains(tip, "改好了");
             StringAssert.Contains(tip, "☐ 重启后检查");

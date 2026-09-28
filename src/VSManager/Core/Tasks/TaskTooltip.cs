@@ -6,9 +6,9 @@ using System.Text.RegularExpressions;
 namespace VSManager
 {
     /// <summary>
-    /// 任务清单悬停提示的内容：未执行时以任务内容为主；已完成时以完成情况为主；未验证 / 待验证时列出已完成的内容与未验证的项目；失败时显示失败原因。
-    /// Content of the task list hover tip: the task text before it runs; the outcome once done; for unverified / awaiting-verification
-    /// tasks what was done and what is still unverified; the failure reason when it failed.
+    /// 任务清单悬停提示的内容：未执行时以任务内容为主；已完成时以完成情况为主；待验证时列出已完成的内容与未验证的项目；失败时显示失败原因。
+    /// Content of the task list hover tip: the task text before it runs; the outcome once done; for tasks awaiting verification
+    /// what was done and what is still unverified; the failure reason when it failed.
     /// </summary>
     public static class TaskTooltip
     {

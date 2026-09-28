@@ -7,8 +7,8 @@ using System.Windows.Forms;
 namespace VSManager
 {
     /// <summary>
-    /// 任务清单旁的测试清单：列出未验证 / 待用户验证任务需要在环境中实测的项目；用户逐项勾选，全部勾选后任务转为已完成。
-    /// Test checklist beside the task list: lists what must be tested in the environment for unverified / awaiting-verification tasks;
+    /// 任务清单旁的测试清单：列出待验证任务需要在环境中实测的项目；用户逐项勾选，全部勾选后任务转为已完成。
+    /// Test checklist beside the task list: lists what must be tested in the environment for tasks awaiting verification;
     /// the user checks items off and the task completes once all are checked.
     /// </summary>
     public sealed class TestChecklistPanel : Panel
@@ -184,7 +184,7 @@ namespace VSManager
                 int x = e.Bounds.X + Dpi.S(12), right = e.Bounds.Right - Dpi.S(10);
                 if (e.Index > 0)
                     using (var pen = new Pen(Theme.Divider)) g.DrawLine(pen, x, e.Bounds.Y + Dpi.S(2), right, e.Bounds.Y + Dpi.S(2));
-                string pill = unverified ? "未验证" : "待验证";
+                string pill = "待验证";
                 var pillFont = Theme.Small;
                 int pw = TextRenderer.MeasureText(g, pill, pillFont, Size.Empty, TextFormatFlags.NoPadding).Width + Dpi.S(14);
                 var pr = new RectangleF(right - pw, e.Bounds.Y + Dpi.S(10), pw, Dpi.S(18));
