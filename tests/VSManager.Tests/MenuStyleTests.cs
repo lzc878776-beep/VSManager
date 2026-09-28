@@ -15,6 +15,44 @@ namespace VSManager.Tests
     public class MenuStyleTests
     {
         [TestMethod]
+        public void TaskDetail_ShowsPendingOrFailureReason_ForSelectedTask()
+        {
+            RunSta(() =>
+            {
+                using (var data = new TempDataFolder())
+                using (var panel = new TaskPanel())
+                {
+                    var queue = NewQueue();
+                    var failed = queue.Add("A", "A", "failed", "AI");
+                    failed.Status = QueueStatus.Running;
+                    failed.Result = "失败原因：缺少接口";
+                    TaskStateMachine.Fail(failed, "x", DateTime.Now, FailureKind.Reported);
+                    var verify = queue.Add("A", "A", "verify", "AI");
+                    verify.Status = QueueStatus.Running;
+                    verify.Result = "待处理：检查托盘图标";
+                    TaskStateMachine.Complete(verify, DateTime.Now, needsUser: true);
+                    var ok = queue.Add("A", "A", "ok", "AI");
+                    ok.Status = QueueStatus.Running;
+                    TaskStateMachine.Complete(ok, DateTime.Now);
+                    panel.Bind(queue);
+                    panel.SetCollapsed(false);
+                    var list = panel.Controls.OfType<ListBox>().Single();
+                    var detail = panel.Controls.OfType<Panel>().Single(p => p.Dock == DockStyle.Bottom);
+                    var text = detail.Controls.OfType<TextBox>().Single();
+
+                    list.SelectedItem = failed;
+                    Assert.IsTrue(detail.Visible);
+                    StringAssert.Contains(text.Text, "缺少接口");
+                    list.SelectedItem = verify;
+                    Assert.IsTrue(detail.Visible);
+                    StringAssert.Contains(text.Text, "检查托盘图标");
+                    list.SelectedItem = ok;
+                    Assert.IsFalse(detail.Visible, "成功任务不显示详情 / no detail for success");
+                }
+            });
+        }
+
+        [TestMethod]
         public void TaskHeader_ManualStartIsVisible_AndButtonsDoNotOverlapHistory()
         {
             RunSta(() =>
@@ -29,7 +67,7 @@ namespace VSManager.Tests
                     panel.Bind(queue, clearedAt: () => DateTime.Now);
                     panel.SetCollapsed(false);
                     panel.PerformLayout();
-                    var top = panel.Controls.OfType<Panel>().Single();
+                    var top = panel.Controls.OfType<Panel>().Single(p => p.Dock == DockStyle.Top);
                     var buttons = top.Controls.OfType<FlatButton>().Where(b => b.Visible).ToArray();
                     var start = buttons.Single(b => b.Text == "▶ 开始流程 / Start");
                     Assert.IsTrue(start.Primary);

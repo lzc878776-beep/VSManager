@@ -252,6 +252,8 @@ namespace VSManager
                 ["text"] = t.Text,
                 ["result"] = t.Result,
                 ["error"] = t.Error,
+                ["pending"] = t.PendingNote,
+                ["failureReason"] = t.FailureReason,
                 ["attempts"] = t.Attempts,
                 ["target"] = t.Target,
                 ["created"] = Time(t.Created),

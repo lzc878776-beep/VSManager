@@ -312,7 +312,7 @@ namespace VSManager
             int y = (_header.Height - _btnSettings.Height) / 2, right = _header.Width - Dpi.S(28);
             _btnSettings.Location = new Point(right - _btnSettings.Width, y);
             _btnClear.Location = new Point(_btnSettings.Left - Dpi.S(8) - _btnClear.Width, y);
-            _releaseSlider.Size = new Size(Dpi.S(216), Dpi.S(48));
+            _releaseSlider.Size = new Size(Dpi.S(280), Dpi.S(48));
             _releaseSlider.Location = new Point(_btnClear.Left - Dpi.S(16) - _releaseSlider.Width, (_header.Height - _releaseSlider.Height) / 2);
             // 窄窗口时为标题让位 / Hide on narrow windows to keep the title readable
             _releaseSlider.Visible = !_noteMode && _releaseSlider.Left > Dpi.S(260);

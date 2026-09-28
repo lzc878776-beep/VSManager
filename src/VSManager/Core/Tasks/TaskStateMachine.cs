@@ -90,20 +90,30 @@ namespace VSManager
         /// </summary>
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
+            + RoundText(t)
             + (string.IsNullOrEmpty(t.PriorFailure) ? ""
                 : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
             + (string.IsNullOrEmpty(t.Supplement) ? ""
                 : "【补充信息】" + t.Supplement + " 请结合补充信息继续完成本任务。 ")
             + FullRules(t);
 
+        /// <summary>本需求当前是第几轮（只算内容类执行）。/ Current round of the request (content runs only).</summary>
+        public static int Round(QueuedTask t) => Math.Max(0, t.PriorRuns) + Math.Max(0, t.ContentRuns) + 1;
+
+        private static string RoundText(QueuedTask t)
+        {
+            int round = Round(t);
+            return round <= 1 ? "" : "【第 " + round + " 轮】本需求此前已执行 " + (round - 1) + " 次未通过，请参考前次反馈调整做法。 ";
+        }
+
         /// <summary>每个任务最多插入补充信息重试的次数。/ Maximum retries with supplementary info per task.</summary>
         public const int MaxSupplements = 3;
 
         private static string FullRules(QueuedTask t) =>
             "任务队列回执（仅用于确认本次结果，四选一，在最终回复最后单独一行输出）：本任务要求的内容已完成时输出 " + SuccessReceipt(t)
-            + "；功能已实现且构建 / 测试通过、仅尚未在运行中的程序里实际验证时，列出未验证项后输出 " + UnverifiedReceipt(t)
-            + "；改动已完成，但需要用户手动测试、运行或确认（你无法自行验证）时，列出需要用户验证的内容后输出 " + NeedsUserReceipt(t)
-            + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，说明失败原因、已完成的部分与建议的下一步后输出 " + FailureReceipt(t)
+            + "；功能已实现且构建 / 测试通过、仅尚未在运行中的程序里实际验证时，以「" + TaskHoldNote.PendingTag + "」开头单独成段列出未验证项后输出 " + UnverifiedReceipt(t)
+            + "；改动已完成，但需要用户手动测试、运行或确认（你无法自行验证）时，以「" + TaskHoldNote.PendingTag + "」开头单独成段，列出需要用户测试、确认或处理的内容后输出 " + NeedsUserReceipt(t)
+            + "；只有本任务本身未能完成（要求无法实现、改动未完成、本任务引入的错误未解决、缺少必要信息）时，以「" + TaskHoldNote.ReasonTag + "」开头单独成段说明失败原因，再说明已完成的部分与建议的下一步，然后输出 " + FailureReceipt(t)
             + "。输出未验证或需要用户验证的回执时，请把需要用户在运行环境中测试的内容写成测试清单，每项单独一行、使用「- [ ] 具体操作与预期结果」格式。"
             + "与本任务无关的遗留编译错误、已有的测试失败或环境问题不算本任务失败，单独说明即可。不要在过程消息中输出回执。";
 
@@ -184,6 +194,30 @@ namespace VSManager
             t.NeedsUser = false;
             t.Released = false;
             t.TestItems = null;
+            t.PendingNote = null;
+            t.FailureReason = TaskHoldNote.ForFailure(kind, error, t.Result);
+            if (FailureKind.IsContent(kind)) t.ContentRuns++;
+        }
+
+        /// <summary>
+        /// 补齐待处理 / 失败说明（旧记录或未经状态机写入的结果），并清除与当前状态不符的说明。
+        /// Fills in hold notes (older records or outcomes not written by the state machine) and clears notes that no longer match the status.
+        /// </summary>
+        public static void FillHoldNote(QueuedTask t)
+        {
+            if (t == null) return;
+            if (t.Status == QueueStatus.Failed)
+            {
+                t.PendingNote = null;
+                if (string.IsNullOrEmpty(t.FailureReason)) t.FailureReason = TaskHoldNote.ForFailure(t.FailureKind, t.Error, t.Result);
+            }
+            else if (TaskHoldNote.IsPending(t))
+            {
+                t.FailureReason = null;
+                if (string.IsNullOrEmpty(t.PendingNote)) t.PendingNote = TaskHoldNote.Pending(t.Result);
+            }
+            else if (!QueueStatus.Active(t.Status))
+                t.PendingNote = t.FailureReason = null;
         }
 
         /// <summary>
@@ -199,6 +233,9 @@ namespace VSManager
             t.FailureKind = null;
             t.Released = false;
             t.TestItems = null;
+            t.FailureReason = null;
+            t.PendingNote = needsUser || unverified ? TaskHoldNote.Pending(t.Result) : null;
+            if (t.NeedsUser) t.ContentRuns++;
             return true;
         }
 
@@ -211,6 +248,7 @@ namespace VSManager
             if (!TaskTestChecklist.Pending(t)) return false;
             t.Status = QueueStatus.Done;
             t.NeedsUser = false;
+            t.PendingNote = null;
             if (t.TestItems != null)
                 foreach (var item in t.TestItems) if (item != null) item.Checked = true;
             return true;
@@ -266,6 +304,7 @@ namespace VSManager
             t.Attempts = 0;
             t.Error = null;
             t.Result = null;
+            t.PendingNote = t.FailureReason = null;
             t.Started = t.Finished = null;
             t.NextTry = DateTime.MinValue;
             t.PredecessorNotice = null;

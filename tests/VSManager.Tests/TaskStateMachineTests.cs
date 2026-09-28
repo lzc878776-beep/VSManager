@@ -19,15 +19,25 @@ namespace VSManager.Tests
             Assert.AreEqual(ReleaseLevel.Completed, ReleaseLevels.TryParse("completed"));
             Assert.AreEqual(ReleaseLevel.NeedsUser, ReleaseLevels.TryParse("待验证"));
             Assert.AreEqual(ReleaseLevel.NeedsUser, ReleaseLevels.TryParse("Needs-User"));
+            Assert.AreEqual(ReleaseLevel.NeedsUser, ReleaseLevels.TryParse("待确认"));
             Assert.AreEqual(ReleaseLevel.Failed, ReleaseLevels.TryParse("2"));
+            Assert.AreEqual(ReleaseLevel.Unlimited, ReleaseLevels.TryParse("不限"));
+            Assert.AreEqual(ReleaseLevel.Unlimited, ReleaseLevels.TryParse("3"));
+            Assert.AreEqual(ReleaseLevel.Unlimited, ReleaseLevels.Clamp(3));
+            Assert.AreEqual(ReleaseLevel.Unlimited, ReleaseLevels.Default);
+            Assert.AreEqual(4, ReleaseLevels.All.Length);
+            Assert.AreEqual(ReleaseLevel.Failed, ReleaseLevels.TryParseLegacy("needs_user"), "旧版待验证=失败阻塞 / legacy needs_user = failures block");
+            Assert.AreEqual(ReleaseLevel.Unlimited, ReleaseLevels.TryParseLegacy("failed"), "旧版失败=全部放行 / legacy failed = release all");
+            Assert.AreEqual(ReleaseLevel.Completed, ReleaseLevels.TryParseLegacy("completed"));
             Assert.IsNull(ReleaseLevels.TryParse("maybe"));
             foreach (var level in ReleaseLevels.All) Assert.AreEqual(level, ReleaseLevels.TryParse(ReleaseLevels.Key(level)));
         }
 
         [DataTestMethod]
         [DataRow(ReleaseLevel.Completed, true, true)]
-        [DataRow(ReleaseLevel.NeedsUser, true, false)]
-        [DataRow(ReleaseLevel.Failed, false, false)]
+        [DataRow(ReleaseLevel.NeedsUser, false, true)]
+        [DataRow(ReleaseLevel.Failed, true, false)]
+        [DataRow(ReleaseLevel.Unlimited, false, false)]
         public void BlockingTask_FollowsReleaseLevel(ReleaseLevel level, bool failedBlocks, bool needsUserBlocks)
         {
             var failed = Waiting(1); TaskStateMachine.Fail(failed, "x", T0);

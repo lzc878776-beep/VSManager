@@ -124,7 +124,7 @@ namespace VSManager
                     "优先于仅 AI，启用时包含恢复任务；关闭只影响后续入队，既有授权继续 / Overrides AI-only; enabling includes restored tasks; disabling affects later admissions, existing grants continue",
                     _s.AutoStartAllTasks, v => _s.AutoStartAllTasks = v),
                 Toggle("跳过失败前序任务 / Skip failed predecessors",
-                    "等价于 AI 助手顶栏放行等级「失败」（默认）；关闭切到「待验证」，失败暂停后续；「已完成」请用滑块设置 / Same as release level \"Failed\" on the AI header slider (default); off switches to \"Awaiting verification\" so failures pause successors; use the slider for \"Completed\"",
+                    "等价于任务清单顶栏接续等级「不限」（默认）；关闭切到「失败」，失败阻塞后续；「已完成」「待确认」请用滑块设置 / Same as continuation level \"Unlimited\" on the task list header slider (default); off switches to \"Failed\" so failures block successors; use the slider for \"Completed\" or \"Awaiting confirmation\"",
                     _s.SkipFailedPredecessors, v => _s.SkipFailedPredecessors = v),
                 Toggle("重发后隐藏原失败条目 / Hide superseded failed entries",
                     "仅隐藏界面，记录与归档保留；重发任务按新编号排队 / UI-only hiding; records and archive remain; resends queue by their new ID",
@@ -1121,6 +1121,24 @@ namespace VSManager
             Row(NewLabel("手动等待秒数 / Manual wait seconds"), manualTimeout, Dpi.S(42));
             Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted,
                 Text = "默认 300 秒；超时仍等待，仅提醒一次。通知及语音沿用暂存任务通知设置。\r\nDefault 300 seconds; timeout keeps waiting and warns once. Uses pending-task notification and voice settings." }, Dpi.S(64), true);
+
+            var aiRetryLimit = new NumericUpDown
+            {
+                Name = nameof(AppSettings.AiRetryLimit),
+                Minimum = TaskFailureAnalyzer.MinAiAttemptsLimit, Maximum = TaskFailureAnalyzer.MaxAiAttemptsLimit,
+                Value = TaskFailureAnalyzer.ClampAttempts(_s.AiRetryLimit),
+                Dock = DockStyle.Left, Width = Dpi.S(90), BackColor = Theme.Elevated, ForeColor = Theme.Text
+            };
+            aiRetryLimit.ValueChanged += (s, e) =>
+            {
+                if (_loading) return;
+                _s.AiRetryLimit = (int)aiRetryLimit.Value;
+                Changed?.Invoke();
+            };
+            Row(NewLabel("AI 重试上限 / AI retry limit"), aiRetryLimit, Dpi.S(42));
+            Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted,
+                Text = "同一需求 AI 自主让 Copilot 执行的次数（含重发与补充重试），默认 " + TaskFailureAnalyzer.DefaultAiAttempts + "，范围 " + TaskFailureAnalyzer.MinAiAttemptsLimit + "–" + TaskFailureAnalyzer.MaxAiAttemptsLimit + "；投递失败、网络中断等 Copilot 未执行完的轮次不计入。\r\n"
+                    + "Copilot runs the AI may trigger on its own per request (resends and retries with info); default " + TaskFailureAnalyzer.DefaultAiAttempts + ", range " + TaskFailureAnalyzer.MinAiAttemptsLimit + "–" + TaskFailureAnalyzer.MaxAiAttemptsLimit + "; delivery failures and runs cut off by network errors are not counted." }, Dpi.S(64), true);
 
             Control timeoutHost, retriesHost;
             (timeoutHost, _sendTimeout) = NewTextBox(_s.SendConfirmTimeoutSeconds.ToString(), false);

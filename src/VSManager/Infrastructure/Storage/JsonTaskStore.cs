@@ -131,7 +131,10 @@ namespace VSManager
                 Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
                 QueueOrder = Math.Max(0, I("QueueOrder")), CompletionToken = S("CompletionToken"),
                 FailureKind = S("FailureKind"), PriorFailure = S("PriorFailure"),
+                Supplement = S("Supplement"), SupplementCount = Math.Max(0, I("SupplementCount")),
+                ContentRuns = Math.Max(0, I("ContentRuns")), RecoveryRetries = Math.Max(0, I("RecoveryRetries")), PriorRuns = Math.Max(0, I("PriorRuns")),
                 NeedsUser = string.Equals(S("NeedsUser"), "true", StringComparison.OrdinalIgnoreCase),
+                PendingNote = S("PendingNote"), FailureReason = S("FailureReason"),
                 IsWorktreeMerge = S("IsWorktreeMerge") == "true", WorktreeCounted = S("WorktreeCounted") == "true",
                 WorktreeBatch = Math.Max(0, I("WorktreeBatch")),
                 Replaces = e.Element("Replaces")?.Elements("item")
@@ -187,6 +190,8 @@ namespace VSManager
                 if (!t.Finished.HasValue) t.Finished = t.Created;
             }
             if (!QueueStatus.Active(t.Status) && !t.Finished.HasValue) t.Finished = t.Started ?? t.Created;
+            // 旧记录没有待处理 / 失败说明时按结果补齐 / Older records without hold notes get them derived from the outcome
+            TaskStateMachine.FillHoldNote(t);
             return t;
         }
 

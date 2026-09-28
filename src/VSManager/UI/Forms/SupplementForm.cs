@@ -34,8 +34,8 @@ namespace VSManager
             };
 
             string reason = t.Status == QueueStatus.Failed
-                ? "失败原因 / Failure: " + TextUtil.Clip(t.Error ?? "", 240)
-                : "待验证结果 / Awaiting verification: " + TextUtil.Clip(t.Result ?? "", 240);
+                ? "失败原因 / Failure: " + TextUtil.Clip(t.FailureReason ?? t.Error ?? "", 240)
+                : "待处理 / Pending: " + TextUtil.Clip(t.PendingNote ?? t.Result ?? "", 240);
             var hint = new Label
             {
                 Dock = DockStyle.Top,

@@ -163,6 +163,11 @@ namespace VSManager
                 _dispatcher.Pump();
                 return reused;
             }
+            if (TaskFailureAnalyzer.CheckAiResend(_tasks.Items, e.Path, text) is string refused)
+            {
+                AppLog.Write(AppLog.TasksFile, "拒绝 AI 重发 / Refused AI resend: " + TextUtil.Clip(refused, 200));
+                return refused;
+            }
             var q = attachments != null && attachments.Length > 0
                 ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
                 : _tasks.AddParked(e.Path, e.Alias, text, "AI");

@@ -134,37 +134,43 @@ namespace VSManager
             return sb.ToString();
         }
 
-        /// <summary>系统提示词中的放行等级规则（中文）。/ Release-level rule of the system prompt (Chinese).</summary>
+        /// <summary>系统提示词中的接续等级规则（中文）。/ Continuation-level rule of the system prompt (Chinese).</summary>
         private static string ReleasePolicyZh(ReleaseLevel level)
         {
-            const string common = "排队中、等待目标 VS、发送中、执行中始终阻塞同一 VS 的后续；已取消或已停止不阻塞。用户可在侧边栏顶栏滑块或让你用 set_release_level 调整等级。";
+            const string common = "排队中、等待目标 VS、发送中、执行中始终阻塞同一 VS 的后续；已取消或已停止不阻塞。用户可在任务清单顶栏（或 AI 助手顶栏）的四档接续等级滑块或让你用 set_release_level 调整等级。";
+            const string onFailure = "收到失败通知后由你判断：失败原因明确且能从 VS 返回的信息、对话或上下文补齐时，用 retry_task_with_info 自行补充信息重试；需要用户决定或只有用户知道的信息时，把原因和所需信息告诉用户，由用户补充（再用 retry_task_with_info 带上）、同意放行（release_task）或取消。";
+            const string onNeedsUser = "待确认时把需验证的内容转告用户，用户确认通过后 release_task 放行，验证不通过则用 retry_task_with_info 带上问题重试。";
+            const string noBypass = "阻塞是为了让需要用户处理的内容不被后续任务覆盖对话上下文，禁止改队列或改派来绕过暂停。";
             switch (level)
             {
+                case ReleaseLevel.Unlimited:
+                    return "   当前接续等级=unlimited「不限」（默认）：" + common + "无论前序成功、待确认还是失败都自动执行下一项；保留失败状态与历史，通知会标注已跳过。";
                 case ReleaseLevel.Failed:
-                    return "   当前放行等级=failed「失败」（默认）：" + common + "无论前序成功、待验证还是失败都自动执行下一项；保留失败状态与历史，通知会标注已跳过。";
+                    return "   当前接续等级=failed「失败」：" + common + "已完成与待确认自动执行下一项；失败会阻塞同一 VS 的后续任务，直到失败项被补充重试、放行、取消或被重发取代。" + onFailure + noBypass;
                 case ReleaseLevel.NeedsUser:
-                    return "   当前放行等级=needs_user「待验证」：" + common + "已完成与待验证自动执行下一项；失败会暂停同一 VS 的后续任务，直到失败项被补充重试、放行、取消或被重发取代。"
-                        + "收到失败通知后由你判断：失败原因明确且能从 VS 返回的信息、对话或上下文补齐时，用 retry_task_with_info 自行补充信息重试；需要用户决定或只有用户知道的信息时，把原因和所需信息告诉用户，由用户补充（再用 retry_task_with_info 带上）、同意放行（release_task）或取消。禁止改队列或改派来绕过暂停。";
+                    return "   当前接续等级=needs_user「待确认」：" + common + "已完成与失败自动执行下一项；待确认（需要用户测试或确认）会阻塞同一 VS 的后续任务，直到被放行、补充重试或取消。" + onNeedsUser + noBypass;
                 default:
-                    return "   当前放行等级=completed「已完成」：" + common + "只有成功完成才自动执行下一项；待验证与失败都会暂停同一 VS 的后续任务。"
-                        + "失败时按「待验证」等级同样的方式处理（自行 retry_task_with_info 补充重试，或转交用户决定）；待验证时把需验证的内容转告用户，用户确认通过后 release_task 放行，验证不通过则用 retry_task_with_info 带上问题重试。禁止改队列或改派来绕过暂停。";
+                    return "   当前接续等级=completed「已完成」：" + common + "只有成功完成才自动执行下一项；待确认与失败都会阻塞同一 VS 的后续任务。" + onFailure + onNeedsUser + noBypass;
             }
         }
 
-        /// <summary>系统提示词中的放行等级规则（英文）。/ Release-level rule of the system prompt (English).</summary>
+        /// <summary>系统提示词中的接续等级规则（英文）。/ Continuation-level rule of the system prompt (English).</summary>
         private static string ReleasePolicyEn(ReleaseLevel level)
         {
-            const string common = "Waiting, waiting for target VS, sending and running tasks always block successors on the same VS; cancelled or stopped tasks do not. The user can change the level with the header slider or ask you to call set_release_level. ";
+            const string common = "Waiting, waiting for target VS, sending and running tasks always block successors on the same VS; cancelled or stopped tasks do not. The user can change the level with the four-stop continuation slider in the task list header (or the AI assistant header) or ask you to call set_release_level. ";
+            const string onFailure = "On a failure notice, decide: if the cause is clear and you can fill the gap from the VS reply, conversation or context, call retry_task_with_info yourself; if it needs a user decision or information only the user has, tell the user the cause and what is needed, and let them supplement (then pass it via retry_task_with_info), release (release_task) or cancel. ";
+            const string onNeedsUser = "For awaiting confirmation, relay what to verify, call release_task once the user confirms, or retry_task_with_info with the problems if verification fails. ";
+            const string noBypass = "Blocking keeps content that needs the user from being buried by later tasks in the conversation; never edit the queue or reassign tasks to bypass the pause.";
             switch (level)
             {
+                case ReleaseLevel.Unlimited:
+                    return "   Current continuation level=unlimited (default): " + common + "The next task runs whether the predecessor succeeded, awaits confirmation or failed; preserve failure state and history, and report that the failed predecessor was skipped.";
                 case ReleaseLevel.Failed:
-                    return "   Current release level=failed (default): " + common + "The next task runs whether the predecessor succeeded, awaits verification or failed; preserve failure state and history, and report that the failed predecessor was skipped.";
+                    return "   Current continuation level=failed: " + common + "Completed and awaiting-confirmation tasks release the next one; a failure blocks successors on the same VS until it is retried with info, released, cancelled or superseded by a resend. " + onFailure + noBypass;
                 case ReleaseLevel.NeedsUser:
-                    return "   Current release level=needs_user (awaiting verification): " + common + "Completed and awaiting-verification tasks release the next one; a failure pauses successors on the same VS until it is retried with info, released, cancelled or superseded by a resend. "
-                        + "On a failure notice, decide: if the cause is clear and you can fill the gap from the VS reply, conversation or context, call retry_task_with_info yourself; if it needs a user decision or information only the user has, tell the user the cause and what is needed, and let them supplement (then pass it via retry_task_with_info), release (release_task) or cancel. Never edit the queue or reassign tasks to bypass the pause.";
+                    return "   Current continuation level=needs_user (awaiting confirmation): " + common + "Completed and failed tasks release the next one; a result awaiting confirmation (user testing or confirmation needed) blocks successors on the same VS until it is released, retried with info or cancelled. " + onNeedsUser + noBypass;
                 default:
-                    return "   Current release level=completed: " + common + "Only a successful task releases the next one; awaiting verification and failures both pause successors on the same VS. "
-                        + "Handle failures as at the needs_user level (retry_task_with_info yourself or hand over to the user); for awaiting verification, relay what to verify, call release_task once the user confirms, or retry_task_with_info with the problems if verification fails. Never edit the queue or reassign tasks to bypass the pause.";
+                    return "   Current continuation level=completed: " + common + "Only a successful task releases the next one; awaiting confirmation and failures both block successors on the same VS. " + onFailure + onNeedsUser + noBypass;
             }
         }
 
@@ -204,7 +210,8 @@ namespace VSManager
             sb.AppendLine(ReleasePolicyZh(releaseLevel));
             sb.AppendLine("   缺少成功回执仍判失败，不能把空闲、已入队、已发送或跳过失败当作成功；跳过只改变调度，不代表依赖的结果已成功。「已完成（待用户验证）」表示改动已做完但 VS 无法自行测试：把需验证的内容转告用户并等待反馈，不重发。");
             sb.AppendLine("   收到「[任务失败通知]」时如实汇报当前继续或暂停策略，不重复发布清单中的后续任务。先按失败类别与 Copilot 回复分析原因：投递类（发送失败、VS 关闭）与任务内容无关；回复提到与本任务无关的遗留问题、需要用户测试或需要用户补充信息时，任务可能已完成或只缺用户操作，向用户说明或提问，不要重发。");
-            sb.AppendLine("   仅用户要求或同意重试时重新排队（例外：放行等级使失败暂停后续时，可按上述规则自行用 retry_task_with_info 补充信息重试），或以「重发 @原任务编号：」发布修正任务；修正任务必须针对失败原因写明调整（先解决哪个阻碍、忽略哪些无关问题、缩小到哪部分），禁止原样重发（工具会拒绝）；重发按新编号排在队尾并自动附带前次反馈，原失败条目按设置仅在界面隐藏，历史不删除。");
+            sb.AppendLine("   仅用户要求或同意重试时重新排队（例外：接续等级使失败阻塞后续时，可按上述规则自行用 retry_task_with_info 补充信息重试），或以「重发 @原任务编号：」发布修正任务；修正任务必须针对失败原因写明调整（先解决哪个阻碍、忽略哪些无关问题、缩小到哪部分），禁止原样或只改措辞地重发（加「请再试一次」「仔细一点」不算修正，工具会拒绝）；重发按新编号排在队尾并自动附带前次反馈，原失败条目按设置仅在界面隐藏，历史不删除。每次重试都会消耗 Copilot 用量：同一需求（含重发链与补充重试）由你自主触发的 Copilot 执行最多 " + TaskFailureAnalyzer.MaxAiAttempts + " 次，失败通知会写明已用次数；达到上限或拿不出新信息时，把失败原因、各次尝试的调整和所需信息交给用户，不要换说法继续重发。");
+            sb.AppendLine("   非任务内容原因的失败（投递失败、VS 关闭、读取失败、「Copilot 本轮未执行完」如网络 / 服务错误或被中断）说明 Copilot 没有执行完这一轮，不计入上述执行次数：不必强行总结新内容，可直接用 retry_task 原样重试，或发送「继续」「再试一次」让 Copilot 接着做；每个任务最多直接重试 " + TaskFailureAnalyzer.MaxRecoveryRetries + " 次，仍失败就让用户检查网络、Copilot 或 VS 状态。只有「缺少回执」「Copilot 回报失败」这类 Copilot 执行完但任务没完成的失败，才需要针对原因写出新内容。");
             sb.AppendLine("   必须阅读目标 VS 最后返回的反馈文字，不要只看回执：若反馈说明功能已实现（构建 / 测试通过），只是尚未在运行中的程序里实际验证，按「未验证」状态汇报并列出未验证项，不判为失败；「未验证」与「已完成」「失败」并列，不阻塞后续任务，用户确认后可标记为已验证；只有构建或测试失败、功能未实现、需要用户决定等才算失败。");
             sb.AppendLine("   收到「[任务完成通知]」时简要汇报结果；未证实成功的结果不得作为成功依据生成新的依赖任务。");
             sb.AppendLine("6. 只是发布任务时，发完即简要回复（VS 完成后本工具会自动提醒用户），不要等待；用户明确要结果、或后续步骤依赖结果时，才调用 wait_for_vs。多个 VS 可以先依次发布再逐个等待。");
@@ -274,7 +281,8 @@ namespace VSManager
             sb.AppendLine(ReleasePolicyEn(releaseLevel));
             sb.AppendLine("   Missing successful receipts still mean failure. Idle, enqueued, delivered or skipped failure never means success; skipping changes scheduling, not the outcome of dependencies. 'Done (awaiting user verification)' means the changes are made but VS cannot test them itself: relay what to verify and wait for feedback; do not resend.");
             sb.AppendLine("   On [任务失败通知], accurately report the current continue-or-pause policy; never duplicate queued successors. First analyze the cause from the failure category and the Copilot reply: delivery failures (send failure, VS closed) are unrelated to the task content; when the reply mentions pre-existing issues unrelated to the task, required user testing, or missing user input, the task may be done or only waiting on the user, so explain or ask instead of resending.");
-            sb.AppendLine("   Retry only when the user asks or agrees (exception: when the release level makes a failure pause successors, you may retry with retry_task_with_info on your own per the rule above): requeue, or publish a correction prefixed 'resend @originalId:' whose text addresses the cause (which blocker to solve first, which unrelated issues to ignore, which part to narrow to). Verbatim resends are forbidden and rejected by the tool. Resends join the tail with a new ID and automatically carry the previous feedback; old failed entries are only hidden according to settings, never deleted from history.");
+            sb.AppendLine("   Retry only when the user asks or agrees (exception: when the continuation level makes a failure block successors, you may retry with retry_task_with_info on your own per the rule above): requeue, or publish a correction prefixed 'resend @originalId:' whose text addresses the cause (which blocker to solve first, which unrelated issues to ignore, which part to narrow to). Verbatim or merely reworded resends are forbidden and rejected by the tool (adding 'try again' or 'be careful' is not a correction). Resends join the tail with a new ID and automatically carry the previous feedback; old failed entries are only hidden according to settings, never deleted from history. Every retry costs Copilot usage: you may trigger at most " + TaskFailureAnalyzer.MaxAiAttempts + " Copilot runs on your own for one request (resend chain plus retries with info), and failure notices state how many are used; at the limit, or when you have no new information, hand the cause, what each attempt changed and what is needed to the user instead of rewording and resending.");
+            sb.AppendLine("   Failures not caused by the task content (delivery failure, VS closed, read failure, 'Copilot run interrupted' such as a network / service error or cut-off) mean Copilot did not finish that run and do not count toward the runs above: you need not compose new content; retry unchanged with retry_task, or send 'continue' / 'try again' so Copilot picks up; at most " + TaskFailureAnalyzer.MaxRecoveryRetries + " direct retries per task, after which ask the user to check the network, Copilot or VS. Only failures where Copilot finished but the task did not (missing receipt, reported by Copilot) require new content that addresses the cause.");
             sb.AppendLine("   Always read the target VS's final feedback text, not just the receipt: if it says the work is implemented (build / tests pass) and only runtime verification in the running app is pending, report it with the 'unverified' status and list the pending checks, not as a failure. 'Unverified' sits alongside done and failed, never blocks successors, and the user can mark it verified. Only build or test failures, missing implementation or required user decisions count as failures.");
             sb.AppendLine("   On [任务完成通知], briefly report the result. Never treat an unconfirmed outcome as success when generating new dependent work.");
             sb.AppendLine("6. When you are only dispatching tasks, reply briefly right after dispatching (VSManager notifies the user when the VS finishes) and do not wait; call wait_for_vs only when the user explicitly wants the result or later steps depend on it. You may dispatch to several VS instances first and then wait for each.");

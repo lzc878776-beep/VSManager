@@ -121,16 +121,69 @@ namespace VSManager.Tests
             failed.Result = "测试项目缺少引用";
             TaskStateMachine.Fail(failed, "reported", _clock.Now, FailureKind.Reported);
 
-            Assert.AreSame(failed, TaskFailureAnalyzer.FindVerbatimResend(_queue.Items, "A", "重发 @" + failed.Id + "：实现导出功能并补充单元测试"));
-            Assert.IsNull(TaskFailureAnalyzer.FindVerbatimResend(_queue.Items, "B", "实现导出功能并补充单元测试"));
-            Assert.IsNull(TaskFailureAnalyzer.FindVerbatimResend(_queue.Items, "A", "实现导出功能，先为测试项目添加缺少的引用"));
+            Assert.AreSame(failed, TaskFailureAnalyzer.FindRepeatedResend(_queue.Items, "A", "重发 @" + failed.Id + "：实现导出功能并补充单元测试"));
+            Assert.IsNull(TaskFailureAnalyzer.FindRepeatedResend(_queue.Items, "B", "实现导出功能并补充单元测试"));
+            Assert.IsNull(TaskFailureAnalyzer.FindRepeatedResend(_queue.Items, "A", "实现导出功能，先为测试项目添加缺少的引用"));
 
             var resend = _queue.Add("A", "A", "重发 @" + failed.Id + "：实现导出功能，先为测试项目添加缺少的引用", "AI");
             StringAssert.Contains(resend.PriorFailure, "测试项目缺少引用");
 
             var delivery = _queue.Add("C", "C", "另一个足够长的任务描述文本", "AI");
             TaskStateMachine.Fail(delivery, "send failed", _clock.Now, FailureKind.Delivery);
-            Assert.IsNull(TaskFailureAnalyzer.FindVerbatimResend(_queue.Items, "C", "另一个足够长的任务描述文本"));
+            Assert.IsNull(TaskFailureAnalyzer.FindRepeatedResend(_queue.Items, "C", "另一个足够长的任务描述文本"));
+        }
+
+        [TestMethod]
+        public void NearRepeat_CatchesRewordedRetries_ButAllowsRealRevisions()
+        {
+            const string task = "实现订单导出功能：在 OrderService 中新增 ExportCsv 方法，并在工具栏添加导出按钮";
+            Assert.IsTrue(TaskFailureAnalyzer.IsNearRepeat(task, task));
+            Assert.IsTrue(TaskFailureAnalyzer.IsNearRepeat(task, "重发 @3：请再试一次，" + task));
+            Assert.IsTrue(TaskFailureAnalyzer.IsNearRepeat(task, task + "。请仔细一点，务必完成！"));
+            Assert.IsTrue(TaskFailureAnalyzer.IsNearRepeat(task, "Please try again carefully: " + task));
+            Assert.IsFalse(TaskFailureAnalyzer.IsNearRepeat(task, task + "。先修复 OrderService.cs 第 42 行的空引用，忽略 Legacy 项目的警告"));
+            Assert.IsFalse(TaskFailureAnalyzer.IsNearRepeat(task, "只在 OrderService 中新增 ExportCsv 方法"), "narrowing the scope is a revision");
+        }
+
+        [TestMethod]
+        public void AiResend_IsCappedPerRequestChain()
+        {
+            string text = "实现订单导出功能并补充单元测试";
+            var first = _queue.Add("A", "A", text, "AI");
+            first.Result = "测试项目缺少引用";
+            TaskStateMachine.Fail(first, "reported", _clock.Now, FailureKind.Reported);
+            Assert.IsNull(TaskFailureAnalyzer.CheckAiResend(_queue.Items, "A", "重发 @" + first.Id + "：先为测试项目添加 xunit 引用，再实现订单导出功能"));
+
+            var second = _queue.Add("A", "A", "重发 @" + first.Id + "：先为测试项目添加 xunit 引用，再实现订单导出功能", "AI");
+            CollectionAssert.Contains(second.Replaces, first.Id);
+            second.Result = "xunit 版本冲突";
+            TaskStateMachine.Fail(second, "reported", _clock.Now, FailureKind.Reported);
+            Assert.AreEqual(2, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { second }));
+            StringAssert.Contains(TaskFailureAnalyzer.AttemptsNote(_queue.Items, second), "1");
+
+            // 补充重试一次后再失败：链上共 3 次，AI 不能再自主重发或补充 / One retry with info fails again: 3 runs in the chain, no more AI retries
+            Assert.IsNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, second, "改用 MSTest，项目已引用 MSTest.TestFramework"));
+            TaskStateMachine.Supplement(second, "改用 MSTest，项目已引用 MSTest.TestFramework", out _);
+            TaskStateMachine.BeginSend(second, "A");
+            second.Result = "仍然失败";
+            TaskStateMachine.Fail(second, "reported", _clock.Now, FailureKind.Reported);
+            Assert.AreEqual(3, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { second }));
+            StringAssert.Contains(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, second, "换一种完全不同的新思路来实现"), "已拒绝");
+            StringAssert.Contains(TaskFailureAnalyzer.CheckAiResend(_queue.Items, "A", "重发 @" + second.Id + "：换一个实现思路，用 CsvHelper 库生成导出文件"), "已拒绝");
+        }
+
+        [TestMethod]
+        public void AiRetry_RequiresNewInformation_AndDeliveryFailuresDoNotCount()
+        {
+            var t = _queue.Add("A", "A", "实现订单导出功能并补充单元测试", "AI");
+            TaskStateMachine.Fail(t, "reported", _clock.Now, FailureKind.Reported);
+            Assert.IsNotNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "请再试一次，务必完成"));
+            Assert.IsNotNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "实现订单导出功能"));
+            Assert.IsNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8"));
+
+            var d = _queue.Add("B", "B", "另一个足够长的任务描述文本", "AI");
+            TaskStateMachine.Fail(d, "send failed", _clock.Now, FailureKind.Delivery);
+            Assert.AreEqual(0, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { d }));
         }
 
         [TestMethod]
@@ -156,6 +209,121 @@ namespace VSManager.Tests
             Assert.AreEqual("#0：x", back[0].PriorFailure);
             Assert.AreEqual(FailureKind.NoReceipt, back[1].FailureKind);
             Assert.IsFalse(back[1].NeedsUser);
+            Assert.AreEqual(1, back[1].ContentRuns);
+        }
+
+        [TestMethod]
+        public void JsonStore_RoundTripsRetryCounters()
+        {
+            string path = _data.File("tasks.json");
+            var t = Sent();
+            t.ContentRuns = 2; t.RecoveryRetries = 3; t.PriorRuns = 1; t.SupplementCount = 1; t.Supplement = "改用 UTF-8";
+            var store = new JsonTaskStore(path);
+            Assert.IsNull(store.Save(new[] { t }));
+            var back = store.Load(new List<string>()).Single();
+            Assert.AreEqual(2, back.ContentRuns);
+            Assert.AreEqual(3, back.RecoveryRetries);
+            Assert.AreEqual(1, back.PriorRuns);
+            Assert.AreEqual(1, back.SupplementCount);
+            Assert.AreEqual("改用 UTF-8", back.Supplement);
+            var copy = back.Clone();
+            Assert.AreEqual(2, copy.ContentRuns);
+            Assert.AreEqual(3, copy.RecoveryRetries);
+            Assert.AreEqual(1, copy.PriorRuns);
+        }
+
+        [TestMethod]
+        public void LooksInterrupted_OnlyForEmptyOrShortErrorReplies()
+        {
+            Assert.IsTrue(TaskFailureAnalyzer.LooksInterrupted(""));
+            Assert.IsTrue(TaskFailureAnalyzer.LooksInterrupted("  "));
+            Assert.IsTrue(TaskFailureAnalyzer.LooksInterrupted("抱歉，请求失败，请稍后再试。"));
+            Assert.IsTrue(TaskFailureAnalyzer.LooksInterrupted("Sorry, your request failed. Please try again."));
+            Assert.IsTrue(TaskFailureAnalyzer.LooksInterrupted("Sorry, there was a network error."));
+            Assert.IsFalse(TaskFailureAnalyzer.LooksInterrupted("unconfirmed result"));
+            Assert.IsFalse(TaskFailureAnalyzer.LooksInterrupted("已修改 OrderService.cs，新增导出方法"));
+            Assert.IsFalse(TaskFailureAnalyzer.LooksInterrupted(new string('改', 600) + " network error"), "long replies are real work");
+        }
+
+        [TestMethod]
+        public async Task InterruptedRun_IsNotContentFailure_AndNoticeOffersPlainRetry()
+        {
+            var t = await RunWithAnswer("实现导出功能", q => "Sorry, your request failed. Please try again.");
+            Assert.AreEqual(QueueStatus.Failed, t.Status);
+            Assert.AreEqual(FailureKind.Interrupted, t.FailureKind);
+            Assert.AreEqual(0, t.ContentRuns);
+            Assert.AreEqual(0, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { t }));
+            Assert.IsNull(TaskFailureAnalyzer.PriorFailureSummary(t));
+            string body = _host.NoticeBodies.Last();
+            StringAssert.Contains(body, "retry_task");
+            StringAssert.Contains(body, "Sorry, your request failed");
+            Assert.IsFalse(body.Contains("reached the AI self-retry limit"));
+        }
+
+        [TestMethod]
+        public void NonContentFailures_AllowRepeats_AndDoNotCountTowardTheLimit()
+        {
+            var t = _queue.Add("A", "A", "实现订单导出功能并补充单元测试", "AI");
+            t.Result = "缺少导出目录";
+            TaskStateMachine.Fail(t, "reported", _clock.Now, FailureKind.Reported);
+            Assert.AreEqual(1, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { t }));
+            StringAssert.Contains(TaskFailureAnalyzer.CheckRecoveryRetry(t), "retry_task_with_info");
+
+            TaskStateMachine.Supplement(t, "导出目录用 %APPDATA%\\Exports", out _);
+            TaskStateMachine.BeginSend(t, "A");
+            TaskStateMachine.Fail(t, "interrupted", _clock.Now, FailureKind.Interrupted);
+            Assert.AreEqual(1, TaskFailureAnalyzer.LineageAttempts(_queue.Items, new[] { t }), "interrupted runs are not counted");
+            Assert.IsNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "继续"), "'continue' is allowed after an interrupted run");
+            Assert.IsNull(TaskFailureAnalyzer.CheckRecoveryRetry(t));
+            Assert.IsNull(TaskFailureAnalyzer.FindRepeatedResend(_queue.Items, "A", t.Text));
+
+            t.RecoveryRetries = TaskFailureAnalyzer.MaxRecoveryRetries;
+            StringAssert.Contains(TaskFailureAnalyzer.CheckRecoveryRetry(t), "已拒绝");
+            Assert.AreEqual(TaskFailureAnalyzer.MaxRecoveryRetries.ToString(), TaskFailureAnalyzer.MaxRecoveryRetriesText);
+
+            var worktree = _queue.Add("B", "B", "另一个足够长的任务描述文本", "AI");
+            TaskStateMachine.Fail(worktree, "worktree failed", _clock.Now);
+            Assert.IsNotNull(TaskFailureAnalyzer.CheckRecoveryRetry(worktree), "unclassified failures need the user");
+        }
+
+        [TestMethod]
+        public void AiRetryLimit_FollowsTheSetting()
+        {
+            Assert.AreEqual(TaskFailureAnalyzer.DefaultAiAttempts, TaskFailureAnalyzer.ClampAttempts(0));
+            Assert.AreEqual(TaskFailureAnalyzer.MaxAiAttemptsLimit, TaskFailureAnalyzer.ClampAttempts(99));
+            Assert.AreEqual(TaskFailureAnalyzer.DefaultAiAttempts, new AppSettings().AiRetryLimit);
+            var settings = new AppSettings { AiRetryLimit = 1 };
+            try
+            {
+                TaskFailureAnalyzer.AttemptsLimitSource = () => settings.AiRetryLimit;
+                var t = _queue.Add("A", "A", "实现订单导出功能并补充单元测试", "AI");
+                TaskStateMachine.Fail(t, "reported", _clock.Now, FailureKind.Reported);
+                StringAssert.Contains(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8"), "已拒绝");
+                settings.AiRetryLimit = 4;
+                Assert.IsNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8"));
+                StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Now, "", null), "Copilot 执行最多 4 次");
+                StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Now, "", null), "at most 4 Copilot runs");
+            }
+            finally { TaskFailureAnalyzer.AttemptsLimitSource = null; }
+        }
+
+        [TestMethod]
+        public void Resend_TellsCopilotTheRound()
+        {
+            var first = _queue.Add("A", "A", "实现订单导出功能并补充单元测试", "AI");
+            TaskStateMachine.BeginSend(first, "A");
+            Assert.IsFalse(TaskStateMachine.DispatchText(first).Contains("【第"));
+            first.Result = "测试项目缺少引用";
+            TaskStateMachine.Fail(first, "reported", _clock.Now, FailureKind.Reported);
+
+            var second = _queue.Add("A", "A", "重发 @" + first.Id + "：先为测试项目添加 xunit 引用，再实现订单导出功能", "AI");
+            Assert.AreEqual(1, second.PriorRuns);
+            TaskStateMachine.BeginSend(second, "A");
+            StringAssert.Contains(TaskStateMachine.DispatchText(second), "【第 2 轮】");
+            TaskStateMachine.Fail(second, "reported", _clock.Now, FailureKind.Reported);
+            TaskStateMachine.Requeue(second);
+            TaskStateMachine.BeginSend(second, "A");
+            StringAssert.Contains(TaskStateMachine.DispatchText(second), "【第 3 轮】");
         }
     }
 }

@@ -15,6 +15,10 @@ namespace VSManager
         private readonly FlatButton _btnRemoveInvalid = new FlatButton { Text = "移除无效", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
         private readonly FlatButton _btnStart = new FlatButton { Text = "▶ 开始流程 / Start" };
+        private readonly ReleaseLevelSlider _levelSlider = new ReleaseLevelSlider { BackColor = Theme.Sidebar };
+        /// <summary>用户在顶栏滑块上切换接续等级。/ Raised when the user switches the continuation level on the header slider.</summary>
+        public event Action<ReleaseLevel> ReleaseLevelChanged;
+        private static int TopHeight => Dpi.S(140);
         private bool _workflowStarted;
         public Func<QueuedTask, bool> CanRunTask { get; set; }
         public Func<QueuedTask, string> TaskStartText { get; set; }
@@ -61,7 +65,7 @@ namespace VSManager
             Padding = new Padding(1, 0, 0, 0);
 
             _top.Dock = DockStyle.Top;
-            _top.Height = Dpi.S(88);
+            _top.Height = TopHeight;
             _top.BackColor = Theme.Sidebar;
             _top.Paint += Top_Paint;
             _top.MouseClick += (s, e) =>
@@ -99,6 +103,13 @@ namespace VSManager
             _btnStart.Click += (s, e) => ActionRequested?.Invoke(null, "start");
             _tips.SetToolTip(_btnStart, TaskDispatcher.WaitingForStart);
             _top.Controls.Add(_btnStart);
+            _levelSlider.ValueChanged += () =>
+            {
+                _tips.SetToolTip(_levelSlider, LevelTip(_levelSlider.Value));
+                ReleaseLevelChanged?.Invoke(_levelSlider.Value);
+            };
+            _tips.SetToolTip(_levelSlider, LevelTip(_levelSlider.Value));
+            _top.Controls.Add(_levelSlider);
             _top.Resize += (s, e) => LayoutTop();
 
             _list.Dock = DockStyle.Fill;
@@ -146,7 +157,9 @@ namespace VSManager
             _wheel = new WheelForwarder(_list);
             Application.AddMessageFilter(_wheel);
 
+            InitDetail();
             Controls.Add(_list);
+            Controls.Add(_detail);
             Controls.Add(_top);
 
             _tick.Tick += (s, e) =>
@@ -361,11 +374,13 @@ namespace VSManager
             _btnRemoveInvalid.Visible = !collapsed;
             _btnView.Visible = !collapsed;
             _btnStart.Visible = !collapsed;
+            _levelSlider.Visible = !collapsed;
+            UpdateDetail();
             _btnHistory.Visible = !collapsed && (_hiddenCount > 0 || _showHistory);
             _btnCollapse.Text = collapsed ? "«" : "»";
             _tips.SetToolTip(_btnCollapse, collapsed ? "展开任务清单" : "收起任务清单");
             LayoutTop();
-            _top.Height = collapsed ? Height : Dpi.S(88);
+            _top.Height = collapsed ? Height : TopHeight;
             _top.Invalidate();
             if (raise) CollapsedChanged?.Invoke(collapsed);
         }
@@ -393,7 +408,20 @@ namespace VSManager
             _btnClear.Location = new Point(_top.Width - _btnClear.Width - Dpi.S(10), Dpi.S(52));
             _btnHistory.Location = new Point(_btnClear.Left - _btnHistory.Width - Dpi.S(4), Dpi.S(52));
             _btnStart.SetBounds(Dpi.S(10), Dpi.S(52), Math.Max(0, _btnHistory.Left - Dpi.S(14)), Dpi.S(28));
+            _levelSlider.SetBounds(Dpi.S(6), Dpi.S(86), Math.Max(0, _top.Width - Dpi.S(12)), Dpi.S(48));
         }
+
+        /// <summary>同步顶栏滑块显示的接续等级（不触发 ReleaseLevelChanged）。/ Syncs the header slider (does not raise ReleaseLevelChanged).</summary>
+        public void SetReleaseLevel(ReleaseLevel level)
+        {
+            _levelSlider.SetValueSilently(level);
+            _tips.SetToolTip(_levelSlider, LevelTip(level));
+            _top.Invalidate();
+        }
+
+        private static string LevelTip(ReleaseLevel level) =>
+            ReleaseLevels.Describe(level) + "\r\n被阻塞时在任务上右键「补充信息后重试」或「放行后续任务」；拖动或点击切换（←/→ 键也可）"
+            + "\r\nWhen blocked, right-click the task for \"Retry with info\" or \"Release successors\"; drag or click to switch (←/→ keys work too)";
 
         /// <summary>标题副文字使用独立一行。/ Subtitle has its own row.</summary>
         private int SubRight => _top.Width - Dpi.S(10);
@@ -459,6 +487,7 @@ namespace VSManager
                 : x is ExternalChat c && !c.Generating && !c.Stopped && !c.Interrupted && !IsCleared(c, cleared));
             _btnRemoveInvalid.Enabled = _queue.Items.Any(TaskQueue.IsInvalid) || ext.Any(c => c.IsInvalid);
             _top.Invalidate();
+            UpdateDetail();
         }
 
         private object ItemAt(Point p)
@@ -721,7 +750,10 @@ if (c != null)
             TextRenderer.DrawText(g, vsLine, Theme.SemiBold, new Rectangle(x, y, right - x, Dpi.S(18)), active ? Theme.AccentText : Theme.TextSecondary, flags | TextFormatFlags.SingleLine);
             y += Dpi.S(20);
             string body = OneLine(t.Text);
-            string tail = QueueStatus.Delivered(t.Status) && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
+            // 待确认 / 未验证 / 失败显示记录的待处理内容或失败原因，点击条目可在下方查看全文 / Pending / unverified / failed show the recorded note; click for the full text below
+            string tail = TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote) ? "⚑ 待处理：" + OneLine(t.PendingNote)
+                : QueueStatus.Delivered(t.Status) && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
+                : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason) ? "⚠ " + OneLine(t.FailureReason)
                 : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error)
                 : QueueStatus.Active(t.Status) ? (t.ManualChatWaitReason ?? EligibilityText(t))
                 : t.Status == QueueStatus.WaitingVs ? "⏳ 「" + (t.Target ?? t.VsName) + "」打开后自动推送 / pushed once it opens" : null;
@@ -736,7 +768,7 @@ if (c != null)
             TextRenderer.DrawText(g, body, Theme.Small, new Rectangle(x, y, right - x, bodyH), active ? Theme.Text : Theme.TextSecondary, flags | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
             if (tail != null)
                 TextRenderer.DrawText(g, tail, Theme.Small, new Rectangle(x, y + Dpi.S(18), right - x, Dpi.S(17)),
-                    t.Status == QueueStatus.Failed ? Theme.Danger : Theme.TextMuted, flags | TextFormatFlags.SingleLine);
+                    t.Status == QueueStatus.Failed ? Theme.Danger : TaskHoldNote.IsPending(t) ? Theme.Warning : Theme.TextMuted, flags | TextFormatFlags.SingleLine);
         }
 
         private void StatusLook(QueuedTask t, out string text, out Color fg, out Color bg, out Color dot)

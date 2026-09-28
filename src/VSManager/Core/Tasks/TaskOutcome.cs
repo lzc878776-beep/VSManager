@@ -32,9 +32,18 @@ namespace VSManager
         public const string NoReceipt = "no_receipt";
         /// <summary>Copilot 明确回报失败并说明了原因。/ Copilot explicitly reported failure with a reason.</summary>
         public const string Reported = "reported";
+        /// <summary>Copilot 本轮没有正常执行完（网络 / 服务错误、被中断、没有回复），与任务内容无关。/ Copilot's run did not finish (network / service error, interrupted, no reply); unrelated to the task content.</summary>
+        public const string Interrupted = "interrupted";
 
         /// <summary>失败是否与任务内容有关（有 Copilot 的回复可供分析）。/ Whether the failure concerns the task content (a Copilot reply exists).</summary>
         public static bool IsContent(string kind) => kind == NoReceipt || kind == Reported;
+
+        /// <summary>
+        /// 已知的非内容类失败（没送达、没读到或 Copilot 本轮没执行完）：可原样重试，不计入执行次数。未分类（如 Worktree 失败）不在其内。
+        /// Known non-content failures (not delivered, not read, or Copilot's run unfinished): may be retried unchanged and do
+        /// not count as runs. Unclassified failures (such as worktree failures) are excluded.
+        /// </summary>
+        public static bool IsRecoverable(string kind) => kind == Delivery || kind == VsClosed || kind == ReadError || kind == Interrupted;
 
         public static string Label(string kind)
         {
@@ -45,6 +54,7 @@ namespace VSManager
                 case ReadError: return "读取回复失败 / reply read failure";
                 case NoReceipt: return "缺少回执 / missing receipt";
                 case Reported: return "Copilot 回报失败 / reported by Copilot";
+                case Interrupted: return "Copilot 本轮未执行完 / Copilot run interrupted";
                 default: return "未分类 / unclassified";
             }
         }
@@ -111,9 +121,15 @@ namespace VSManager
         public static string Guidance(QueuedTask t)
         {
             string kind = t?.FailureKind;
+            if (kind == FailureKind.Interrupted)
+                return "处理建议：Copilot 本轮没有正常执行完（网络 / 服务错误或被中断），不是任务内容的问题，不计入该需求的执行次数；可直接用 retry_task 重试，或发送「继续」让 Copilot 接着做，不必总结新内容；连续多次仍中断时请用户检查网络或 Copilot 状态。"
+                    + " / Guidance: Copilot's run did not finish (network / service error or interruption). This is not a task-content problem and does not count toward the request's runs; retry it with retry_task or send \"continue\" without composing new content; if it keeps getting interrupted, ask the user to check the network or Copilot.";
+            if (!FailureKind.IsContent(kind) && !FailureKind.IsRecoverable(kind))
+                return "处理建议：这是未分类的问题（如 Worktree 失败），与 Copilot 回复无关；向用户说明原因，用户处理并同意后可原样重新排队。"
+                    + " / Guidance: this is an unclassified problem (such as a worktree failure) unrelated to a Copilot reply; explain the cause to the user, and requeue unchanged once the user has resolved it and agrees.";
             if (!FailureKind.IsContent(kind))
-                return "处理建议：这是投递类问题，与任务内容无关；向用户说明原因（VS 未打开 / 弹窗 / 输入框异常等），用户同意后可原样重新排队。"
-                    + " / Guidance: this is a delivery problem unrelated to the task content; explain the cause to the user, and requeue unchanged once the user agrees.";
+                return "处理建议：这是投递类问题（未送达或未读到结果），与任务内容无关，不计入执行次数；原因已排除或可能是偶发问题时可用 retry_task 原样重试，VS 未打开 / 弹窗 / 输入框异常等需要用户处理时先告诉用户。"
+                    + " / Guidance: this is a delivery problem (not delivered or result not read), unrelated to the task content and not counted as a run; retry unchanged with retry_task when the cause is gone or likely transient, and tell the user first when it needs them (VS not open, a dialog, input box problems).";
             var h = Analyze(t.Result ?? t.Error);
             var sb = new System.Text.StringBuilder("处理建议 / Guidance：先阅读上面的 Copilot 回复，判断失败的真实原因 / First read the Copilot reply above and determine the real cause。");
             if (h.PreExisting)
@@ -141,21 +157,234 @@ namespace VSManager
             return "#" + failed.Id + "：" + TextUtil.Clip(text, PriorFailureMax);
         }
 
+        /// <summary>AI 自主执行次数上限的默认值与可调范围。/ Default and allowed range of the AI self-run limit.</summary>
+        public const int DefaultAiAttempts = 3, MinAiAttemptsLimit = 1, MaxAiAttemptsLimit = 10;
+
+        /// <summary>设置中的上限来源（程序启动时接入）；未接入时用默认值。/ Limit source from settings (wired at startup); the default applies when unset.</summary>
+        public static Func<int> AttemptsLimitSource;
+
+        public static int ClampAttempts(int value) =>
+            value <= 0 ? DefaultAiAttempts : Math.Min(Math.Max(MinAiAttemptsLimit, value), MaxAiAttemptsLimit);
+
         /// <summary>
-        /// 查找同目标、正文相同（忽略重发标记与空白）且因任务内容失败的历史任务：AI 助手不得原样重发它。
-        /// Finds a same-target failed task with identical text (ignoring resend markers and whitespace) that failed on its
-        /// content: the AI assistant must not resend it verbatim.
+        /// 同一需求（重发链 + 补充重试）允许 AI 助手自主触发的 Copilot 执行次数上限；达到后必须交给用户决定。只统计因任务内容失败或待验证的执行。
+        /// Maximum Copilot runs the AI assistant may trigger on its own for one request (resend chain + retries with info);
+        /// beyond it the user must decide. Only runs that ended as content failures or awaiting verification count.
         /// </summary>
-        public static QueuedTask FindVerbatimResend(IEnumerable<QueuedTask> items, string vsKey, string text)
+        public static int MaxAiAttempts
+        {
+            get
+            {
+                try { return ClampAttempts(AttemptsLimitSource?.Invoke() ?? DefaultAiAttempts); }
+                catch { return DefaultAiAttempts; }
+            }
+        }
+
+        /// <summary>
+        /// 非内容类失败（投递、读取、Copilot 本轮中断）每个任务允许 AI 直接重试的次数，防止网络持续异常时无限循环；不计入 <see cref="MaxAiAttempts"/>。
+        /// Direct AI retries allowed per task after non-content failures (delivery, read, interrupted run), preventing endless
+        /// loops during a lasting outage; not counted toward <see cref="MaxAiAttempts"/>.
+        /// </summary>
+        public const int MaxRecoveryRetries = 5;
+
+        /// <summary>供特性描述使用的文字形式（特性参数须为常量），须与 <see cref="MaxRecoveryRetries"/> 一致。/ Text form for attribute descriptions (attribute arguments must be constants); must match <see cref="MaxRecoveryRetries"/>.</summary>
+        public const string MaxRecoveryRetriesText = "5";
+
+        // Copilot 自身的错误 / 中断提示（只在回复很短时采信）/ Copilot's own error or interruption notices (trusted only in short replies)
+        private static readonly string[] InterruptedWords =
+        {
+            "网络错误", "网络连接", "网络异常", "请求失败", "请求超时", "连接超时", "连接已断开", "服务不可用", "暂时不可用", "速率限制", "发生错误", "出现错误", "出了点问题",
+            "已取消", "已停止", "被中断", "稍后再试", "稍后重试",
+            "network error", "network connection", "request failed", "your request failed", "timed out", "service unavailable", "temporarily unavailable",
+            "rate limit", "too many requests", "an error occurred", "something went wrong", "internal server error", "canceled", "cancelled",
+            "stopped", "interrupted", "try again later", "connection was closed", "connection reset"
+        };
+
+        /// <summary>视为「短回复」的最大长度。/ Maximum length of a reply treated as short.</summary>
+        public const int InterruptedReplyMax = 500;
+
+        /// <summary>
+        /// 没有回执的回复是否只是 Copilot 本轮没执行完：空回复，或很短且是网络 / 服务错误、取消、中断之类的提示。
+        /// Whether a reply without receipt only shows that Copilot's run did not finish: empty, or short and reading like a
+        /// network / service error, cancellation or interruption notice.
+        /// </summary>
+        public static bool LooksInterrupted(string answer)
+        {
+            string s = (answer ?? "").Trim();
+            if (s.Length == 0) return true;
+            return s.Length <= InterruptedReplyMax && ContainsAny(s, InterruptedWords);
+        }
+
+        /// <summary>判定为「有实质修改」所需的最少新增字符二元组数。/ Minimum new character bigrams for a revision to count as substantive.</summary>
+        public const int MinNovelBigrams = 8;
+
+        // 只表达「再试一次」的套话，不算修改 / Filler that only says "try again"; not a revision
+        private static readonly System.Text.RegularExpressions.Regex RetryFiller = new System.Text.RegularExpressions.Regex(
+            "请?(?:再|重新)(?:试|执行|尝试|运行|做)(?:一次|一遍|一下)?|请?重试|继续完成|认真|仔细|务必|一定要|please|try\\s*again|retry|again|carefully|make\\s*sure",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static string Canon(string text)
+        {
+            string s = ResentTaskMatcher.StripMarker((text ?? "").Trim(), out _);
+            s = RetryFiller.Replace(s, "");
+            var sb = new System.Text.StringBuilder(s.Length);
+            foreach (char c in s) if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+            return sb.ToString();
+        }
+
+        private static HashSet<string> Bigrams(string s)
+        {
+            var set = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i + 1 < s.Length; i++) set.Add(s.Substring(i, 2));
+            if (s.Length == 1) set.Add(s);
+            return set;
+        }
+
+        /// <summary>
+        /// <paramref name="next"/> 相对 <paramref name="previous"/> 是否只是原样或近似原样的重复：忽略重发标记、空白、标点与「请再试一次」类套话后，
+        /// 新增内容不足 <see cref="MinNovelBigrams"/> 个二元组；明显删减（缩小范围）不算重复。
+        /// Whether <paramref name="next"/> merely repeats <paramref name="previous"/>: ignoring resend markers, whitespace,
+        /// punctuation and "try again" filler, it adds fewer than <see cref="MinNovelBigrams"/> new bigrams; a clear cut
+        /// (narrowed scope) is not a repeat.
+        /// </summary>
+        public static bool IsNearRepeat(string previous, string next)
+        {
+            string a = Canon(previous), b = Canon(next);
+            if (a.Length == 0) return false;
+            if (b.Length == 0 || a == b) return true;
+            if (b.Length < a.Length * 0.7) return false;
+            var old = Bigrams(a);
+            return Bigrams(b).Count(g => !old.Contains(g)) < MinNovelBigrams;
+        }
+
+        /// <summary>
+        /// 查找同目标、因任务内容失败、且新正文只是原样或近似原样重复的历史任务：AI 助手不得这样重发。
+        /// Finds a same-target task that failed on its content and that the new text only repeats (verbatim or nearly so):
+        /// the AI assistant must not resend it like that.
+        /// </summary>
+        public static QueuedTask FindRepeatedResend(IEnumerable<QueuedTask> items, string vsKey, string text)
         {
             if (items == null || string.IsNullOrWhiteSpace(text)) return null;
-            string norm = ResentTaskMatcher.Normalize(ResentTaskMatcher.StripMarker(text.Trim(), out _));
-            if (norm.Length == 0) return null;
             var probe = new QueuedTask { VsKey = vsKey ?? "" };
             return items.Where(t => t != null && t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)
-                    && ResentTaskMatcher.SameTarget(t, probe)
-                    && ResentTaskMatcher.Normalize(ResentTaskMatcher.StripMarker(t.Text, out _)) == norm)
+                    && ResentTaskMatcher.SameTarget(t, probe) && IsNearRepeat(t.Text, text))
                 .OrderByDescending(t => t.Id).FirstOrDefault();
+        }
+
+        /// <summary>
+        /// 一个需求已让 Copilot 执行的次数：从种子任务沿「取代」关系回溯，累计每个任务以内容失败或待验证结束的执行次数（<see cref="QueuedTask.ContentRuns"/>）。
+        /// 投递、读取失败和 Copilot 本轮中断不计（不是任务内容的问题）。
+        /// Copilot runs already spent on a request: walks back from the seeds along "replaces" links and adds each task's runs
+        /// that ended as content failures or awaiting verification (<see cref="QueuedTask.ContentRuns"/>). Delivery and read
+        /// failures and interrupted runs are not counted (not a task-content problem).
+        /// </summary>
+        public static int LineageAttempts(IEnumerable<QueuedTask> items, IEnumerable<QueuedTask> seeds)
+        {
+            var all = items?.Where(x => x != null).ToList() ?? new List<QueuedTask>();
+            var seen = new HashSet<int>();
+            var stack = new Stack<QueuedTask>((seeds ?? Enumerable.Empty<QueuedTask>()).Where(s => s != null));
+            int n = 0;
+            while (stack.Count > 0)
+            {
+                var t = stack.Pop();
+                if (!seen.Add(t.Id)) continue;
+                bool ran = (t.Status == QueueStatus.Failed && FailureKind.IsContent(t.FailureKind)) || (t.Status == QueueStatus.Done && t.NeedsUser);
+                // 旧数据没有计数时至少计最近一次 / Older records without the counter count at least the latest run
+                n += Math.Max(Math.Max(0, t.ContentRuns), ran ? 1 : 0);
+                if (t.Replaces == null) continue;
+                foreach (int id in t.Replaces)
+                {
+                    var r = all.FirstOrDefault(x => x.Id == id && ResentTaskMatcher.SameTarget(x, t));
+                    if (r != null) stack.Push(r);
+                }
+            }
+            return n;
+        }
+
+        /// <summary>
+        /// AI 助手以新任务重发前的检查：近似原样重复、或该需求已达 <see cref="MaxAiAttempts"/> 次时返回拒绝原因，否则 null。
+        /// Check before the AI assistant resends as a new task: returns the refusal when the text nearly repeats a failed task or
+        /// the request has reached <see cref="MaxAiAttempts"/> runs; null otherwise.
+        /// </summary>
+        public static string CheckAiResend(IEnumerable<QueuedTask> items, string vsKey, string text)
+        {
+            var list = items?.Where(x => x != null).ToList() ?? new List<QueuedTask>();
+            if (FindRepeatedResend(list, vsKey, text) is QueuedTask same)
+                return $"未入队：与失败任务 #{same.Id}（{FailureKind.Label(same.FailureKind)}）的内容相同或只差「请再试一次」之类的措辞，重复发送大概率仍会失败并白白消耗 Copilot 用量。"
+                    + $"请先根据其 Copilot 回复判断原因：遗留问题或需用户测试时向用户说明；确需重试时以「重发 @{same.Id}：」发布针对失败原因写明具体调整的任务，或让用户在任务清单中重新排队。"
+                    + $"Copilot 回复：{TextUtil.Clip(same.Result ?? same.Error, 400)} / "
+                    + $"Not queued: the text repeats failed task #{same.Id} (verbatim or only reworded like 'try again'), which would likely fail again and waste Copilot usage. "
+                    + $"Analyze its Copilot reply first: report pre-existing issues or needed user tests to the user; if a retry is needed, publish a task prefixed 'resend @{same.Id}:' that states concrete changes addressing the cause, or let the user requeue it.";
+            var probe = new QueuedTask { Id = int.MaxValue, VsKey = vsKey ?? "", Text = text ?? "" };
+            var replaced = ResentTaskMatcher.Find(list, probe).Hide;
+            int spent = LineageAttempts(list, replaced);
+            if (spent >= MaxAiAttempts)
+                return LimitText(replaced.Max(x => x.Id), spent);
+            return null;
+        }
+
+        /// <summary>
+        /// AI 助手补充信息重试前的检查：该需求已达 <see cref="MaxAiAttempts"/> 次，或补充信息没有新内容时返回拒绝原因，否则 null。
+        /// Check before the AI assistant retries with info: returns the refusal when the request has reached
+        /// <see cref="MaxAiAttempts"/> runs or the info adds nothing new; null otherwise.
+        /// </summary>
+        public static string CheckAiRetry(IEnumerable<QueuedTask> items, QueuedTask t, string info)
+        {
+            if (t == null) return null;
+            // 本轮没执行完或没送达：允许「继续」「再试一次」，不查新内容也不占次数 / Run unfinished or undelivered: allow "continue" / "try again" without novelty or limit checks
+            if (t.Status == QueueStatus.Failed && FailureKind.IsRecoverable(t.FailureKind)) return null;
+            int spent = LineageAttempts(items, new[] { t });
+            if (spent >= MaxAiAttempts) return LimitText(t.Id, spent);
+            if (IsNearRepeat(t.Text + " " + t.Supplement, t.Text + " " + t.Supplement + " " + info))
+                return "补充信息没有新内容（与任务正文或已有补充重复，或只是「请再试一次」）：请根据 Copilot 回复写明具体的新信息或调整，否则把情况交给用户。"
+                    + $"Copilot 回复：{TextUtil.Clip(t.Result ?? t.Error, 400)}"
+                    + " / The info adds nothing new (repeats the task or earlier info, or only says 'try again'): state concrete new information or changes from the Copilot reply, or hand over to the user.";
+            return null;
+        }
+
+        private static string LimitText(int id, int spent) =>
+            $"已拒绝：任务 #{id} 所属需求已让 Copilot 执行 {spent} 次仍未完成（AI 自主重试上限 {MaxAiAttempts} 次）。不要再自行重发、改写后重发或补充重试；"
+            + "请把失败原因、各次尝试做过的调整和你判断需要的信息整理给用户，由用户补充信息、放行、取消或亲自在任务清单中重试。"
+            + $" / Refused: the request of task #{id} has already used {spent} Copilot runs without success (AI self-retry limit {MaxAiAttempts}). "
+            + "Do not resend, reword-and-resend or retry with info on your own; summarize the cause, what each attempt changed and what you think is needed for the user, "
+            + "who may supplement, release, cancel or retry it from the task list.";
+
+        /// <summary>
+        /// AI 助手直接重试（retry_task）前的检查：只允许非内容类失败，且每个任务最多 <see cref="MaxRecoveryRetries"/> 次；允许时返回 null。
+        /// Check before a direct AI retry (retry_task): only non-content failures qualify, at most <see cref="MaxRecoveryRetries"/>
+        /// times per task; null when allowed.
+        /// </summary>
+        public static string CheckRecoveryRetry(QueuedTask t)
+        {
+            if (t == null) return "任务不存在 / Task not found.";
+            if (t.Status != QueueStatus.Failed)
+                return $"任务 #{t.Id} 没有失败，无需重试 / Task #{t.Id} has not failed; nothing to retry.";
+            if (!FailureKind.IsRecoverable(t.FailureKind))
+                return $"已拒绝：任务 #{t.Id} 是「{FailureKind.Label(t.FailureKind)}」，不是投递、读取或 Copilot 本轮中断这类可原样重试的失败，原样重试大概率仍会失败。请根据其 Copilot 回复分析原因，用 retry_task_with_info 写明新信息，或交给用户。"
+                    + $" / Refused: task #{t.Id} is '{FailureKind.Label(t.FailureKind)}', not a delivery, read or interrupted-run failure that can be retried unchanged; an unchanged retry would likely fail again. Analyze its Copilot reply and use retry_task_with_info with new information, or hand it to the user.";
+            if (t.RecoveryRetries >= MaxRecoveryRetries)
+                return $"已拒绝：任务 #{t.Id} 已直接重试 {t.RecoveryRetries} 次仍未执行完（上限 {MaxRecoveryRetries} 次），可能是网络、Copilot 服务或 VS 持续异常；请让用户检查后在任务清单中重试。"
+                    + $" / Refused: task #{t.Id} has been retried directly {t.RecoveryRetries} times without finishing (limit {MaxRecoveryRetries}); the network, the Copilot service or VS may be failing persistently. Ask the user to check and retry it from the task list.";
+            return null;
+        }
+
+        /// <summary>给失败通知用的次数说明。/ Attempt summary for failure notices.</summary>
+        public static string AttemptsNote(IEnumerable<QueuedTask> items, QueuedTask t)
+        {
+            int spent = LineageAttempts(items, new[] { t });
+            int left = Math.Max(0, MaxAiAttempts - spent);
+            return left == 0
+                ? $"该需求已让 Copilot 执行 {spent} 次，已达 AI 自主重试上限：只能交给用户决定。/ This request has used {spent} Copilot runs and reached the AI self-retry limit: hand it over to the user."
+                : $"该需求已让 Copilot 执行 {spent} 次，AI 自主重试还剩 {left} 次；每次重试都会消耗 Copilot 用量，没有新信息就不要重试。/ This request has used {spent} Copilot runs; {left} AI self-retries left. Each retry costs Copilot usage, so do not retry without new information.";
+        }
+
+        /// <summary>非内容类失败通知用的直接重试说明。/ Direct-retry summary for non-content failure notices.</summary>
+        public static string RecoveryNote(QueuedTask t)
+        {
+            int left = Math.Max(0, MaxRecoveryRetries - (t?.RecoveryRetries ?? 0));
+            return left == 0
+                ? $"本任务已直接重试 {MaxRecoveryRetries} 次，请交给用户检查。/ This task has been retried directly {MaxRecoveryRetries} times; hand it to the user."
+                : $"不计入执行次数；可用 retry_task 直接重试（还剩 {left} 次）。/ Not counted as a run; retry_task can retry it directly ({left} left).";
         }
     }
 }
