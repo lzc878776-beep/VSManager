@@ -101,7 +101,7 @@ namespace VSManager
             _btnSettings = HeaderButton("⚙  模型设置", () => SettingsRequested?.Invoke());
             _btnClear = HeaderButton("＋  新对话", () => { _agent?.Clear(); _input.Focus(); });
             _tips.SetToolTip(_btnSettings, "服务商 / 模型 / API Key（属性 → AI 总控助手）");
-            _tips.SetToolTip(_btnClear, "清空上下文，开始新对话");
+            _tips.SetToolTip(_btnClear, "清空上下文，开始新对话；不点时重开 VSManager 会接续上次对话\r\nClear the context and start a new conversation; otherwise reopening VSManager resumes the previous one");
             _header.Controls.AddRange(new Control[] { _btnSettings, _btnClear });
 
             // ---- 快捷指令 ----

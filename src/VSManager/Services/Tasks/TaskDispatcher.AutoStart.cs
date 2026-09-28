@@ -24,7 +24,9 @@ namespace VSManager
         public bool HasDispatchActivity => _tasks.Items.Any(t => QueueStatus.Active(t.Status) && CanRun(t))
             || _pendingMaintenance.Count > 0;
 
-        public string StartModeText => IsStarted
+        public string StartModeText => (IsPaused ? PausedText + "\n" : "") + StartModeCore;
+
+        private string StartModeCore => IsStarted
             ? "手动流程已启动；新任务按编号调度 / Manual workflow started; new tasks dispatch in ID order"
             : _startSettings?.Invoke()?.AutoStartAllTasks == true
             ? "全部自动（含恢复任务）/ All automatic (including restored tasks)"
@@ -36,6 +38,8 @@ namespace VSManager
         {
             if (QueueStatus.Delivered(task?.Status))
                 return "已结束，无需启动 / Finished; no start needed" + AutomaticCompletionText(task);
+            if (IsPaused && QueueStatus.Active(task.Status) && task.Status != QueueStatus.Running && task.Status != QueueStatus.Sending)
+                return "队列已暂停，点「继续」后按编号发布 / Queue paused; published in ID order after Resume" + (task.Interrupted ? "（已中断，继续后接着执行 / interrupted, continues after resume）" : "");
             if (!CanRun(task)) return WaitingForStart;
             string mode = _automatic.TryGetValue(task, out bool all) ? (all ? AllAutomatic : AiAutomatic)
                 : _manual.Contains(task) ? "单任务手动授权 / This task manually authorized"

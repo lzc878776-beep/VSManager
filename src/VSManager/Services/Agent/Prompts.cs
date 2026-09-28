@@ -137,7 +137,7 @@ namespace VSManager
         /// <summary>系统提示词中的接续等级规则（中文）。/ Continuation-level rule of the system prompt (Chinese).</summary>
         private static string ReleasePolicyZh(ReleaseLevel level)
         {
-            const string common = "排队中、等待目标 VS、发送中、执行中始终阻塞同一 VS 的后续；已取消或已停止不阻塞。用户可在任务清单顶栏的四档接续等级滑块或让你用 set_release_level 调整等级。";
+            const string common = "排队中、等待目标 VS、发送中、执行中始终阻塞同一 VS 的后续；已取消或已停止不阻塞。用户可在任务清单顶栏的四档接续等级滑块或让你用 set_release_level 调整等级。用户也可点顶栏「暂停」或让你用 pause_task_queue 暂停 / 继续整个队列：暂停期间不发布新任务，排队任务保留（list_tasks 会显示已暂停），不要为绕过暂停重新发布或改派任务。";
             const string onFailure = "收到失败通知后由你判断：失败原因明确且能从 VS 返回的信息、对话或上下文补齐时，用 retry_task_with_info 自行补充信息重试；需要用户决定或只有用户知道的信息时，把原因和所需信息告诉用户，由用户补充（再用 retry_task_with_info 带上）、同意放行（release_task）或取消。";
             const string onNeedsUser = "待确认时把需验证的内容转告用户，用户确认通过后 release_task 放行，验证不通过则用 retry_task_with_info 带上问题重试。";
             const string noBypass = "阻塞是为了让需要用户处理的内容不被后续任务覆盖对话上下文，禁止改队列或改派来绕过暂停。任务阻塞时，用户或你对该任务的补充、修正、追加要求或验证反馈一律用 retry_task_with_info 发给阻塞任务本身（内容来自用户时设 from_user=true），不要用 send_task 另起新任务：新任务只会排在阻塞任务后面，无法解除阻塞。";
@@ -157,7 +157,7 @@ namespace VSManager
         /// <summary>系统提示词中的接续等级规则（英文）。/ Continuation-level rule of the system prompt (English).</summary>
         private static string ReleasePolicyEn(ReleaseLevel level)
         {
-            const string common = "Waiting, waiting for target VS, sending and running tasks always block successors on the same VS; cancelled or stopped tasks do not. The user can change the level with the four-stop continuation slider in the task list header or ask you to call set_release_level. ";
+            const string common = "Waiting, waiting for target VS, sending and running tasks always block successors on the same VS; cancelled or stopped tasks do not. The user can change the level with the four-stop continuation slider in the task list header or ask you to call set_release_level. The user can also click Pause in the header or ask you to call pause_task_queue to pause / resume the whole queue: while paused no new tasks are published and waiting tasks are kept (list_tasks shows it); never resubmit or reassign tasks to get around the pause. ";
             const string onFailure = "On a failure notice, decide: if the cause is clear and you can fill the gap from the VS reply, conversation or context, call retry_task_with_info yourself; if it needs a user decision or information only the user has, tell the user the cause and what is needed, and let them supplement (then pass it via retry_task_with_info), release (release_task) or cancel. ";
             const string onNeedsUser = "For awaiting confirmation, relay what to verify, call release_task once the user confirms, or retry_task_with_info with the problems if verification fails. ";
             const string noBypass = "Blocking keeps content that needs the user from being buried by later tasks in the conversation; never edit the queue or reassign tasks to bypass the pause. While a task blocks, send any supplement, correction, extra requirement or verification feedback for it via retry_task_with_info to that blocking task itself (from_user=true when the content comes from the user); never add a new task with send_task, which would only wait behind the blocker and cannot clear it.";

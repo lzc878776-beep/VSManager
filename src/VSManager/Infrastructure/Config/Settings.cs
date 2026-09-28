@@ -280,6 +280,8 @@ namespace VSManager
         [DataMember] public bool AutoStartAiTasks;
         /// <summary>全部自动优先，显式包含恢复任务；默认关闭。/ All automatic takes precedence and explicitly includes restored tasks; off by default.</summary>
         [DataMember] public bool AutoStartAllTasks;
+        /// <summary>任务队列已暂停：不发布新任务，重开后保持暂停，直到用户点「继续」。/ Task queue paused: no new tasks are published; stays paused across reopens until the user resumes.</summary>
+        [DataMember] public bool TaskQueuePaused;
         /// <summary>下一个任务编号，保证清除历史后编号也不重复。</summary>
         [DataMember] public int TaskNextId;
         /// <summary>

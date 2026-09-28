@@ -290,6 +290,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<int, Task<string>>)DeleteTask, "delete_task"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
+                AIFunctionFactory.Create((Func<bool, bool, Task<string>>)PauseTaskQueue, "pause_task_queue"),
                 AIFunctionFactory.Create((Func<int, string, bool, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)EditTaskResult, "edit_task_result"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)RetryTask, "retry_task"),
@@ -401,13 +402,20 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
 
         public void Stop() => _cts?.Cancel();
 
+        /// <summary>
+        /// 开始新对话：清空界面与上下文，并在对话记录中写入分隔标记，之后重开 VSManager 只接续标记之后的内容。
+        /// Starts a new conversation: clears the transcript and context and writes a marker to the chat history, so later
+        /// reopens resume only what follows the marker.
+        /// </summary>
         public void Clear()
         {
             _cts?.Cancel();
+            bool had = _history.Count > 0 || Transcript.Messages.Count > 0;
             _history.Clear();
             _notebookPromptLoaded = false;
             lock (_attachments) _attachments.Clear();
             Transcript.Messages.Clear();
+            if (had) Record("notice", NewConversationMarker, reset: true);
             Changed?.Invoke();
         }
 
@@ -443,7 +451,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             message.Parts.Add(new ChatPart { Text = display + "\n" + content });
             Transcript.Messages.Add(message);
             TrimTranscript();
-            Record("notice", display, content);
+            Record("notice", display, content, local: true);
             Changed?.Invoke();
         }
 
@@ -632,11 +640,12 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// Writes to both the archive (chat\ai-*.jsonl, optional) and the local chat history (agent-chat.jsonl, shown in the history window).
         /// 笔记助手的对话只保留在内存中，不写入总控助手的记录。/ Note-assistant conversations stay in memory and never go into the manager's records.
         /// </summary>
-        private void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null)
+        private void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null,
+            bool local = false, bool reset = false)
         {
             if (Profile == AgentProfile.Notes) return;
             try { Archive.Ai(role, content, detail, steps, error); } catch { }
-            try { AgentChatLog.Append(role, content, detail, steps, error); } catch { }
+            try { AgentChatLog.Append(role, content, detail, steps, error, local, reset); } catch { }
         }
 
         private void TrimHistory()
@@ -718,6 +727,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     return "设置接续等级：" + (level.HasValue ? ReleaseLevels.ShortName(level.Value) : OneLine(Arg("level"), 20)) + " / Set continuation level";
                 }
                 case "release_task": return "放行任务 #" + Arg("id") + "，后续继续执行 / Release task";
+                case "pause_task_queue":
+                    return Arg("paused").Equals("false", StringComparison.OrdinalIgnoreCase) ? "继续任务队列 / Resume task queue"
+                        : "暂停任务队列" + (Arg("interrupt_running").Equals("true", StringComparison.OrdinalIgnoreCase) ? "并中断执行中的任务（需用户确认）" : "") + " / Pause task queue";
                 case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
                 case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
                 case "retry_task": return "原样重试任务 #" + Arg("id") + " / Retry task";

@@ -7,6 +7,12 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- 重开 VSManager 时主控 AI 自动接续上次对话：从本机对话记录恢复最近一次「＋ 新对话」之后的界面对话与模型上下文，只有点「＋ 新对话」才重新开始（该操作会在记录中写入分隔标记）。
+  The main AI now resumes the previous conversation when VSManager reopens: the transcript and model context after the latest "＋ 新对话" (New conversation) are restored from the local chat history; only "New conversation" starts over (it writes a marker to the history).
+- 新增任务队列暂停 / 继续：任务清单标题行的「⏸ 暂停」停止发布新任务并保留排队任务，可选择让执行中的任务做完或中断（停止 Copilot 并重新排队，继续后提示 Copilot 在已有改动上接着做）；暂停状态保存在设置中，重开后保持。AI 助手新增 `pause_task_queue` 工具。
+  Added task queue pause / resume: "⏸ 暂停" (Pause) in the task list title row stops publishing new tasks and keeps waiting ones; a running task can finish or be interrupted (Copilot stopped and the task requeued, then continued from the existing changes after resuming). The paused state is saved in the settings and survives reopening. The AI assistant gains a `pause_task_queue` tool.
+- 修复：任务的「已放行」标记没有从 tasks.json 读回，重开后已放行的失败 / 待验证任务会再次阻塞同一 VS 的后续任务。
+  Fix: a task's "released" flag was not read back from tasks.json, so after a reopen a released failed / awaiting-verification task blocked later tasks on the same VS again.
 - 修复：在左侧选中某个 VS 后，若其 Copilot 正在处理，内置对话的「发送」按钮被禁用、回车也静默无效。文字消息本就排入任务清单，现在忙碌时照常发送并在空闲后自动发布；带图片时给出需等待完成的明确提示。
   Fix: after selecting a VS in the sidebar, the built-in chat's Send button was disabled and Enter silently did nothing while that VS's Copilot was busy. Text messages are queued anyway, so they now send while busy and are published once idle; image sends show an explicit wait notice.
 - 任务失败或待验证而阻塞队列时，主控 AI 可直接向阻塞任务补充信息：`retry_task_with_info` 新增 `from_user` 参数，补充来自用户时不受 AI 自主重试次数与补充次数限制（总是请用户确认），并在原条目重新排队、解除阻塞；AI 向被阻塞的 VS 调用 `send_task` 时默认不再新建一条排在阻塞任务后面的任务，而是返回阻塞任务的编号、原因与处理方式（确实无关的新任务可设 `queue_behind_blocked=true`）。系统提示词与失败通知同步说明；任务清单中手动「补充信息后重试」不再受 3 次上限限制。

@@ -292,6 +292,9 @@ namespace VSManager
 			_agentPanel.Visible = false;
 			_agentPanel.Bind(_agent);
 			_agentPanel.RefreshConfig();
+			// 重开时接续上次对话，只有点「＋ 新对话」才重新开始 / Resume the previous conversation on reopen; only "＋ 新对话" starts over
+			try { _agent.RestoreConversation(); }
+			catch (Exception ex) { AppLog.Error(AgentService.LogFile, "接续上次对话失败 / Failed to resume the previous conversation", ex); }
 			_agentPanel.SettingsRequested += OpenSettings;
 			_taskPanel.SetReleaseLevel(_settings.ReleaseLevel);
 			_taskPanel.ReleaseLevelChanged += level => ApplyReleaseLevel(level, "用户 / user ");
@@ -2018,6 +2021,12 @@ namespace VSManager
 		{
 			switch (action)
 			{
+				case "pause":
+					PauseQueueFromUi();
+					return;
+				case "resume":
+					SetQueuePausedCore(false);
+					return;
 				case "start":
 					_dispatcher.Start();
 					_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
@@ -2595,6 +2604,10 @@ namespace VSManager
 			_tasks.Changed += RefreshMemoryAfterTask;
 			_taskPanel.CanRunTask = _dispatcher.CanRun;
 			_taskPanel.TaskStartText = _dispatcher.StartStateText;
+			// 上次关闭前暂停的队列重开后仍暂停 / A queue paused before closing stays paused after reopening
+			_dispatcher.SetPaused(_settings.TaskQueuePaused, false);
+			_taskPanel.SetQueuePaused(_dispatcher.IsPaused);
+			if (_dispatcher.IsPaused) SetStatus(TaskDispatcher.PausedText);
 			_dispatcher.ApplyAutomaticStart();
 			UpdateTaskTimer();
 			_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);

@@ -134,6 +134,12 @@ namespace VSManager
         /// completes the task. Null when there are none.
         /// </summary>
         [DataMember(EmitDefaultValue = false)] public TaskTestItem[] TestItems;
+        /// <summary>
+        /// 执行中被用户暂停中断后重新排队：再次发送时提示 Copilot 在已有改动基础上继续；该次送达后清除。
+        /// Interrupted by the user's pause while running and requeued: the next send tells Copilot to continue from the existing
+        /// changes; cleared once that send is delivered.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public bool Interrupted;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -165,7 +171,7 @@ namespace VSManager
             Released = Released, Supplement = Supplement, SupplementCount = SupplementCount,
             ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
             PendingNote = PendingNote, FailureReason = FailureReason,
-            TestItems = TestItems?.Select(i => i?.Clone()).ToArray()
+            TestItems = TestItems?.Select(i => i?.Clone()).ToArray(), Interrupted = Interrupted
         };
     }
 

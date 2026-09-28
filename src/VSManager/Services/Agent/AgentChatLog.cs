@@ -28,6 +28,10 @@ namespace VSManager
         public string Error;
         /// <summary>关联的任务编号（可选）。/ Related task ids (optional).</summary>
         public List<int> Tasks = new List<int>();
+        /// <summary>「新对话」分隔标记：重开时只接续该标记之后的记录。/ "New conversation" marker: a reopen resumes only the records after it.</summary>
+        public bool Reset;
+        /// <summary>仅本机展示的通知，从未加入模型上下文，接续对话时也不加入。/ Local-only notice that never entered the model context and stays out of it on resume.</summary>
+        public bool Local;
 
         public bool IsUser => Role == AgentChatLog.RoleUser;
     }
@@ -92,10 +96,11 @@ namespace VSManager
         /// 追加一条记录（界面线程调用，写入很小，同步完成）。失败只记录原因，不抛出。
         /// Appends a record (called on the UI thread; the write is small and synchronous). Failures are recorded, never thrown.
         /// </summary>
-        public static void Append(string role, string text, string detail = null, IList<string> steps = null, string error = null)
+        public static void Append(string role, string text, string detail = null, IList<string> steps = null, string error = null,
+            bool local = false, bool reset = false)
         {
             if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(error)) return;
-            var r = new AgentChatRecord { Time = DateTime.Now, Role = role, Text = text ?? "", Error = string.IsNullOrEmpty(error) ? null : error };
+            var r = new AgentChatRecord { Time = DateTime.Now, Role = role, Text = text ?? "", Error = string.IsNullOrEmpty(error) ? null : error, Local = local, Reset = reset };
             if (!string.IsNullOrWhiteSpace(detail) && detail != text) r.Detail = detail;
             if (steps != null) r.Steps = steps.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
             r.Tasks = FindTaskIds(new[] { r.Text, r.Detail }.Concat(r.Steps).ToArray());
@@ -244,6 +249,8 @@ namespace VSManager
             if (r.Steps != null && r.Steps.Count > 0) d["steps"] = r.Steps.ToArray();
             if (!string.IsNullOrEmpty(r.Error)) d["error"] = r.Error;
             if (r.Tasks != null && r.Tasks.Count > 0) d["tasks"] = r.Tasks.ToArray();
+            if (r.Local) d["local"] = true;
+            if (r.Reset) d["reset"] = true;
             return d;
         }
 
@@ -259,7 +266,9 @@ namespace VSManager
                     Role = Str(d, "role") ?? RoleAssistant,
                     Text = Str(d, "text") ?? "",
                     Detail = Str(d, "detail"),
-                    Error = Str(d, "error")
+                    Error = Str(d, "error"),
+                    Local = d.TryGetValue("local", out var l) && l is bool lb && lb,
+                    Reset = d.TryGetValue("reset", out var z) && z is bool zb && zb
                 };
                 string time = Str(d, "time");
                 if (time == null || !DateTime.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.None, out r.Time)) return null;

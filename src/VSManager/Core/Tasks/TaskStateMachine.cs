@@ -63,6 +63,7 @@ namespace VSManager
                     t.Started = now;
                     t.SawBusy = false;
                     t.Error = null;
+                    t.Interrupted = false;
                     break;
                 case SendDecision.Fail:
                     Fail(t, result, now, FailureKind.Delivery);
@@ -93,6 +94,7 @@ namespace VSManager
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
             + RoundText(t)
+            + (t.Interrupted ? InterruptedNote + " " : "")
             + (string.IsNullOrEmpty(t.PriorFailure) ? ""
                 : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
             + (string.IsNullOrEmpty(t.Supplement) ? ""
@@ -393,6 +395,27 @@ namespace VSManager
             t.Supplement = string.IsNullOrEmpty(t.Supplement) ? info : t.Supplement + " ｜ " + info;
             t.SupplementCount++;
             Requeue(t);
+            return true;
+        }
+
+        /// <summary>中断后再次发送时附加的说明。/ Note added when an interrupted task is sent again.</summary>
+        public const string InterruptedNote = "【继续执行】本任务上次执行到一半时被用户暂停中断，可能已完成部分改动：请先检查当前代码与对话中的已有进度，在此基础上继续完成本任务，不要重复或回滚已完成的部分。";
+
+        /// <summary>
+        /// 暂停时中断执行中的任务：重新排队（内容、附件与补充信息不变），恢复后按编号重新发送并提示 Copilot 接着做。
+        /// Interrupts a running task on pause: back to the queue (text, attachments and supplements unchanged), re-sent in ID
+        /// order after resuming with a note telling Copilot to continue from where it stopped.
+        /// </summary>
+        public static bool Interrupt(QueuedTask t)
+        {
+            if (t == null || t.Status != QueueStatus.Running) return false;
+            t.Status = QueueStatus.Waiting;
+            t.Interrupted = true;
+            t.Attempts = 0;
+            t.Started = null;
+            t.SawBusy = false;
+            t.Error = null;
+            t.NextTry = DateTime.MinValue;
             return true;
         }
 

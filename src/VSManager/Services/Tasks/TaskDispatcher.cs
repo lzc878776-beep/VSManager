@@ -90,6 +90,41 @@ namespace VSManager
         public const string WaitingForStart = "等待手动授权：点击「开始流程 / Start」或右键当前任务重新检查 / Waiting for manual start or task authorization: click Start or recheck this task from its context menu";
         public bool IsStarted { get; private set; }
 
+        public const string PausedText = "任务队列已暂停：不发布新任务，执行中的任务继续跟踪，点「继续」恢复 / Task queue paused: no new tasks are published, running tasks are still tracked; click Resume to continue";
+
+        /// <summary>
+        /// 队列暂停：不发布新任务、不推送暂存任务；执行中的任务继续跟踪到结束，排队任务保持不变。暂停状态由宿主持久化。
+        /// Queue pause: no new tasks are published and parked tasks are not pushed; running tasks are tracked until they finish and
+        /// waiting tasks stay as they are. The host persists the paused state.
+        /// </summary>
+        public bool IsPaused { get; private set; }
+
+        /// <summary>暂停或继续；继续时立即调度一轮。/ Pauses or resumes; resuming runs a dispatch round at once.</summary>
+        public void SetPaused(bool paused, bool announce = true)
+        {
+            if (IsPaused == paused) return;
+            IsPaused = paused;
+            if (announce) _host.SetStatus(paused ? PausedText : "任务队列已继续，按编号调度 / Task queue resumed; dispatching in ID order");
+            _host.QueueActivityChanged(HasDispatchActivity);
+            if (!paused) Pump();
+        }
+
+        /// <summary>
+        /// 中断执行中的任务并重新排队（宿主随后停止对应 Copilot）；正在收尾或合并的任务不能中断。
+        /// Interrupts a running task and requeues it (the host then stops that Copilot); tasks being finished or integrated cannot
+        /// be interrupted.
+        /// </summary>
+        public bool Interrupt(QueuedTask t)
+        {
+            if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t) || _integrating.Contains(t)) return false;
+            if (!TaskStateMachine.Interrupt(t)) return false;
+            _pendingCompletions.Remove(t);
+            ClearManualWait(t);
+            _tasks.Commit();
+            _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 已被暂停中断，重新排队，继续后接着执行 / Task #{t.Id} interrupted by pause and requeued; continues after resume");
+            return true;
+        }
+
         /// <summary>仅本次会话有效；只能由用户开始，不持久化。/ User opt-in for this session only; never persisted.</summary>
         public void Start()
         {
@@ -150,7 +185,7 @@ namespace VSManager
                         await FinishAsync(task, target, completion.Duration);
                     }
                 }
-                PushParked(now);
+                if (!IsPaused) PushParked(now);
                 foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
                 {
                     if (now < _host.TrackingReadyAt) break;
@@ -165,9 +200,10 @@ namespace VSManager
                     }
                 }
 
-                foreach (var t in _tasks.NextToDispatch(now))
+                // 暂停时不发布新任务；上面的执行中跟踪照常进行 / No new publishing while paused; running tracking above still happens
+                foreach (var t in IsPaused ? new List<QueuedTask>() : _tasks.NextToDispatch(now))
                 {
-                    if (_host.IsSending) break;
+                    if (_host.IsSending || IsPaused) break;
                     if (!CanRun(t) || (!IsStarted && _tasks.SaveError != null)) continue;
                     var v = ResolveTarget(t, true);
                     if (v == null && t.HasExplicitTarget) { Fail(t, VsMentionSession.MissingError); continue; }

@@ -15,6 +15,9 @@ namespace VSManager
         private readonly FlatButton _btnRemoveInvalid = new FlatButton { Text = "移除无效", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
         private readonly FlatButton _btnStart = new FlatButton { Text = "▶ 开始流程 / Start" };
+        private readonly FlatButton _btnPause = new FlatButton { Text = PauseText, Ghost = true };
+        private const string PauseText = "⏸ 暂停", ResumeText = "▶ 继续";
+        private bool _queuePaused;
         private readonly ReleaseLevelSlider _levelSlider = new ReleaseLevelSlider { BackColor = Theme.Sidebar };
         /// <summary>用户在顶栏滑块上切换接续等级。/ Raised when the user switches the continuation level on the header slider.</summary>
         public event Action<ReleaseLevel> ReleaseLevelChanged;
@@ -103,6 +106,11 @@ namespace VSManager
             _btnStart.Click += (s, e) => ActionRequested?.Invoke(null, "start");
             _tips.SetToolTip(_btnStart, TaskDispatcher.WaitingForStart);
             _top.Controls.Add(_btnStart);
+            _btnPause.Font = Theme.Small;
+            _btnPause.Size = new Size(Dpi.S(62), Dpi.S(28));
+            _btnPause.Click += (s, e) => ActionRequested?.Invoke(null, _queuePaused ? "resume" : "pause");
+            _tips.SetToolTip(_btnPause, PauseTip(false));
+            _top.Controls.Add(_btnPause);
             _levelSlider.ValueChanged += () =>
             {
                 _tips.SetToolTip(_levelSlider, LevelTip(_levelSlider.Value));
@@ -253,6 +261,26 @@ namespace VSManager
             _list.Invalidate();
         }
 
+        /// <summary>队列是否已暂停（界面显示）。/ Whether the queue is paused (display).</summary>
+        public bool QueuePaused => _queuePaused;
+
+        /// <summary>同步暂停按钮（不触发操作）。/ Syncs the pause button (raises no action).</summary>
+        public void SetQueuePaused(bool paused)
+        {
+            _queuePaused = paused;
+            _btnPause.Text = paused ? ResumeText : PauseText;
+            _btnPause.Ghost = !paused;
+            _btnPause.Primary = paused;
+            _tips.SetToolTip(_btnPause, PauseTip(paused));
+            _btnPause.Invalidate();
+            _top.Invalidate();
+            _list.Invalidate();
+        }
+
+        private static string PauseTip(bool paused) => paused
+            ? "队列已暂停（重开 VSManager 后仍保持）：点击继续，按编号发布排队任务\r\nQueue paused (kept across reopens): click to resume and publish waiting tasks in ID order"
+            : "暂停队列：不再发布新任务，排队任务保留；有执行中的任务时可选择让它做完或中断后稍后接着做\r\nPause the queue: no new tasks are published and waiting tasks are kept; a running task can finish or be interrupted and continued later";
+
         /// <summary>是否按目标 VS 分组显示。/ Whether the list is grouped by target VS.</summary>
         public bool GroupByVs => _groupByVs;
         /// <summary>分组排序方式。/ Group sort mode.</summary>
@@ -374,6 +402,7 @@ namespace VSManager
             _btnRemoveInvalid.Visible = !collapsed;
             _btnView.Visible = !collapsed;
             _btnStart.Visible = !collapsed;
+            _btnPause.Visible = !collapsed;
             _levelSlider.Visible = !collapsed;
             UpdateDetail();
             _btnHistory.Visible = !collapsed && (_hiddenCount > 0 || _showHistory);
@@ -407,6 +436,8 @@ namespace VSManager
             _btnRemoveInvalid.Location = new Point(_btnView.Left - _btnRemoveInvalid.Width - Dpi.S(4), y);
             _btnClear.Location = new Point(_top.Width - _btnClear.Width - Dpi.S(10), Dpi.S(52));
             _btnHistory.Location = new Point(_btnClear.Left - _btnHistory.Width - Dpi.S(4), Dpi.S(52));
+            // 标题行，紧靠「移除无效」左侧，不挤压「开始流程」/ Title row, left of "Remove invalid", so Start keeps its width
+            _btnPause.Location = new Point(_btnRemoveInvalid.Left - _btnPause.Width - Dpi.S(4), y);
             _btnStart.SetBounds(Dpi.S(10), Dpi.S(52), Math.Max(0, _btnHistory.Left - Dpi.S(14)), Dpi.S(28));
             _levelSlider.SetBounds(Dpi.S(6), Dpi.S(86), Math.Max(0, _top.Width - Dpi.S(12)), Dpi.S(48));
         }
@@ -635,6 +666,12 @@ if (c != null)
             if (!_workflowStarted) sub = $"可调度 {eligible} · 待开始 {awaitingStart} / Eligible · Awaiting Start";
             Color subColor = waitingForStart ? Theme.Warning : running > 0 || chatting > 0 ? Theme.BusyFg : waiting + parked > 0 ? Theme.AccentText : Theme.TextMuted;
             string tip = awaitingStart == 0 ? null : TaskDispatcher.WaitingForStart;
+            if (_queuePaused)
+            {
+                sub = "⏸ 已暂停 · " + sub;
+                subColor = Theme.Warning;
+                tip = PauseTip(true);
+            }
             if (_queue?.SaveError != null)
             {
                 // 保存失败：清单仍在内存中，提示用户并自动重试

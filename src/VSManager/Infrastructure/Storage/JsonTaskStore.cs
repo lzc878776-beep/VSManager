@@ -134,6 +134,8 @@ namespace VSManager
                 Supplement = S("Supplement"), SupplementCount = Math.Max(0, I("SupplementCount")),
                 ContentRuns = Math.Max(0, I("ContentRuns")), RecoveryRetries = Math.Max(0, I("RecoveryRetries")), PriorRuns = Math.Max(0, I("PriorRuns")),
                 NeedsUser = string.Equals(S("NeedsUser"), "true", StringComparison.OrdinalIgnoreCase),
+                // 放行与中断标记也需恢复，否则重开后已放行的失败会再次阻塞后续任务 / Released and interrupted flags must survive, or a released failure blocks successors again after a reopen
+                Released = S("Released") == "true", Interrupted = S("Interrupted") == "true",
                 PendingNote = S("PendingNote"), FailureReason = S("FailureReason"),
                 IsWorktreeMerge = S("IsWorktreeMerge") == "true", WorktreeCounted = S("WorktreeCounted") == "true",
                 WorktreeBatch = Math.Max(0, I("WorktreeBatch")),
