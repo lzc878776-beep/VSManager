@@ -8,6 +8,24 @@ namespace VSManager.Tests
     [TestClass]
     public class ManualStartTests
     {
+        [TestMethod]
+        public void Start_RaisesStartedChangedOnce_ForButtonSync()
+        {
+            using (var data = new TempDataFolder())
+            {
+                var clock = new FakeClock();
+                var queue = new TaskQueue(new AppSettings(), new JsonTaskStore(data.File("tasks.json")), new RecordingArchive(), clock.Func);
+                var dispatcher = new TaskDispatcher(queue, new FakeDispatchHost(), clock.Func, new RecordingWorktrees());
+                int raised = 0;
+                bool startedWhenRaised = false;
+                dispatcher.StartedChanged += () => { raised++; startedWhenRaised = dispatcher.IsStarted; };
+                dispatcher.Start();
+                dispatcher.Start();
+                Assert.AreEqual(1, raised);
+                Assert.IsTrue(startedWhenRaised);
+            }
+        }
+
         [DataTestMethod]
         [DataRow(QueueStatus.Waiting, false)]
         [DataRow(QueueStatus.Sending, false)]

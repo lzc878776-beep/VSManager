@@ -38,6 +38,7 @@ namespace VSManager
             AIFunctionFactory.Create((Func<string>)ReadCurrentNote, "read_current_note"),
             AIFunctionFactory.Create((Func<string, string>)ListNotes, "list_notes"),
             AIFunctionFactory.Create((Func<string, string>)ReadNote, "read_note"),
+            AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string>)FormatNoteCard, "format_note_card"),
         };
 
         private NoteSnapshot CurrentNote()

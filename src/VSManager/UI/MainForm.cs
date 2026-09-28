@@ -139,6 +139,8 @@ namespace VSManager
 			AppDomain.CurrentDomain.UnhandledException += (s, e) => EmergencySave();
 			_dispatcher = new TaskDispatcher(_tasks, this, worktrees: new WorktreeService(WorktreeFileRoots), startSettings: () => _settings);
 			_dispatcher.TaskCompleted += RecordTaskInNotebook;
+			// 无论用户还是 AI 启动流程，都同步「开始流程」按钮 / Sync the Start button whether the user or the AI started the workflow
+			_dispatcher.StartedChanged += () => { _taskPanel?.SetWorkflowStarted(_dispatcher.IsStarted); UpdateTaskTimer(); };
 
 			_chatSvc = new CopilotChat(() => _settings);
 			_chatSvc.Updated += (vs, t) => SafeInvoke(() => OnChatUpdated(vs, t));
@@ -2029,8 +2031,6 @@ namespace VSManager
 					return;
 				case "start":
 					_dispatcher.Start();
-					_taskPanel.SetWorkflowStarted(_dispatcher.IsStarted);
-					UpdateTaskTimer();
 					return;
 				case "clear":
 					// 只在界面隐藏已完成的条目：记录清除时间点（settings.json），不修改 tasks.json 与归档

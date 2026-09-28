@@ -8,8 +8,19 @@ namespace VSManager
     /// 任务队列放行等级：顶栏滑块、任务菜单与 AI 工具共用的宿主实现。
     /// Task queue release level: host implementation shared by the header slider, the task menu and the AI tools.
     /// </summary>
-    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentTaskControlHost, IAgentBlockedTaskHost
+    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentWorkflowHost, IAgentTaskControlHost, IAgentBlockedTaskHost
     {
+        bool IAgentWorkflowHost.WorkflowStarted => _dispatcher.IsStarted;
+
+        Task<string> IAgentWorkflowHost.StartWorkflow() => OnUi(() =>
+        {
+            if (_dispatcher.IsStarted) return "任务流程已启动 / The task workflow is already started.";
+            _dispatcher.Start();
+            AppLog.Write(AppLog.TasksFile, "AI 启动任务流程 / The AI started the task workflow");
+            int waiting = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
+            return $"已启动任务流程，按钮已同步为「已启动」；{waiting} 个活动任务将按编号调度 / Task workflow started and the button now shows Started; {waiting} active tasks dispatch in ID order";
+        });
+
         Task<string> IAgentBlockedTaskHost.CheckBlockedTarget(VsInstance v, SolutionEntry parkFor, string text) => OnUi(() =>
         {
             string key = parkFor != null ? parkFor.Path : v?.Key;
