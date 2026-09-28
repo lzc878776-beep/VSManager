@@ -1888,7 +1888,7 @@ namespace VSManager
 
 		/// <summary>任务清单分组用的已打开 VS（编号与左侧列表一致）。/ Open VS instances for task grouping (numbers match the list on the left).</summary>
 		private IReadOnlyList<TaskGroupVs> TaskGroupTargets() =>
-			_instances.Select((v, i) => new TaskGroupVs { Key = v.Key, Name = NameOf(v), Number = i + 1 }).ToList();
+			_instances.Select((v, i) => new TaskGroupVs { Key = v.Key, Name = NameOf(v), Number = i + 1, InstanceKey = v.InstanceKey, Pid = v.Pid }).ToList();
 
 		private void ApplyInstances(List<VsInstance> list)
 		{

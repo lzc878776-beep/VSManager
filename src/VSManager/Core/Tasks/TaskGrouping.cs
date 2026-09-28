@@ -11,6 +11,10 @@ namespace VSManager
         public string Name;
         /// <summary>左侧 VS 列表中的编号（从 1 开始）。/ Number in the VS list on the left (1-based).</summary>
         public int Number;
+        /// <summary>实例键（<see cref="VsInstance.InstanceKey"/>）；同一解决方案被多个 VS 打开时用它区分分组。/ Instance key; tells groups apart when one solution is open in several VS.</summary>
+        public string InstanceKey;
+        /// <summary>进程 ID，用于归属手动对话。/ Process ID, used to place manual chats.</summary>
+        public int Pid;
     }
 
     /// <summary>
@@ -54,9 +58,11 @@ namespace VSManager
     /// <summary>
     /// 任务清单按目标 VS 分组的纯逻辑（只影响显示，不改变任务本身）。
     /// 分组键 = 任务的 VsKey（解决方案路径，大小写与分隔符不敏感）；「等待目标 VS」且目标未打开的任务归入单独的「等待打开」分组。
+    /// 同一解决方案被多个 VS 打开时，每个 VS 各自成组（键为实例键），任务按其记录的目标实例归组，不再全部归到第一个 VS 名下。
     /// Pure logic for grouping the task list by target VS (display only; tasks are untouched).
     /// Group key = the task's VsKey (solution path, case- and separator-insensitive); "waiting for VS" tasks whose target is not
-    /// open go to a separate "waiting to open" group.
+    /// open go to a separate "waiting to open" group. When one solution is open in several VS, each VS gets its own group (keyed
+    /// by instance key) and tasks follow their recorded target instance instead of all landing under the first VS.
     /// </summary>
     public static class TaskGrouping
     {
@@ -100,6 +106,45 @@ namespace VSManager
             return "";
         }
 
+        /// <summary>打开的 VS 对应的分组键：解决方案只被一个 VS 打开时沿用解决方案键，否则用实例键。/ Group key of an open VS: the solution key when only one VS has it open, otherwise the instance key.</summary>
+        private static string GroupKeyOf(TaskGroupVs v, Dictionary<string, List<TaskGroupVs>> bySolution)
+        {
+            string solution = NormalizeKey(v.Key);
+            if (!bySolution.TryGetValue(solution, out var list) || list.Count < 2) return solution;
+            string inst = NormalizeKey(v.InstanceKey);
+            return inst.Length > 0 ? inst : NormalizeKey("pid:" + v.Pid + ":" + solution);
+        }
+
+        /// <summary>
+        /// 解决方案被多个 VS 打开时条目所属的分组：@ 指定的实例 → 记录的目标实例 → 手动对话的进程 → 名称唯一匹配；
+        /// 都对不上（例如目标实例已关闭）时留在解决方案键下，显示为未打开的该名称分组，而不是并入某个 VS。
+        /// Group of an item whose solution is open in several VS: the @-chosen instance → the recorded target instance → the
+        /// manual chat's process → a unique name match; when nothing matches (e.g. the target instance has closed) it stays under
+        /// the solution key, shown as a not-open group with its own name, instead of being merged into some VS.
+        /// </summary>
+        private static string SharedKeyOf(object item, string solutionKey, List<TaskGroupVs> shared, Dictionary<string, List<TaskGroupVs>> bySolution)
+        {
+            TaskGroupVs hit = null;
+            string name = null;
+            if (item is QueuedTask t)
+            {
+                string inst = t.ExplicitInstanceKey ?? t.TargetInstanceKey;
+                if (!string.IsNullOrEmpty(inst)) hit = shared.FirstOrDefault(v => string.Equals(v.InstanceKey, inst, StringComparison.OrdinalIgnoreCase));
+                name = t.VsName;
+            }
+            else if (item is ExternalChat c)
+            {
+                if (c.Pid > 0) hit = shared.FirstOrDefault(v => v.Pid == c.Pid);
+                name = c.VsName;
+            }
+            if (hit == null && !string.IsNullOrWhiteSpace(name))
+            {
+                var named = shared.Where(v => string.Equals((v.Name ?? "").Trim(), name.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
+                if (named.Count == 1) hit = named[0];
+            }
+            return hit != null ? GroupKeyOf(hit, bySolution) : solutionKey;
+        }
+
         private static DateTime ActivityOf(object item) =>
             item is QueuedTask t ? Max(t.Finished, t.Started, t.Created)
             : item is ExternalChat c ? (c.Finished ?? c.Started) : DateTime.MinValue;
@@ -119,13 +164,17 @@ namespace VSManager
         /// </summary>
         public static List<object> Build(IEnumerable<object> ordered, IReadOnlyList<TaskGroupVs> open, string sort, ICollection<string> collapsed, IEnumerable<string> manualOrder = null)
         {
+            var openList = (open ?? new TaskGroupVs[0]).Where(v => v != null && NormalizeKey(v.Key).Length > 0).ToList();
+            var bySolution = openList.GroupBy(v => NormalizeKey(v.Key), StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
             var openByKey = new Dictionary<string, TaskGroupVs>(StringComparer.Ordinal);
-            foreach (var v in open ?? new TaskGroupVs[0])
+            foreach (var v in openList)
             {
-                string k = NormalizeKey(v?.Key);
-                if (k.Length > 0 && !openByKey.ContainsKey(k)) openByKey[k] = v;
+                string k = GroupKeyOf(v, bySolution);
+                if (!openByKey.ContainsKey(k)) openByKey[k] = v;
             }
-            var openKeys = new HashSet<string>(openByKey.Keys, StringComparer.Ordinal);
+            // 「等待打开」判断仍按解决方案 / "Waiting to open" is still decided per solution
+            var openKeys = new HashSet<string>(bySolution.Keys, StringComparer.Ordinal);
             var groups = new List<TaskGroupHeader>();
             var members = new Dictionary<string, List<object>>(StringComparer.Ordinal);
             var headers = new Dictionary<string, TaskGroupHeader>(StringComparer.Ordinal);
@@ -133,6 +182,7 @@ namespace VSManager
             {
                 if (item == null || item is TaskGroupHeader) continue;
                 string key = KeyOf(item, openKeys);
+                if (bySolution.TryGetValue(key, out var shared) && shared.Count > 1) key = SharedKeyOf(item, key, shared, bySolution);
                 if (!members.TryGetValue(key, out var list))
                 {
                     members[key] = list = new List<object>();

@@ -74,20 +74,13 @@ namespace VSManager
                 }
                 else before = AttachmentIds(pane);
 
-                Key(VK_SHIFT, true); Key(VK_MENU, true); Key(VK_CONTROL, true);
-                Native.Activate(vs.MainHwnd);
-                for (int i = 0; i < 20 && !ForegroundIs(vs); i++) Thread.Sleep(50);
-                if (!ForegroundIs(vs)) return "无法激活该 VS，未发送图片";
-                edit.SetFocus();
-                if (!WaitFocus(edit, 1000) || !ForegroundIs(vs)) return "无法聚焦 Copilot 输入框，未发送图片";
-                string currentText = GetEditText(edit);
-                if (!ManualChatProtection.IsEmptyInput(currentText)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(currentText == null ? ManualChatObservation.Unknown : ManualChatObservation.Draft) : "VS 输入框出现新草稿或无法读取，已取消图片发送";
-                if (GetClipboardSequenceNumber() != clipboardVersion) return "剪贴板已被其他操作更改，已取消图片发送";
-
-                string blocked = GuardQueueInput(vs, pane, edit);
-                if (blocked != null) return blocked;
                 string prompt = string.IsNullOrWhiteSpace(text) ? "请分析这些图片。" : text;
-                // 直接写入剪贴板；此时尚未粘贴任何内容，被占用时稍后重试 / Direct write; nothing is pasted yet, so a busy clipboard retries later
+                if (GetClipboardSequenceNumber() != clipboardVersion) return "剪贴板已被其他操作更改，已取消图片发送";
+                // 与纯文字发送一致：先写剪贴板再激活 VS。剪贴板被监听程序占用时写入可能等待数秒，放在聚焦之前，
+                // 聚焦后到粘贴之间就不会有长时间空档（之前正是这段空档里焦点丢失，导致带图任务一律失败）。
+                // As with text-only sends, write the clipboard before activating VS. With a clipboard listener the write can
+                // wait for seconds; doing it before focusing leaves no long gap between focus and paste (focus used to be
+                // lost in that gap, so every task with images failed).
                 try { DirectClipboard.SetText(prompt.Replace("\n", "\r\n")); }
                 catch (ExternalException ex)
                 {
@@ -95,7 +88,27 @@ namespace VSManager
                 }
                 clipboardVersion = GetClipboardSequenceNumber();
                 clipboardChanged = true;
-                if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送图片";
+
+                // 激活与聚焦沿用文字发送的流程（含切回对话窗格的兜底），并确认焦点稳定后再粘贴。
+                // Activation and focus reuse the text-send flow (including the chat-pane fallback) and wait for focus to settle before pasting.
+                string focusError = FocusForPaste(vs, edit) ?? SettleFocus(vs, edit);
+                if (focusError != null) return PrePasteFocusFailure(focusError);
+                string currentText = GetEditText(edit);
+                if (!ManualChatProtection.IsEmptyInput(currentText)) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(currentText == null ? ManualChatObservation.Unknown : ManualChatObservation.Draft) : "VS 输入框出现新草稿或无法读取，已取消图片发送";
+
+                string blocked = GuardQueueInput(vs, pane, edit);
+                if (blocked != null) return blocked;
+                if (GetClipboardSequenceNumber() != clipboardVersion)
+                {
+                    // 尚未粘贴：剪贴板被改写时重新写入一次 / Nothing pasted yet: write again if the clipboard was replaced
+                    try { DirectClipboard.SetText(prompt.Replace("\n", "\r\n")); }
+                    catch (ExternalException ex)
+                    {
+                        return SendRetryPolicy.ClipboardBusyPrefix + "剪贴板被其他程序占用，稍后自动重试，未发送图片 / The clipboard is busy; retrying later, images not sent: " + ex.Message;
+                    }
+                    clipboardVersion = GetClipboardSequenceNumber();
+                }
+                if (!Refocus(vs, edit)) return PrePasteFocusFailure("输入焦点已改变，未发送图片");
                 blocked = GuardQueueInput(vs, pane, edit, writing: true);
                 if (blocked != null) return blocked;
                 Combo(VK_CONTROL, VK_V);
@@ -105,11 +118,11 @@ namespace VSManager
                 var addedIds = new HashSet<string>();
                 foreach (var image in images)
                 {
-                    if (!ForegroundIs(vs) || !HasFocus(edit) || GetClipboardSequenceNumber() != clipboardVersion)
+                    if (!Refocus(vs, edit) || GetClipboardSequenceNumber() != clipboardVersion)
                         return "焦点或剪贴板已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
                     using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
                     clipboardVersion = GetClipboardSequenceNumber();
-                    if (!ForegroundIs(vs) || !HasFocus(edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
+                    if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
                     blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
                     if (blocked != null) return blocked;
                     Combo(VK_CONTROL, VK_V);
@@ -138,12 +151,11 @@ namespace VSManager
                     if (!confirmed)
                         return "未能确认图片附件已加入，未发送。请确认该 VS / 模型支持图片，并检查 VS 草稿后重试";
                     if (!ForegroundIs(vs)) return "前台窗口已改变，未发送（请检查 VS 草稿后重试）";
-                    edit.SetFocus();
-                    if (!WaitFocus(edit, 600)) return "无法重新聚焦输入框，未发送（请检查 VS 草稿后重试）";
+                    if (!Refocus(vs, edit)) return "无法重新聚焦输入框，未发送（请检查 VS 草稿后重试）";
                 }
 
                 var finalIds = AttachmentIds(pane);
-                if (!ForegroundIs(vs) || !HasFocus(edit) || !addedIds.All(finalIds.Contains) ||
+                if (!Refocus(vs, edit) || !addedIds.All(finalIds.Contains) ||
                     !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
 
@@ -164,6 +176,51 @@ namespace VSManager
                 return "已点击发送，但尚未确认成功。请在 VS 中查看，确认前不要重复发送";
             }
         }
+
+        /// <summary>
+        /// VS 被激活后会异步恢复它自己记住的焦点，可能把刚设置到输入框的焦点夺走：短暂等待，确认焦点稳定，必要时重新聚焦。
+        /// After activation VS restores its own remembered focus asynchronously and may take focus away from the input just
+        /// focused: wait briefly, confirm the focus is stable and refocus when needed.
+        /// </summary>
+        private static string SettleFocus(VsInstance vs, AutomationElement edit)
+        {
+            for (int i = 0; i < 3; i++)
+            {
+                Thread.Sleep(150);
+                if (!ForegroundIs(vs)) return "发送前 VS 焦点已改变，发送已取消 / VS lost the foreground before sending; send cancelled";
+                if (HasFocus(edit)) return null;
+                T("图片：输入框焦点被 VS 收回，重新聚焦 / images: VS took the input focus back, refocusing");
+                try { edit.SetFocus(); } catch (Exception ex) { T("图片：SetFocus 异常 " + ex.Message); }
+                WaitFocus(edit, 600);
+            }
+            return ForegroundIs(vs) && HasFocus(edit) ? null : "无法聚焦 Copilot 输入框，未发送图片 / Could not focus the Copilot input box; images not sent";
+        }
+
+        /// <summary>VS 仍在前台时确保输入框有焦点（只移动焦点，不改变输入内容）。/ Ensures the input has focus while VS is still in front (moves focus only, never changes the input).</summary>
+        private static bool Refocus(VsInstance vs, AutomationElement edit)
+        {
+            if (!ForegroundIs(vs)) return false;
+            if (HasFocus(edit)) return true;
+            T("图片：输入框失去焦点，VS 仍在前台，重新聚焦 / images: input lost focus while VS is in front, refocusing");
+            try { edit.SetFocus(); } catch (Exception ex) { T("图片：SetFocus 异常 " + ex.Message); return false; }
+            return WaitFocus(edit, 600) && ForegroundIs(vs);
+        }
+
+        /// <summary>
+        /// 粘贴前的激活 / 聚焦失败没有改动 VS：队列任务稍后自动重试（与纯文字发送一致），而不是判为投递失败；
+        /// 直接发送保持以「未发送图片」结尾，仍可回退为只发文字。
+        /// Activation / focus failures before pasting leave VS untouched: queued tasks retry automatically later (as text-only
+        /// sends do) instead of being marked as delivery failures; direct sends keep the "未发送图片" (images not sent) ending so
+        /// they can still fall back to text only.
+        /// </summary>
+        internal static string PrePasteFocusResult(string error, bool queued)
+        {
+            if (error == null || SendRetryPolicy.IsBlocked(error)) return error;
+            if (queued) return SendRetryPolicy.UserBusyPrefix + error;
+            return error.EndsWith("未发送图片", StringComparison.Ordinal) ? error : "输入焦点未就绪（" + error + "），未发送图片";
+        }
+
+        private string PrePasteFocusFailure(string error) => PrePasteFocusResult(error, _queueGuard != null);
 
         private static HashSet<string> AttachmentIds(AutomationElement pane)
         {
