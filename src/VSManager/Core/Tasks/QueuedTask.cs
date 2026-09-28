@@ -153,6 +153,12 @@ namespace VSManager
         /// attempt and cleared once delivered.
         /// </summary>
         [DataMember(EmitDefaultValue = false)] public string ResumeNote;
+        /// <summary>
+        /// Copilot 对话已被清空或换成新线程：下一次发送改为提示 Copilot 重新阅读相关代码与文档了解进度，而不是依赖之前的对话；该次送达后清除。
+        /// The Copilot conversation was cleared or replaced by a new thread: the next send tells Copilot to re-read the relevant
+        /// code and docs to learn the progress instead of relying on the earlier conversation; cleared once delivered.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public bool FreshContext;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
 
@@ -185,7 +191,7 @@ namespace VSManager
             ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
             PendingNote = PendingNote, FailureReason = FailureReason,
             TestItems = TestItems?.Select(i => i?.Clone()).ToArray(), Interrupted = Interrupted,
-            Reply = Reply, RunIssue = RunIssue, ResumeNote = ResumeNote
+            Reply = Reply, RunIssue = RunIssue, ResumeNote = ResumeNote, FreshContext = FreshContext
         };
     }
 

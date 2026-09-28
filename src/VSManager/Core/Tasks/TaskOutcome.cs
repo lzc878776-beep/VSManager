@@ -332,15 +332,18 @@ namespace VSManager
         /// AI 助手补充信息重试前的检查：该需求已达 <see cref="MaxAiAttempts"/> 次，或补充信息没有新内容时返回拒绝原因，否则 null。
         /// Check before the AI assistant retries with info: returns the refusal when the request has reached
         /// <see cref="MaxAiAttempts"/> runs or the info adds nothing new; null otherwise.
+        /// <paramref name="replace"/>：info 将替换已有补充，与原有内容比较；<paramref name="freshContext"/>：对话已重置本身就是新情况，不查新内容。
+        /// <paramref name="replace"/>: the info replaces the earlier supplements and is compared with them; <paramref name="freshContext"/>:
+        /// a reset conversation is itself a new situation, so novelty is not checked.
         /// </summary>
-        public static string CheckAiRetry(IEnumerable<QueuedTask> items, QueuedTask t, string info)
+        public static string CheckAiRetry(IEnumerable<QueuedTask> items, QueuedTask t, string info, bool replace = false, bool freshContext = false)
         {
             if (t == null) return null;
             // 本轮没执行完或没送达：允许「继续」「再试一次」，不查新内容也不占次数 / Run unfinished or undelivered: allow "continue" / "try again" without novelty or limit checks
             if (t.Status == QueueStatus.Failed && FailureKind.IsRecoverable(t.FailureKind)) return null;
             int spent = LineageAttempts(items, new[] { t });
             if (spent >= MaxAiAttempts) return LimitText(t.Id, spent);
-            if (IsNearRepeat(t.Text + " " + t.Supplement, t.Text + " " + t.Supplement + " " + info))
+            if (!freshContext && IsNearRepeat(t.Text + " " + t.Supplement, t.Text + " " + (replace ? "" : t.Supplement + " ") + info))
                 return "补充信息没有新内容（与任务正文或已有补充重复，或只是「请再试一次」）：请根据 Copilot 回复写明具体的新信息或调整，否则把情况交给用户。"
                     + $"Copilot 回复：{TextUtil.Clip(t.Result ?? t.Error, 400)}"
                     + " / The info adds nothing new (repeats the task or earlier info, or only says 'try again'): state concrete new information or changes from the Copilot reply, or hand over to the user.";

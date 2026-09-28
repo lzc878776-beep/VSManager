@@ -65,6 +65,7 @@ namespace VSManager
                     t.Error = null;
                     t.Interrupted = false;
                     t.ResumeNote = null;
+                    t.FreshContext = false;
                     break;
                 case SendDecision.Fail:
                     Fail(t, result, now, FailureKind.Delivery);
@@ -87,29 +88,43 @@ namespace VSManager
         public static string UnverifiedReceipt(QueuedTask t) => "[VSManager:" + t.CompletionToken + ":UNVERIFIED]";
 
         /// <summary>
-        /// 发给 Copilot 的正文：任务 + 前次失败反馈（如有）+ 补充信息（如有）+ 完整回执规则。FAILED 只用于本任务本身未完成，
-        /// 尚未验证或需用户测试用 UNVERIFIED，无关的遗留问题不算失败。
-        /// Text sent to Copilot: task + previous failure feedback (if any) + supplementary info (if any) + the full receipt rules.
-        /// FAILED only means the task itself was not completed; UNVERIFIED covers pending verification and user testing; unrelated pre-existing issues are not failures.
+        /// 发给 Copilot 的正文：任务 + 重试上下文（接续 / 新对话说明、轮次、前次反馈、补充信息，见 <see cref="RetryContext"/>）+ 完整回执规则。
+        /// FAILED 只用于本任务本身未完成，尚未验证或需用户测试用 UNVERIFIED，无关的遗留问题不算失败。
+        /// Text sent to Copilot: task + retry context (continuation / fresh-conversation note, round, previous feedback,
+        /// supplementary info, see <see cref="RetryContext"/>) + the full receipt rules. FAILED only means the task itself was not
+        /// completed; UNVERIFIED covers pending verification and user testing; unrelated pre-existing issues are not failures.
         /// </summary>
         public static string DispatchText(QueuedTask t) => t.Text + " "
             + (t.Worktree != null && !t.IsWorktreeMerge ? WorktreeInfo.DevelopmentInstructions + " " : "")
-            + RoundText(t)
-            + (t.Interrupted ? InterruptedNote + " " : "")
-            + (string.IsNullOrEmpty(t.ResumeNote) ? "" : t.ResumeNote + " ")
-            + (string.IsNullOrEmpty(t.PriorFailure) ? ""
-                : "【前次尝试反馈】" + t.PriorFailure + " 请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ")
-            + (string.IsNullOrEmpty(t.Supplement) ? ""
-                : "【补充信息】" + t.Supplement + " 请结合补充信息继续完成本任务。 ")
+            + RetryContext(t)
             + FullRules(t);
 
         /// <summary>本需求当前是第几轮（只算内容类执行）。/ Current round of the request (content runs only).</summary>
         public static int Round(QueuedTask t) => Math.Max(0, t.PriorRuns) + Math.Max(0, t.ContentRuns) + 1;
 
-        private static string RoundText(QueuedTask t)
+        /// <summary>
+        /// 重试上下文：只放一段接续说明（本轮中断 > 对话已重置 > 用户暂停），各段信息后只给一次处理要求，
+        /// 补充信息优先于前次反馈，避免多段说明各自重复要求、机械堆叠。
+        /// Retry context: a single continuation note (interrupted run > conversation reset > user pause), then the pieces of
+        /// information followed by one instruction; supplementary info takes precedence over earlier feedback, so the sections
+        /// do not each repeat their own demands and pile up mechanically.
+        /// </summary>
+        internal static string RetryContext(QueuedTask t)
         {
+            var sb = new System.Text.StringBuilder();
+            if (!string.IsNullOrEmpty(t.ResumeNote)) sb.Append(t.ResumeNote).Append(' ');
+            else if (t.FreshContext) sb.Append(FreshContextNote).Append(' ');
+            else if (t.Interrupted) sb.Append(InterruptedNote).Append(' ');
             int round = Round(t);
-            return round <= 1 ? "" : "【第 " + round + " 轮】本需求此前已执行 " + (round - 1) + " 次未通过，请参考前次反馈调整做法。 ";
+            bool prior = !string.IsNullOrEmpty(t.PriorFailure), sup = !string.IsNullOrEmpty(t.Supplement);
+            if (round > 1) sb.Append("【第 ").Append(round).Append(" 轮】本需求此前已执行 ").Append(round - 1).Append(" 次未通过。");
+            if (prior) sb.Append("【前次尝试反馈】").Append(t.PriorFailure).Append(' ');
+            if (sup) sb.Append("【补充信息】").Append(t.Supplement).Append(' ');
+            if (sup) sb.Append("请以补充信息为准（与前次反馈或此前做法冲突时以补充信息为准）继续完成本任务，")
+                .Append(prior ? "前次反馈中无关的遗留问题可忽略，" : "").Append("不要原样重复上次的步骤。 ");
+            else if (prior) sb.Append("请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ");
+            else if (round > 1) sb.Append("请调整做法，不要原样重复上次的步骤。 ");
+            return sb.ToString();
         }
 
         /// <summary>AI 助手自主为每个任务补充信息重试的次数上限；用户提供的补充不受此限。/ Cap on AI-initiated retries with info per task; supplements provided by the user are not capped.</summary>
@@ -345,12 +360,20 @@ namespace VSManager
         }
 
         /// <summary>重新排队：清空尝试次数、结果与时间，立即可发布。/ Requeue: clears attempts, result and times; publishable at once.</summary>
-        public static void Requeue(QueuedTask t)
+        public static void Requeue(QueuedTask t) => Requeue(t, false);
+
+        /// <summary>
+        /// 重新排队；<paramref name="freshContext"/> 为 true 表示 Copilot 对话已清空或换成新线程，下一次发送提示其重新阅读相关内容。
+        /// Requeue; <paramref name="freshContext"/> true means the Copilot conversation was cleared or replaced by a new thread,
+        /// so the next send tells Copilot to re-read the relevant content.
+        /// </summary>
+        public static void Requeue(QueuedTask t, bool freshContext)
         {
             // 把本次失败的反馈带到下一次尝试 / Carry this failure's feedback into the next attempt
             t.PriorFailure = TaskFailureAnalyzer.PriorFailureSummary(t) ?? t.PriorFailure;
             // 本轮中断（EOF、过大、迭代上限等）后重试：提示 Copilot 在已有进度上继续 / Retry after an interrupted run: tell Copilot to continue from its progress
-            t.ResumeNote = t.Status == QueueStatus.Failed && t.FailureKind == FailureKind.Interrupted ? ResumeNoteFor(t.RunIssue) : null;
+            t.ResumeNote = t.Status == QueueStatus.Failed && t.FailureKind == FailureKind.Interrupted ? ResumeNoteFor(t.RunIssue, freshContext) : null;
+            t.FreshContext = freshContext;
             t.Reply = t.RunIssue = null;
             t.FailureKind = null;
             t.NeedsUser = false;
@@ -383,10 +406,15 @@ namespace VSManager
 
         /// <summary>
         /// 插入补充信息并重新排队（失败或待验证；<paramref name="enforceLimit"/> 为 true 时最多 <see cref="MaxSupplements"/> 次，用户补充不限）；前次反馈一并带上。
+        /// <paramref name="replace"/> 为 true 时 info 是整合后的完整重试说明，替换此前累积的补充信息、前次反馈与接续说明；
+        /// <paramref name="freshContext"/> 为 true 表示 Copilot 对话已清空，提示其重新阅读相关内容。
         /// Adds supplementary info and requeues (failed or awaiting verification; at most <see cref="MaxSupplements"/> times when
         /// <paramref name="enforceLimit"/> is true, unlimited for user supplements); the previous feedback is carried along.
+        /// With <paramref name="replace"/> the info is a consolidated retry brief replacing the accumulated supplements, previous
+        /// feedback and continuation note; <paramref name="freshContext"/> means the Copilot conversation was cleared and Copilot
+        /// should re-read the relevant content.
         /// </summary>
-        public static bool Supplement(QueuedTask t, string info, out string error, bool enforceLimit = true)
+        public static bool Supplement(QueuedTask t, string info, out string error, bool enforceLimit = true, bool replace = false, bool freshContext = false)
         {
             error = null;
             info = info?.Trim();
@@ -397,11 +425,19 @@ namespace VSManager
                 error = $"已补充 {t.SupplementCount} 次，达到上限，请把情况告诉用户由用户决定 / Supplement limit reached ({t.SupplementCount}); hand over to the user";
                 return false;
             }
-            t.Supplement = string.IsNullOrEmpty(t.Supplement) ? info : t.Supplement + " ｜ " + info;
+            t.Supplement = replace || string.IsNullOrEmpty(t.Supplement) ? info : t.Supplement + " ｜ " + info;
             t.SupplementCount++;
-            Requeue(t);
+            Requeue(t, freshContext);
+            // 整合说明已包含需要保留的反馈与接续要求 / The consolidated brief already carries whatever feedback and continuation matter
+            if (replace) t.PriorFailure = t.ResumeNote = null;
             return true;
         }
+
+        /// <summary>
+        /// Copilot 对话已清空 / 换成新线程后再次发送时附加的说明。
+        /// Note added when the task is sent again after the Copilot conversation was cleared / replaced by a new thread.
+        /// </summary>
+        public const string FreshContextNote = "【对话已重置】此前的 Copilot 对话记录已清空或换成了新线程，之前的讨论与进度在对话中已不可用：请先重新阅读本任务涉及的代码、文档与 Git 状态（如 git status / git diff / git log）了解已有进度，在此基础上继续完成剩余部分，不要重复或回滚已完成的部分，也不要假设之前对话中的内容仍然可见。";
 
         /// <summary>中断后再次发送时附加的说明。/ Note added when an interrupted task is sent again.</summary>
         public const string InterruptedNote = "【继续执行】本任务上次执行到一半时被用户暂停中断，可能已完成部分改动：请先检查当前代码与对话中的已有进度，在此基础上继续完成本任务，不要重复或回滚已完成的部分。";
@@ -410,7 +446,7 @@ namespace VSManager
         /// Copilot 本轮执行异常后重试时附加的接续说明（发给 Copilot）。
         /// Continuation note (sent to Copilot) for a retry after a Copilot run problem.
         /// </summary>
-        public static string ResumeNoteFor(string runIssue)
+        public static string ResumeNoteFor(string runIssue, bool freshContext = false)
         {
             string cause;
             switch (runIssue)
@@ -420,7 +456,11 @@ namespace VSManager
                 case RunIssue.IterationLimit: cause = "达到单轮迭代上限"; break;
                 default: cause = "网络 / 服务错误或回复被中断"; break;
             }
-            return "【继续执行】本任务上次执行因「" + cause + "」没有完成，可能已完成部分改动：请先检查当前代码与对话中的已有进度，在此基础上继续完成剩余部分，不要重复或回滚已完成的部分。"
+            return "【继续执行】本任务上次执行因「" + cause + "」没有完成，可能已完成部分改动："
+                + (freshContext
+                    ? "此前的 Copilot 对话已清空或换成了新线程，请先重新阅读本任务涉及的代码、文档与 Git 状态（如 git status / git diff / git log）了解已有进度，"
+                    : "请先检查当前代码与对话中的已有进度，")
+                + "在此基础上继续完成剩余部分，不要重复或回滚已完成的部分。"
                 + (runIssue == RunIssue.TooLarge ? "请分步完成，每次只处理少量文件，避免输出整文件或大段日志。" : "")
                 + (runIssue == RunIssue.IterationLimit ? "请优先完成剩余的关键步骤，减少不必要的探索。" : "");
         }

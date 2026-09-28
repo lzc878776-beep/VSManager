@@ -84,20 +84,22 @@ namespace VSManager
             return $"已放行任务 #{id}，结果保持不变；同一 VS 还有 {next} 个后续任务将继续 / Task #{id} released; {next} successors continue";
         });
 
-        Task<string> IAgentReleaseHost.RetryTaskWithInfo(int id, string info, bool fromUser) => OnUi(() =>
+        Task<string> IAgentReleaseHost.RetryTaskWithInfo(int id, string info, bool fromUser, bool replace, bool freshContext) => OnUi(() =>
         {
             var t = _tasks.Find(id);
             if (t == null) return "没有任务 #" + id + " / No task #" + id;
             // AI 自主重试：限制次数并要求有新信息；用户提供的补充（已经用户确认）不受限 / AI self-retries: capped and must carry new information; user-provided info (user-confirmed) is not
-            if (!fromUser && TaskFailureAnalyzer.CheckAiRetry(_tasks.Items, t, info) is string refused)
+            if (!fromUser && TaskFailureAnalyzer.CheckAiRetry(_tasks.Items, t, info, replace, freshContext) is string refused)
             {
                 AppLog.Write(AppLog.TasksFile, $"拒绝 AI 补充重试 #{id} / Refused AI retry: " + TextUtil.Clip(refused, 200));
                 return refused;
             }
-            if (!RetryWithInfo(t, info, out string error, !fromUser)) return $"任务 #{id} 当前{StatusText(t)}：{error}";
+            if (!RetryWithInfo(t, info, out string error, !fromUser, replace, freshContext)) return $"任务 #{id} 当前{StatusText(t)}：{error}";
             if (fromUser) AppLog.Write(AppLog.TasksFile, $"AI 助手转交用户补充信息重试 #{id} / Assistant relayed user info to retry #{id}");
+            string how = (replace ? "；已替换此前的补充与反馈 / replaced earlier supplements and feedback" : "")
+                + (freshContext ? "；已标记对话重置，Copilot 会先重新阅读相关内容 / marked as a fresh conversation" : "");
             return $"已为任务 #{id} 插入补充信息并在原条目重新排队（第 {t.SupplementCount} 次补充{(fromUser ? "，来自用户" : $"，AI 自主上限 {TaskStateMachine.MaxSupplements}")}），阻塞随之解除，完成后会再通知你 / "
-                + $"Task #{id} requeued in place with info (supplement {t.SupplementCount}{(fromUser ? ", from the user" : $", AI limit {TaskStateMachine.MaxSupplements}")}); the block is lifted and you will be notified";
+                + $"Task #{id} requeued in place with info (supplement {t.SupplementCount}{(fromUser ? ", from the user" : $", AI limit {TaskStateMachine.MaxSupplements}")}); the block is lifted and you will be notified" + how;
         });
 
         Task<string> IAgentTaskResultHost.EditTaskResult(int id, string text) => OnUi(() =>
@@ -111,7 +113,7 @@ namespace VSManager
             return $"已修改任务 #{id} 的结果文字并保存，状态与排队不变{checklist} / Result of task #{id} edited and saved; status and queue unchanged";
         });
 
-        Task<string> IAgentReleaseHost.RetryTask(int id, string note) => OnUi(() =>
+        Task<string> IAgentReleaseHost.RetryTask(int id, string note, bool freshContext) => OnUi(() =>
         {
             var t = _tasks.Find(id);
             if (t == null) return "没有任务 #" + id + " / No task #" + id;
@@ -123,7 +125,7 @@ namespace VSManager
             }
             if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
             t.RecoveryRetries++;
-            _dispatcher.Retry(t, note);
+            _dispatcher.Retry(t, note, freshContext);
             _taskPanel.RefreshItems();
             if (t.Status == QueueStatus.Failed)
             {
@@ -136,11 +138,11 @@ namespace VSManager
 
         Task<string> IAgentTaskReplyHost.ReadTaskReply(int id, int page) => OnUi(() => TaskReply.Page(_tasks.Find(id), page));
 
-        private bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit)
+        private bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit, bool replace = false, bool freshContext = false)
         {
             // 重试复用原条目，不再隐藏 / Retrying reuses the entry, which is no longer hidden
             if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
-            bool ok = _dispatcher.RetryWithInfo(t, info, out error, enforceLimit);
+            bool ok = _dispatcher.RetryWithInfo(t, info, out error, enforceLimit, replace, freshContext);
             _taskPanel.RefreshItems();
             return ok;
         }
@@ -153,7 +155,7 @@ namespace VSManager
             {
                 if (f.ShowDialog(this) != DialogResult.OK) return;
                 // 用户亲自补充不受 AI 自主次数限制 / The user's own supplements are not capped
-                SetStatus(RetryWithInfo(t, f.Info, out string error, false)
+                SetStatus(RetryWithInfo(t, f.Info, out string error, false, f.ReplacePrevious, f.FreshContext)
                     ? $"任务 #{t.Id} 已插入补充信息并重新排队 / Task #{t.Id} requeued with info"
                     : error);
             }

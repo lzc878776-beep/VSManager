@@ -224,7 +224,7 @@ namespace VSManager
                 case Network:
                     return "返回被中断：多为偶发，可直接用 retry_task 让 Copilot 在已有进度上继续（note 可写明从哪一步接着做）。/ The response was cut off, usually transient: call retry_task so Copilot continues from its progress (note may say where to resume).";
                 case TooLarge:
-                    return "返回体或上下文过大：用 retry_task 并在 note 中要求 Copilot 分步完成、每次只处理一部分文件、减少大段输出（不要贴整文件或完整日志），必要时先用 new_copilot_thread 开新线程再重试。/ Payload or context too large: call retry_task with a note asking Copilot to work in smaller steps, handle fewer files at a time and avoid large output (no whole files or full logs); open a new thread with new_copilot_thread first if needed.";
+                    return "返回体或上下文过大：用 retry_task 并在 note 中要求 Copilot 分步完成、每次只处理一部分文件、减少大段输出（不要贴整文件或完整日志），必要时先用 new_copilot_thread 开新线程再重试（重试时设 fresh_context=true）。/ Payload or context too large: call retry_task with a note asking Copilot to work in smaller steps, handle fewer files at a time and avoid large output (no whole files or full logs); open a new thread with new_copilot_thread first if needed (then retry with fresh_context=true).";
                 case IterationLimit:
                     return "达到单轮迭代上限：任务可能已完成一部分，用 retry_task 让 Copilot 在已有进度上继续，note 中写明剩余工作或要求缩小每轮范围。/ Iteration limit reached: the task may be partly done; call retry_task so Copilot continues from its progress, with a note naming the remaining work or asking for smaller steps.";
                 default: return null;

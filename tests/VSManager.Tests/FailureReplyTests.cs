@@ -197,15 +197,84 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void RetryContext_GivesOneInstructionInsteadOfRepeatingPerSection()
+        {
+            var t = _queue.Add("A", "A", "实现订单导出功能", "AI");
+            t.CompletionToken = "tok";
+            t.ContentRuns = 1;
+            t.PriorFailure = "#1：缺少导出目录";
+            t.Supplement = "导出目录用 %APPDATA%\\Exports";
+            string text = TaskStateMachine.DispatchText(t);
+            StringAssert.Contains(text, "【第 2 轮】");
+            StringAssert.Contains(text, "【前次尝试反馈】#1：缺少导出目录");
+            StringAssert.Contains(text, "【补充信息】导出目录用 %APPDATA%\\Exports");
+            StringAssert.Contains(text, "以补充信息为准");
+            Assert.AreEqual(1, Count(text, "不要原样重复"), "one closing instruction / 只给一次处理要求");
+            Assert.IsFalse(text.Contains("请参考前次反馈调整做法"));
+        }
+
+        [TestMethod]
+        public void SupplementReplace_SendsOnlyTheConsolidatedBrief()
+        {
+            var t = _queue.Add("A", "A", "实现订单导出功能", "AI");
+            t.CompletionToken = "tok";
+            TaskStateMachine.Fail(t, "err", _clock.Now, FailureKind.Interrupted);
+            t.RunIssue = RunIssue.TooLarge;
+            t.PriorFailure = "#1：旧反馈";
+            t.Supplement = "旧补充一 ｜ 旧补充二";
+            Assert.IsTrue(TaskStateMachine.Supplement(t, "对话已清空：重新阅读导出相关代码后完成剩余的导出按钮", out string error, false, replace: true, freshContext: true), error);
+            string text = TaskStateMachine.DispatchText(t);
+            StringAssert.Contains(text, "【补充信息】对话已清空：重新阅读导出相关代码后完成剩余的导出按钮 ");
+            Assert.IsFalse(text.Contains("旧补充"));
+            Assert.IsFalse(text.Contains("旧反馈"));
+            Assert.IsFalse(text.Contains("返回体或上下文过大"), "the old continuation note is replaced / 旧接续说明被替换");
+            StringAssert.Contains(text, TaskStateMachine.FreshContextNote);
+        }
+
+        [TestMethod]
+        public async Task RetryWithFreshContext_AsksToReread_ThenClears()
+        {
+            var t = await Run("y", "做到一半\n已达到单轮迭代上限");
+            Assert.AreEqual(FailureKind.Interrupted, t.FailureKind);
+            _host.AnswerReader = q => Task.FromResult("完成\n" + TaskStateMachine.SuccessReceipt(q));
+            _dispatcher.Retry(t, null, freshContext: true);
+            await _dispatcher.PumpAsync();
+            string text = _host.Sent.Last();
+            StringAssert.Contains(text, "达到单轮迭代上限");
+            StringAssert.Contains(text, "重新阅读");
+            Assert.IsFalse(text.Contains("对话中的已有进度"), "no reliance on the cleared conversation / 不依赖已清空的对话");
+            Assert.IsFalse(t.FreshContext, "cleared once delivered");
+        }
+
+        [TestMethod]
+        public void CheckAiRetry_ReplaceComparesWithEarlierInfo_FreshContextIsNew()
+        {
+            var t = _queue.Add("A", "A", "实现订单导出功能", "AI");
+            TaskStateMachine.Fail(t, "reported", _clock.Now, FailureKind.Reported);
+            t.Supplement = "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8";
+            Assert.IsNotNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8", replace: true));
+            Assert.IsNull(TaskFailureAnalyzer.CheckAiRetry(_queue.Items, t, "导出文件放在 %APPDATA%\\Exports 目录，编码用 UTF-8", replace: true, freshContext: true));
+        }
+
+        private static int Count(string s, string part)
+        {
+            int n = 0;
+            for (int i = s.IndexOf(part, StringComparison.Ordinal); i >= 0; i = s.IndexOf(part, i + part.Length, StringComparison.Ordinal)) n++;
+            return n;
+        }
+
+        [TestMethod]
         public void Store_RoundTripsReplyIssueAndResumeNote()
         {
             var t = new QueuedTask { Id = 3, VsKey = "A", VsName = "A", Text = "t", Status = QueueStatus.Failed, Created = DateTime.Now,
-                Reply = "▸ 步骤\n内容", RunIssue = RunIssue.TooLarge, ResumeNote = "【继续执行】x" };
+                Reply = "▸ 步骤\n内容", RunIssue = RunIssue.TooLarge, ResumeNote = "【继续执行】x", FreshContext = true };
             var store = new JsonTaskStore(_data.File("tasks.json"));
             Assert.IsNull(store.Save(new[] { t }));
             var back = store.Load(new List<string>()).Single();
             Assert.AreEqual(t.Reply, back.Reply);
             Assert.AreEqual(RunIssue.TooLarge, back.RunIssue);
+            Assert.IsTrue(back.FreshContext);
+            Assert.IsTrue(t.Clone().FreshContext);
             Assert.AreEqual("【继续执行】x", back.ResumeNote);
             Assert.AreEqual(t.Reply, back.Clone().Reply);
         }

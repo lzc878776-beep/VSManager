@@ -15,10 +15,16 @@ namespace VSManager
         Task<string> SetReleaseLevel(ReleaseLevel level);
         /// <summary>放行失败 / 待验证的任务，返回结果文字。/ Releases a failed / awaiting-verification task; returns result text.</summary>
         Task<string> ReleaseTask(int id);
-        /// <summary>插入补充信息后重试任务（<paramref name="fromUser"/>：信息来自用户，不受 AI 自主重试限制），返回结果文字。/ Retries a task with supplementary info (<paramref name="fromUser"/>: the info comes from the user and bypasses the AI self-retry limits); returns result text.</summary>
-        Task<string> RetryTaskWithInfo(int id, string info, bool fromUser);
-        /// <summary>非内容类失败后重试任务（<paramref name="note"/>：可选的接续说明），返回结果文字。/ Retries a task after a non-content failure (<paramref name="note"/>: optional continuation note); returns result text.</summary>
-        Task<string> RetryTask(int id, string note);
+        /// <summary>
+        /// 插入补充信息后重试任务（<paramref name="fromUser"/>：信息来自用户，不受 AI 自主重试限制；<paramref name="replace"/>：info 为整合后的完整说明，替换此前的补充、前次反馈与接续说明；
+        /// <paramref name="freshContext"/>：Copilot 对话已清空），返回结果文字。
+        /// Retries a task with supplementary info (<paramref name="fromUser"/>: the info comes from the user and bypasses the AI self-retry limits;
+        /// <paramref name="replace"/>: the info is a consolidated brief replacing earlier supplements, feedback and continuation note;
+        /// <paramref name="freshContext"/>: the Copilot conversation was cleared); returns result text.
+        /// </summary>
+        Task<string> RetryTaskWithInfo(int id, string info, bool fromUser, bool replace, bool freshContext);
+        /// <summary>非内容类失败后重试任务（<paramref name="note"/>：可选的接续说明；<paramref name="freshContext"/>：Copilot 对话已清空），返回结果文字。/ Retries a task after a non-content failure (<paramref name="note"/>: optional continuation note; <paramref name="freshContext"/>: the Copilot conversation was cleared); returns result text.</summary>
+        Task<string> RetryTask(int id, string note, bool freshContext);
     }
 
     /// <summary>
@@ -74,32 +80,41 @@ namespace VSManager
             "需要用户决定或只有用户知道的信息时，先询问用户再把用户的答复作为 info 传入，并设 from_user=true。" +
             "你自主补充时每个任务有补充次数上限，同一需求由你自主触发的 Copilot 执行（含重发链）也有次数上限（见系统提示与失败通知），info 必须包含新的具体信息，只写「请重试」会被拒绝；" +
             "from_user=true 表示 info 来自用户本轮消息，不受这些限制，但需用户确认。" +
-            "投递、读取失败或 Copilot 本轮中断时不必补充信息，改用 retry_task。")]
+            "投递、读取失败或 Copilot 本轮中断时不必补充信息，改用 retry_task。" +
+            "不要把用户的话、前次反馈和此前的补充原样拼接转发：先理解用户的意图，用自己的话写出这次需要 Copilot 做什么；" +
+            "此前已累积多段补充或反馈、或用户改变了做法时，设 replace_previous=true，并把仍然有效的要点整合进 info（未整合的前次反馈与补充将不再发送）；" +
+            "用户说已清空 / 新建了 Copilot 对话（或你刚调用 new_copilot_thread）时设 fresh_context=true，Copilot 会先重新阅读相关代码与文档了解进度。")]
         internal async Task<string> RetryTaskWithInfo(
             [Description("任务编号，如 3")] int id,
-            [Description("补充信息：要告诉 Copilot 的新信息、澄清或修正做法，简洁具体")] string info,
-            [Description("info 是否来自用户本轮消息（用户给出的补充、修正或验证反馈）；为 true 时不受 AI 自主重试次数限制，但会请用户确认。不要把你自己推断的内容标为 true。")] bool from_user = false)
+            [Description("补充信息：要告诉 Copilot 的新信息、澄清或修正做法，简洁具体；用你自己的话整合用户意图，不要原样堆叠此前的反馈")] string info,
+            [Description("info 是否来自用户本轮消息（用户给出的补充、修正或验证反馈）；为 true 时不受 AI 自主重试次数限制，但会请用户确认。不要把你自己推断的内容标为 true。")] bool from_user = false,
+            [Description("true：info 是整合后的完整重试说明，替换此前累积的补充信息、前次尝试反馈与接续说明（仍有效的要点须写进 info）；false：追加到已有补充之后")] bool replace_previous = false,
+            [Description("true：Copilot 对话已被清空或换成新线程，提示 Copilot 不要依赖之前的对话，先重新阅读相关代码、文档与 Git 状态再继续")] bool fresh_context = false)
         {
             if (!(_host is IAgentReleaseHost host)) return ReleaseUnsupported;
             if (string.IsNullOrWhiteSpace(info)) return "补充信息不能为空 / Supplementary info is empty.";
             // 用户补充绕过 AI 自主限制，因此总是请用户确认 / User supplements bypass the AI limits, so always confirm
-            if ((from_user || _settings().AgentConfirm) && !await ConfirmAsync("补充信息后重试任务 #" + id + (from_user ? "（来自用户 / from the user）" : ""), info))
+            string mode = (replace_previous ? "\n（替换此前的补充与反馈 / replaces earlier supplements and feedback）" : "")
+                + (fresh_context ? "\n（对话已重置，Copilot 将重新阅读相关内容 / conversation reset, Copilot re-reads the relevant content）" : "");
+            if ((from_user || _settings().AgentConfirm) && !await ConfirmAsync("补充信息后重试任务 #" + id + (from_user ? "（来自用户 / from the user）" : ""), info + mode))
                 return "用户拒绝了该操作。";
-            return await host.RetryTaskWithInfo(id, info, from_user).ConfigureAwait(false);
+            return await host.RetryTaskWithInfo(id, info, from_user, replace_previous, fresh_context).ConfigureAwait(false);
         }
 
         [Description("重试因非任务内容原因失败的任务：投递失败、目标 VS 关闭、读取回复失败，或 Copilot 本轮没执行完（返回中断 / 未预期的 EOF、返回体过大、达到单轮迭代上限、网络 / 服务错误、没有回复）。" +
             "本轮中断的任务重试时会自动提示 Copilot 在已有进度上继续；可在 note 中针对中断原因补充做法（如分步完成、缩小范围、减少输出、从哪一步接着做）。" +
             "这类失败不计入需求的执行次数；每个任务最多直接重试 " + TaskFailureAnalyzer.MaxRecoveryRetriesText + " 次，超过后交给用户检查。" +
-            "Copilot 执行完但任务失败（缺少回执、回报失败）时会被拒绝，应用 retry_task_with_info 写明新信息或交给用户。")]
+            "Copilot 执行完但任务失败（缺少回执、回报失败）时会被拒绝，应用 retry_task_with_info 写明新信息或交给用户。" +
+            "Copilot 对话已被清空或换成新线程时设 fresh_context=true。")]
         internal async Task<string> RetryTask(
             [Description("任务编号，如 3")] int id,
-            [Description("可选：给 Copilot 的接续说明，针对中断原因调整做法；没有时留空")] string note = null)
+            [Description("可选：给 Copilot 的接续说明，针对中断原因调整做法；没有时留空")] string note = null,
+            [Description("true：Copilot 对话已被清空或换成新线程，提示 Copilot 先重新阅读相关代码、文档与 Git 状态再继续")] bool fresh_context = false)
         {
             if (!(_host is IAgentReleaseHost host)) return ReleaseUnsupported;
-            if (_settings().AgentConfirm && !await ConfirmAsync("重试任务 #" + id, "任务 #" + id + " 因投递、读取或 Copilot 本轮中断而失败，将重新排队并在已有进度上继续。" + (string.IsNullOrWhiteSpace(note) ? "" : "\n接续说明：" + note)))
+            if (_settings().AgentConfirm && !await ConfirmAsync("重试任务 #" + id, "任务 #" + id + " 因投递、读取或 Copilot 本轮中断而失败，将重新排队并在已有进度上继续。" + (string.IsNullOrWhiteSpace(note) ? "" : "\n接续说明：" + note) + (fresh_context ? "\n（对话已重置，Copilot 将重新阅读相关内容 / conversation reset）" : "")))
                 return "用户拒绝了该操作。";
-            return await host.RetryTask(id, note).ConfigureAwait(false);
+            return await host.RetryTask(id, note, fresh_context).ConfigureAwait(false);
         }
 
         [Description("读取失败任务保存的本轮 Copilot 完整回复（最后一条任务消息之后的全部回答与过程步骤，不只是最后一行状态），分页返回。" +
