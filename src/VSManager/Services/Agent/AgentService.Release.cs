@@ -15,10 +15,21 @@ namespace VSManager
         Task<string> SetReleaseLevel(ReleaseLevel level);
         /// <summary>放行失败 / 待验证的任务，返回结果文字。/ Releases a failed / awaiting-verification task; returns result text.</summary>
         Task<string> ReleaseTask(int id);
-        /// <summary>插入补充信息后重试任务，返回结果文字。/ Retries a task with supplementary info; returns result text.</summary>
-        Task<string> RetryTaskWithInfo(int id, string info);
+        /// <summary>插入补充信息后重试任务（<paramref name="fromUser"/>：信息来自用户，不受 AI 自主重试限制），返回结果文字。/ Retries a task with supplementary info (<paramref name="fromUser"/>: the info comes from the user and bypasses the AI self-retry limits); returns result text.</summary>
+        Task<string> RetryTaskWithInfo(int id, string info, bool fromUser);
         /// <summary>非内容类失败后原样重试任务，返回结果文字。/ Retries a task unchanged after a non-content failure; returns result text.</summary>
         Task<string> RetryTask(int id);
+    }
+
+    /// <summary>
+    /// 可选宿主能力：AI 发布新任务前检查目标 VS 是否正被失败 / 待验证任务阻塞（界面线程之外可调用）。
+    /// Optional host capability: before the AI publishes a task, checks whether the target VS is blocked by a failed /
+    /// awaiting-verification task (callable from background threads).
+    /// </summary>
+    public interface IAgentBlockedTaskHost
+    {
+        /// <summary>目标被阻塞时返回提示文字（应改为向阻塞任务补充信息），否则 null。/ Returns guidance when the target is blocked (supplement the blocker instead), otherwise null.</summary>
+        Task<string> CheckBlockedTarget(VsInstance v, SolutionEntry parkFor, string text);
     }
 
     public sealed partial class AgentService
@@ -48,20 +59,24 @@ namespace VSManager
             return await host.ReleaseTask(id).ConfigureAwait(false);
         }
 
-        [Description("为失败（或待验证但验证未通过）的任务插入补充信息后重新排队重试：补充信息与前次失败反馈一起发给原 VS 的 Copilot。" +
+        [Description("为失败或待验证的任务插入补充信息后在原条目重新排队重试：补充信息与前次反馈一起发给原 VS 的 Copilot，阻塞随之解除。" +
+            "任务失败 / 待验证并阻塞同一 VS 的后续任务时，用户或你对该任务的补充、修正、追加要求或验证反馈都应通过本工具发给该任务，不要用 send_task 另起新任务（新任务只会排在阻塞任务后面）。" +
             "接续等级使失败阻塞后续时，若你能根据 VS 返回的信息补齐缺失内容（例如指明文件、澄清要求、给出已知参数），可自行调用；" +
-            "需要用户决定或只有用户知道的信息时，先询问用户再把用户的答复作为 info 传入。每个任务有补充次数上限；" +
-            "同一需求由你自主触发的 Copilot 执行（含重发链）有次数上限（见系统提示与失败通知），info 必须包含新的具体信息，只写「请重试」会被拒绝。" +
+            "需要用户决定或只有用户知道的信息时，先询问用户再把用户的答复作为 info 传入，并设 from_user=true。" +
+            "你自主补充时每个任务有补充次数上限，同一需求由你自主触发的 Copilot 执行（含重发链）也有次数上限（见系统提示与失败通知），info 必须包含新的具体信息，只写「请重试」会被拒绝；" +
+            "from_user=true 表示 info 来自用户本轮消息，不受这些限制，但需用户确认。" +
             "投递、读取失败或 Copilot 本轮中断时不必补充信息，改用 retry_task。")]
         internal async Task<string> RetryTaskWithInfo(
             [Description("任务编号，如 3")] int id,
-            [Description("补充信息：要告诉 Copilot 的新信息、澄清或修正做法，简洁具体")] string info)
+            [Description("补充信息：要告诉 Copilot 的新信息、澄清或修正做法，简洁具体")] string info,
+            [Description("info 是否来自用户本轮消息（用户给出的补充、修正或验证反馈）；为 true 时不受 AI 自主重试次数限制，但会请用户确认。不要把你自己推断的内容标为 true。")] bool from_user = false)
         {
             if (!(_host is IAgentReleaseHost host)) return ReleaseUnsupported;
             if (string.IsNullOrWhiteSpace(info)) return "补充信息不能为空 / Supplementary info is empty.";
-            if (_settings().AgentConfirm && !await ConfirmAsync("补充信息后重试任务 #" + id, info))
+            // 用户补充绕过 AI 自主限制，因此总是请用户确认 / User supplements bypass the AI limits, so always confirm
+            if ((from_user || _settings().AgentConfirm) && !await ConfirmAsync("补充信息后重试任务 #" + id + (from_user ? "（来自用户 / from the user）" : ""), info))
                 return "用户拒绝了该操作。";
-            return await host.RetryTaskWithInfo(id, info).ConfigureAwait(false);
+            return await host.RetryTaskWithInfo(id, info, from_user).ConfigureAwait(false);
         }
 
         [Description("原样重试因非任务内容原因失败的任务：投递失败、目标 VS 关闭、读取回复失败，或 Copilot 本轮没执行完（网络 / 服务错误、被中断、没有回复）。" +

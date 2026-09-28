@@ -108,7 +108,7 @@ namespace VSManager
             return round <= 1 ? "" : "【第 " + round + " 轮】本需求此前已执行 " + (round - 1) + " 次未通过，请参考前次反馈调整做法。 ";
         }
 
-        /// <summary>每个任务最多插入补充信息重试的次数。/ Maximum retries with supplementary info per task.</summary>
+        /// <summary>AI 助手自主为每个任务补充信息重试的次数上限；用户提供的补充不受此限。/ Cap on AI-initiated retries with info per task; supplements provided by the user are not capped.</summary>
         public const int MaxSupplements = 3;
 
         private static string FullRules(QueuedTask t) =>
@@ -375,17 +375,17 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 插入补充信息并重新排队（失败或待验证，最多 <see cref="MaxSupplements"/> 次）；前次反馈一并带上。
-        /// Adds supplementary info and requeues (failed or awaiting verification, at most <see cref="MaxSupplements"/> times);
-        /// the previous feedback is carried along.
+        /// 插入补充信息并重新排队（失败或待验证；<paramref name="enforceLimit"/> 为 true 时最多 <see cref="MaxSupplements"/> 次，用户补充不限）；前次反馈一并带上。
+        /// Adds supplementary info and requeues (failed or awaiting verification; at most <see cref="MaxSupplements"/> times when
+        /// <paramref name="enforceLimit"/> is true, unlimited for user supplements); the previous feedback is carried along.
         /// </summary>
-        public static bool Supplement(QueuedTask t, string info, out string error)
+        public static bool Supplement(QueuedTask t, string info, out string error, bool enforceLimit = true)
         {
             error = null;
             info = info?.Trim();
             if (string.IsNullOrEmpty(info)) { error = "补充信息不能为空 / Supplementary info is empty"; return false; }
             if (!IsHoldOutcome(t)) { error = "只有失败或待验证的任务可以补充信息重试 / Only failed or awaiting-verification tasks can be retried with info"; return false; }
-            if (t.SupplementCount >= MaxSupplements)
+            if (enforceLimit && t.SupplementCount >= MaxSupplements)
             {
                 error = $"已补充 {t.SupplementCount} 次，达到上限，请把情况告诉用户由用户决定 / Supplement limit reached ({t.SupplementCount}); hand over to the user";
                 return false;

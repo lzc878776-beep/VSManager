@@ -1490,7 +1490,7 @@ namespace VSManager
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason)) sb.Append(" | 失败原因 / Reason：").Append(Clip(t.FailureReason, 400));
 				if (TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote)) sb.Append(" | 待处理 / Pending：").Append(Clip(t.PendingNote, 400));
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureKind)) sb.Append(" | 类别：").Append(FailureKind.Label(t.FailureKind));
-				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append('/').Append(TaskStateMachine.MaxSupplements).Append(" 次：").Append(Clip(t.Supplement, 200));
+				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append(" 次（AI 自主上限 ").Append(TaskStateMachine.MaxSupplements).Append("）：").Append(Clip(t.Supplement, 200));
 				if (!string.IsNullOrEmpty(t.PredecessorNotice)) sb.Append(" | ").Append(t.PredecessorNotice);
 				if (TaskHideList.IsHidden(_settings.HiddenResentTasks, t))
 					sb.Append(" | 已被 #").Append(TaskHideList.ReplacedBy(_settings.HiddenResentTasks, t.Id)).Append(" 重新排队取代（界面已隐藏）/ superseded by #")

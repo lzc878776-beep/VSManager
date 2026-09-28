@@ -30,6 +30,39 @@ namespace VSManager.Tests
         [TestCleanup]
         public void Cleanup() => _data.Dispose();
 
+        [TestMethod]
+        public void HeldBlockers_FindsFailedOrPendingBlockerOnSameTarget()
+        {
+            var failed = new QueuedTask { Id = 3, VsKey = "A", VsName = "A", Text = "实现导出功能并写入文件", Status = QueueStatus.Failed, FailureKind = FailureKind.Reported, FailureReason = "缺少导出路径" };
+            var other = new QueuedTask { Id = 4, VsKey = "B", VsName = "B", Text = "别的任务", Status = QueueStatus.Unverified };
+            var items = new List<QueuedTask> { failed, other };
+            var blockers = TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Failed);
+            CollectionAssert.AreEqual(new[] { 3 }, blockers.Select(x => x.Id).ToArray());
+            string text = TaskFailureAnalyzer.BlockedSendText(blockers, "A");
+            StringAssert.Contains(text, "retry_task_with_info(id=3");
+            StringAssert.Contains(text, "from_user=true");
+            StringAssert.Contains(text, "queue_behind_blocked=true");
+            StringAssert.Contains(text, "缺少导出路径");
+
+            // 不阻塞的等级、已放行、或以「重发 @3」取代时都不拦截 / No interception when the level does not block, when released, or when superseded by "resend @3"
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Unlimited).Count);
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "重发 @3：导出到桌面的指定目录", ReleaseLevel.Failed).Count);
+            failed.Released = true;
+            Assert.AreEqual(0, TaskFailureAnalyzer.HeldBlockers(items, "A", "导出到桌面", ReleaseLevel.Failed).Count);
+            Assert.IsNull(TaskFailureAnalyzer.BlockedSendText(new List<QueuedTask>(), "A"));
+        }
+
+        [TestMethod]
+        public void Supplement_UserInfoIsNotCappedButAiIs()
+        {
+            var t = new QueuedTask { Id = 5, VsKey = "A", Text = "x", Status = QueueStatus.Failed, FailureKind = FailureKind.Reported, SupplementCount = TaskStateMachine.MaxSupplements };
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "新的路径是 D 盘", out string error));
+            Assert.IsNotNull(error);
+            Assert.IsTrue(TaskStateMachine.Supplement(t, "新的路径是 D 盘", out error, enforceLimit: false));
+            Assert.AreEqual(QueueStatus.Waiting, t.Status);
+            Assert.AreEqual(TaskStateMachine.MaxSupplements + 1, t.SupplementCount);
+        }
+
         private static QueuedTask Sent()
         {
             var t = new QueuedTask { Id = 1, VsKey = "A", VsName = "A", Text = "实现导出功能", Status = QueueStatus.Waiting, Created = new DateTime(2026, 1, 1, 8, 0, 0) };

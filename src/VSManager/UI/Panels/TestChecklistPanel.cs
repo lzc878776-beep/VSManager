@@ -249,7 +249,7 @@ namespace VSManager
                 var t = _menuRow?.Task;
                 if (t == null) { e.Cancel = true; return; }
                 verify.Enabled = TaskTestChecklist.Pending(t);
-                supplement.Enabled = TaskStateMachine.IsHoldOutcome(t) && t.SupplementCount < TaskStateMachine.MaxSupplements;
+                supplement.Enabled = TaskStateMachine.IsHoldOutcome(t);
                 open.Enabled = true;
             };
             return m;

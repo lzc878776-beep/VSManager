@@ -359,12 +359,12 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 "请根据 Copilot 回复判断：① 若失败原因明确且你能从已有信息（回复、对话、目录、常识）补齐所需内容，" +
                 $"调用 retry_task_with_info 插入补充信息重试该任务（还可补充 {Math.Max(0, left)} 次）；" +
                 "② 若需要用户决定、需要只有用户知道的信息、涉及取舍或风险，或补充次数已用完，就把失败原因和需要的信息告诉用户，" +
-                "由用户补充（之后用 retry_task_with_info 带上）、放行（release_task）或取消。不要重复发布已排队任务。 / " +
+                "由用户补充（之后用 retry_task_with_info 带上并设 from_user=true）、放行（release_task）或取消。对该任务的补充不要用 send_task 另起新任务，新任务只会排在它后面。 / " +
                 "Judge from the Copilot reply: (1) if the cause is clear and you can supply what is missing from existing information, " +
                 $"call retry_task_with_info to retry the task with supplementary info ({Math.Max(0, left)} left); " +
                 "(2) if it needs a user decision, information only the user has, involves trade-offs or risk, or the supplement limit is used up, " +
-                "tell the user the cause and what is needed; the user may supplement (then pass it via retry_task_with_info), release (release_task) or cancel. " +
-                "Do not duplicate queued tasks.";
+                "tell the user the cause and what is needed; the user may supplement (then pass it via retry_task_with_info with from_user=true), release (release_task) or cancel. " +
+                "Never add a new task with send_task for this task's supplement; it would only wait behind it.";
         }
 
         /// <summary>任务完成：读取 Copilot 最新回复作为结果，并通知 AI 助手。/ Completes a task: stores the latest Copilot answer and notifies the AI assistant.</summary>
@@ -549,12 +549,12 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             return true;
         }
 
-        /// <summary>插入补充信息后重试失败 / 待验证的任务。/ Retries a failed / awaiting-verification task with supplementary info.</summary>
-        public bool RetryWithInfo(QueuedTask t, string info, out string error)
+        /// <summary>插入补充信息后重试失败 / 待验证的任务（用户补充时 <paramref name="enforceLimit"/> 为 false）。/ Retries a failed / awaiting-verification task with supplementary info (<paramref name="enforceLimit"/> is false for user supplements).</summary>
+        public bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit = true)
         {
             error = null;
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)) { error = "任务已被替换或正在处理 / Task was replaced or is being processed"; return false; }
-            if (!TaskStateMachine.Supplement(t, info, out error)) return false;
+            if (!TaskStateMachine.Supplement(t, info, out error, enforceLimit)) return false;
             _tasks.Commit();
             _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 补充信息后重新排队（第 {t.SupplementCount} 次）/ Task #{t.Id} requeued with info");
             Pump();
