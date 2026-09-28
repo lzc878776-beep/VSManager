@@ -449,7 +449,8 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             catch (Exception ex) { _host.SetStatus("任务结果处理出错：" + ex.Message); }
         }
 
-        public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
+        /// <param name="knownAnswer">已读到的回复（迟到回执纠正时使用）；null 时从 VS 读取。/ An answer already read (used by late-receipt correction); null reads it from the VS.</param>
+        public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur, string knownAnswer = null)
         {
             if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
             if (t.HasExplicitTarget && (!t.MatchesExplicitTarget(v) || ResolveTarget(t) != v)) return;
@@ -464,7 +465,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             try
             {
                 string answer;
-                try { answer = await _host.ReadAnswerAsync(v, t); }
+                try { answer = knownAnswer ?? await _host.ReadAnswerAsync(v, t); }
                 catch (Exception ex)
                 {
                     if (t.Status == QueueStatus.Running && _tasks.Find(t.Id) == t)
@@ -478,6 +479,15 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                     return;
                 }
                 var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
+                if (receipt == TaskReceipt.None && ReceiptGrace > TimeSpan.Zero && knownAnswer == null)
+                {
+                    // Copilot 在两次工具调用之间可能停顿数秒，忙→闲会被误当作完成；先等一会儿再判「缺少回执」
+                    // Copilot may pause for seconds between tool calls and look finished; wait a while before judging "missing receipt"
+                    var late = await AwaitReceiptAsync(t, v, answer);
+                    if (late == null) return;
+                    answer = late;
+                    receipt = TaskStateMachine.ReadReceipt(t, answer, out result);
+                }
                 t.FullResult = result;
                 if (receipt == TaskReceipt.Failed || receipt == TaskReceipt.None)
                 {
@@ -541,6 +551,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                     _host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
+                        (_lateRecovered.Remove(t) ? "\n" + LateReceiptNote : "") +
                         (pending && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
                         (pending ? "\n结论：待验证（不是失败）。改动已完成，但尚未在运行环境中验证或需要用户测试、确认：请按「待验证」汇报，把测试清单转告用户并等待反馈；不要判为失败，不要说成已实测成功，不要重发，也不要把它当作已验证的依赖。/ Verdict: awaiting verification, not failed. The changes are done but not yet verified at runtime or need user testing or confirmation: report it as awaiting verification, relay the test checklist and wait for feedback; do not call it a failure or a verified success, do not resend, and do not treat it as a verified dependency." : "") +
                         (pending && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)

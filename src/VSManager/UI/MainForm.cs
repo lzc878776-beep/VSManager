@@ -142,6 +142,8 @@ namespace VSManager
 					"Was being sent when VSManager exited abnormally and may have been delivered; paused to avoid a duplicate, requeue manually if needed");
 			AppDomain.CurrentDomain.UnhandledException += (s, e) => EmergencySave();
 			_dispatcher = new TaskDispatcher(_tasks, this, worktrees: new WorktreeService(WorktreeFileRoots), startSettings: () => _settings);
+			// Copilot 两次工具调用之间可能停顿十几秒：无回执时先观察 30 秒再判失败 / Copilot may pause between tool calls: watch 30 s before failing on a missing receipt
+			_dispatcher.ReceiptGrace = TimeSpan.FromSeconds(30);
 			_dispatcher.TaskCompleted += RecordTaskInNotebook;
 			_dispatcher.TaskFailed += RecordTaskInNotebook;
 			// 无论用户还是 AI 启动流程，都同步「开始流程」按钮 / Sync the Start button whether the user or the AI started the workflow
@@ -2253,6 +2255,26 @@ namespace VSManager
 			return false;
 		}
 
+		/// <summary>
+		/// 已判「缺少回执」的任务，其对话随后以本次回执结束（Copilot 停顿后继续运行）：按回执纠正结果。
+		/// A task judged "missing receipt" whose conversation later ends with this attempt's receipt (Copilot resumed after a pause): correct it by the receipt.
+		/// </summary>
+		private async void RecoverLateReceipt(VsInstance v, ChatTranscript t, string question)
+		{
+			if (question.IndexOf("[VSManager:", StringComparison.Ordinal) < 0 || t.Messages.Count == 0 || t.Messages.Last().Role != ChatRole.Assistant) return;
+			if (!_tasks.Items.Any(x => x.Status == QueueStatus.Failed)) return;
+			try
+			{
+				if (await _dispatcher.RecoverLateReceiptAsync(v, question, TaskSummary.AnswerText(t, int.MaxValue)))
+				{
+					_taskPanel.RefreshItems();
+					SetStatus($"「{NameOf(v)}」收到迟到的回执，已按回执更正任务结果 / Late receipt received; task result corrected");
+					PumpTasks();
+				}
+			}
+			catch (Exception ex) { AppLog.Error(AppLog.TasksFile, "迟到回执处理失败 / Late receipt handling failed", ex); }
+		}
+
 		/// <summary>监听到某个 VS 的最近一轮对话：新的手动提问加入任务清单，已有条目更新回答与状态。</summary>
 		private void OnConversation(VsInstance v, ChatTranscript t, bool busy)
 		{
@@ -2263,6 +2285,7 @@ namespace VSManager
 			string question = MessageText(t.Messages[ui]);
 			string key = Squash(question);
 			if (key.Length == 0) return;
+			if (!busy) RecoverLateReceipt(v, t, question);
 			string answer = MessageText(t.Messages.Skip(ui + 1).FirstOrDefault(m => m.Role == ChatRole.Assistant));
 
 			var entry = _externals.LastOrDefault(c => c.Pid == v.Pid);

@@ -150,13 +150,15 @@ namespace VSManager
             result = StripTrailingNoReplyNote(answer)?.Trim();
             if (string.IsNullOrEmpty(t.CompletionToken) || string.IsNullOrEmpty(result)) return TaskReceipt.None;
             string text = result;
+            // 最后一行去掉首尾空白、零宽字符与 Markdown 修饰后须恰好是回执 / The last line, stripped of whitespace, zero-width characters and Markdown decoration, must be exactly the receipt
+            int nl = text.LastIndexOf('\n');
+            string lastLine = ReceiptLine(text.Substring(nl + 1));
+            string head = nl < 0 ? "" : text.Substring(0, nl).TrimEnd();
             bool EndsWith(string receipt, out string body)
             {
                 body = null;
-                if (!text.EndsWith(receipt, StringComparison.Ordinal)) return false;
-                int start = text.Length - receipt.Length;
-                if (start > 0 && text[start - 1] != '\n') return false;
-                body = text.Substring(0, start).TrimEnd();
+                if (!string.Equals(lastLine, receipt, StringComparison.Ordinal)) return false;
+                body = head;
                 return true;
             }
             if (EndsWith(FailureReceipt(t), out string failed))
@@ -191,6 +193,19 @@ namespace VSManager
                 return TaskReceipt.Success;
             }
             return TaskReceipt.None;
+        }
+
+        private static readonly char[] ReceiptDecoration = { ' ', '\t', '\r', '\u00A0', '\u200B', '\u200C', '\u200D', '\u2060', '\uFEFF', '*', '_', '`', '>' };
+
+        /// <summary>
+        /// 规范化回执所在行：去掉首尾空白、零宽字符、Markdown 修饰（粗体 / 代码 / 引用）以及末尾句号。
+        /// Normalizes the receipt line: trims whitespace, zero-width characters, Markdown decoration (bold / code / quote) and a trailing period.
+        /// </summary>
+        internal static string ReceiptLine(string line)
+        {
+            string s = (line ?? "").Trim(ReceiptDecoration);
+            while (s.Length > 0 && (s[s.Length - 1] == '.' || s[s.Length - 1] == '。')) s = s.Substring(0, s.Length - 1).Trim(ReceiptDecoration);
+            return s;
         }
 
         /// <summary>
