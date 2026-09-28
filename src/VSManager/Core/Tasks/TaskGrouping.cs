@@ -26,7 +26,7 @@ namespace VSManager
         public bool IsOpen;
         public bool IsWaitingOpen;
         public bool Collapsed;
-        public int Tasks, Chats, Running, Queued, Parked, Failed, Done;
+        public int Tasks, Chats, Running, Queued, Parked, Failed, Done, Unverified;
         public DateTime LastActivity;
 
         public bool HasRunning => Running > 0;
@@ -195,6 +195,7 @@ namespace VSManager
                 case QueueStatus.WaitingVs: h.Parked++; break;
                 case QueueStatus.Failed: h.Failed++; break;
                 case QueueStatus.Done: h.Done++; break;
+                case QueueStatus.Unverified: h.Unverified++; break;
             }
         }
     }

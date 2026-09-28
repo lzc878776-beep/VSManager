@@ -19,7 +19,7 @@ namespace VSManager
         private string DisplayOrderNotice => (_manualOrder ? "条目：手动显示 / Entries: manual display" : "条目：默认显示 / Entries: default display")
             + "\r\n" + (_groupSort == TaskGrouping.SortManual ? "分组：手动显示 / Groups: manual display" : _groupSort == TaskGrouping.SortByNumber
                 ? "分组：VS 编号 / Groups: VS number" : "分组：执行中优先、最近活动 / Groups: running first, latest activity")
-            + "\r\n" + TaskDisplayOrder.DisplayOnly + "\r\n实际执行仍按编号及前序规则；右键切换显示排序 / Execution still follows IDs and predecessors; right-click to change display ordering";
+            + "\r\n" + TaskDisplayOrder.DisplayOnly + "\r\n实际执行仍按编号及前序规则；拖动调整显示顺序，右键「恢复默认排序」还原 / Execution still follows IDs and predecessors; drag to reorder, right-click Reset order to restore";
 
         private sealed class DisplayDrag
         {
@@ -134,31 +134,6 @@ namespace VSManager
             UpdateViewButton();
             Reload();
             ViewOptionsChanged?.Invoke();
-        }
-
-        private void AddDisplayOrderMenu(GroupedContextMenuStrip menu)
-        {
-            menu.AddGroup("显示排序（与执行隔离）/ Display ordering (separate from execution)");
-            menu.Items.Add(new ToolStripMenuItem(TaskDisplayOrder.DisplayOnly) { Enabled = false });
-            menu.Items.Add(new ToolStripMenuItem("实际执行：编号及前序规则，不随拖拽改变 / Execution: IDs and predecessors; unaffected by dragging") { Enabled = false });
-            var manual = new ToolStripMenuItem("条目：手动显示顺序 / Entries: manual display order", null, (s, e) => SetManualOrder(true));
-            var automatic = new ToolStripMenuItem("条目：默认显示顺序 / Entries: default display order", null, (s, e) => SetManualOrder(false));
-            var groups = new ToolStripMenuItem("分组：手动显示顺序 / Groups: manual display order", null, (s, e) => SetGroupSort(TaskGrouping.SortManual));
-            var activity = new ToolStripMenuItem("分组：执行中优先、最近活动 / Groups: running first, latest activity", null, (s, e) => SetGroupSort(TaskGrouping.SortByActivity));
-            var number = new ToolStripMenuItem("分组：按 VS 编号 / Groups: by VS number", null, (s, e) => SetGroupSort(TaskGrouping.SortByNumber));
-            menu.Items.AddRange(new ToolStripItem[] { manual, automatic, groups, activity, number });
-            menu.Items.Add("清除全部手动显示顺序 / Reset all manual display ordering", null, (s, e) => ResetDisplayOrder());
-            var view = menu.Items.Add("", null, (s, e) => SetGroupByVs(!_groupByVs));
-            menu.Opening += (s, e) =>
-            {
-                manual.Checked = _manualOrder;
-                automatic.Checked = !_manualOrder;
-                groups.Checked = _groupSort == TaskGrouping.SortManual;
-                activity.Checked = _groupSort == TaskGrouping.SortByActivity;
-                number.Checked = _groupSort == TaskGrouping.SortByNumber;
-                groups.Enabled = activity.Enabled = number.Enabled = _groupByVs;
-                view.Text = _groupByVs ? "切换为平铺列表 / Switch to flat list" : "切换为按 VS 分组 / Switch to VS groups";
-            };
         }
     }
 }

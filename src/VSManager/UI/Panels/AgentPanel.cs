@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Text;
 using System.Windows.Forms;
 
 namespace VSManager
@@ -10,16 +11,27 @@ namespace VSManager
     /// <summary>主界面 AI 总控助手：与 VS 对话界面同样的标题栏 / 快捷栏 / 居中对话记录 / 输入区。</summary>
     public class AgentPanel : Panel
     {
-        private static readonly Color InputBg = Color.FromArgb(24, 24, 30);
+        private static readonly Color InputBg = Theme.Bubble;
         private static readonly Font BadgeFont = new Font(Theme.FontName, 13F);
+
+        // 快捷任务：由 AI 用 send_task 派给合适的 VS，Copilot 在其仓库内执行 git 操作。
+        // Quick tasks: the AI dispatches them via send_task; Copilot runs the git steps in that repository.
+        internal const string SyncGitPrompt = "用 send_task 给解决方案位于 git 仓库的 VS 发布任务（同一仓库只派给一个 VS，优先空闲的，不必询问我）。任务内容："
+            + "在当前解决方案所在的 git 仓库中同步主分支，使最终本地主分支与远程主分支（以远程默认分支 main/master 为准）代码完全一致："
+            + "1) git fetch --prune；2) 若工作区有未提交修改，先提交，不得丢弃；3) 切换到主分支，把远程主分支的新提交以 rebase 方式并入；"
+            + "4) 若本地主分支有未推送的提交，推送到远程；5) 最后确认 git status 干净，且本地主分支与 origin 主分支指向同一提交。"
+            + "禁止 force push、reset --hard 或删除任何分支；遇到冲突先尝试正确解决，无法确定时停止并说明。完成后汇总每个仓库的结果。";
+
+        internal const string MergeWorktreesPrompt = "用 send_task 给解决方案位于 git 仓库的 VS 发布任务（同一仓库只派给一个 VS，优先空闲的，不必询问我）。任务内容："
+            + "用 git worktree list 列出该仓库的所有 worktree，把每个 worktree 所在分支的改动合并进本地主分支（main/master）："
+            + "1) 各 worktree 中若有未提交修改，先在该 worktree 内提交，不得丢弃；2) 在主工作区切换到主分支，依次 git merge 各 worktree 分支，已合并的跳过；"
+            + "3) 解决冲突后生成解决方案，确保编译通过；4) 不推送远程，不删除 worktree 或分支。"
+            + "无法确定如何解决冲突时停止并说明。完成后列出合并了哪些分支及结果。";
 
         private static readonly (string Text, string Prompt)[] QuickPrompts =
         {
-            ("📋 各 VS 状态", "各个 VS 现在都在做什么？简要列出状态和最近的任务。"),
-            ("🏷 整理 VS 职责", "用 scan_vs_code 扫描每个 VS 的代码结构，结合最近的 Copilot 对话，为每个 VS 写一句长期稳定的职责描述并用 set_vs_note 记录，方便之后按描述自动分派任务。最后用表格列出结果。"),
-            ("🛠 检查编译错误", "检查所有 VS 的错误列表，汇总有编译错误的项目。"),
-            ("⚙ 生成空闲的 VS", "给所有空闲的 VS 生成解决方案，完成后汇总结果。"),
-            ("⇲ 工具窗模式", "把所有 VS 的 Copilot 对话窗格切换为工具窗口模式。"),
+            ("🔄 同步 git", SyncGitPrompt),
+            ("🔀 worktree 并入主分支", MergeWorktreesPrompt),
         };
 
         private readonly Panel _header = new Panel();
@@ -38,13 +50,25 @@ namespace VSManager
         private readonly ReleaseLevelSlider _releaseSlider = new ReleaseLevelSlider();
         private readonly Timer _renderTimer = new Timer { Interval = 60 };
         private readonly Timer _pulse = new Timer { Interval = 400 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
         private AgentService _agent;
         private int _dots;
 
         public event Action SettingsRequested;
         /// <summary>用户拖动顶栏滑块改变放行等级。/ The user changed the release level with the header slider.</summary>
         public event Action<ReleaseLevel> ReleaseLevelChanged;
+        private VsMentionInput _mentions;
+        private string _mentionStatus;
+        public Func<string, AttachmentRef[], MentionSubmission> MentionRequested { get; set; }
+        private VsMentionSession _mentionSession;
+        private Func<VsMentionTarget[]> _mentionTargets;
+        public void BindMentions(VsMentionSession session, Func<VsMentionTarget[]> targets)
+        {
+            _mentions?.Dispose();
+            _mentionSession = session; _mentionTargets = targets;
+            _mentions = new VsMentionInput(_input, session, targets);
+        }
+        public void RefreshMentions() { if (_mentions?.IsOpen == true) _mentions.Refresh(); }
 
         public AgentPanel()
         {
@@ -117,6 +141,7 @@ namespace VSManager
             _inputStatus.TextAlign = ContentAlignment.MiddleLeft;
             _inputStatus.AutoEllipsis = true;
             _inputStatus.UseMnemonic = false;
+            SetDoubleBuffered(_inputStatus);
 
             _inputBox.Dock = DockStyle.Fill;
             _inputBox.BackColor = Theme.Background;
@@ -137,7 +162,7 @@ namespace VSManager
             _input.AccessibleName = "AI 助手输入框";
             _input.PasteAttachment = TryPasteAttachment;
             _input.KeyDown += Input_KeyDown;
-            _input.TextChanged += (s, e) => UpdateUi();
+            _input.TextChanged += (s, e) => { _mentionStatus = null; UpdateUi(); };
             _input.GotFocus += (s, e) => { UpdateUi(); _inputBox.Invalidate(); };
             _input.LostFocus += (s, e) => { UpdateUi(); _inputBox.Invalidate(); };
             Theme.DarkControl(_input);
@@ -280,15 +305,60 @@ namespace VSManager
 
         private void Send(string text)
         {
-            if (_agent == null) return;
             text = (text ?? "").Trim();
             bool fromInput = text == _input.Text.Trim();
             var files = fromInput ? _pending.ToArray() : new AttachmentRef[0];
+            if (fromInput && VsMentionSession.HasIntent(text))
+            {
+                if (TryRouteMentionToAgent(text, files)) return;
+                MentionSubmission result;
+                try { result = MentionRequested?.Invoke(text, files) ?? new MentionSubmission(null, VsMentionSession.ChooseError); }
+                catch (Exception ex) { result = new MentionSubmission(null, "提及任务未接纳；草稿已保留 / Mention task not accepted; draft retained: " + ex.Message); }
+                if (result.Accepted) { _input.Clear(); _pending.Clear(); RefreshChips(); }
+                _mentionStatus = result.Message;
+                _inputStatus.Text = _mentionStatus;
+                return;
+            }
+            if (_agent == null) return;
             if (_agent.Running || (text.Length == 0 && files.Length == 0)) return;
             if (!_agent.Configured) { SettingsRequested?.Invoke(); return; }
             if (fromInput) { _input.Clear(); _pending.Clear(); RefreshChips(); }
             _ = _agent.RunAsync(text, null, files);
             FocusInput();
+        }
+
+        /// <summary>
+        /// 模型可用时，@ 只告诉 AI 目标 VS，由 AI 整理并用 send_task 发布；模型不可用时才直接入队。
+        /// When the model is available, @ only tells the AI the target VS and the AI publishes via send_task; enqueue directly only without a model.
+        /// </summary>
+        private bool TryRouteMentionToAgent(string text, AttachmentRef[] files)
+        {
+            if (_agent == null || !_agent.Configured || _agent.Running || _mentionSession == null) return false;
+            var chips = _mentionSession.Chips(text).ToArray();
+            if (chips.Length == 0 || chips.Length != VsMentionSession.TokenStarts(text).Count()) return false;
+            var live = _mentionTargets?.Invoke() ?? new VsMentionTarget[0];
+            var display = new StringBuilder(text);
+            var names = new List<string>();
+            foreach (var chip in chips.AsEnumerable().Reverse())
+            {
+                if (!_mentionSession.TryGetTarget(text.Substring(chip.Start, chip.Length), out var chosen)) return false;
+                var now = live.FirstOrDefault(t => t.InstanceKey == chosen.InstanceKey
+                    && string.Equals(t.SolutionPath, chosen.SolutionPath, StringComparison.OrdinalIgnoreCase));
+                if (now == null) return false;
+                string label = "#" + now.Number + " " + now.Name;
+                display.Remove(chip.Start, chip.Length).Insert(chip.Start, "@" + label);
+                if (!names.Contains(label)) names.Insert(0, label);
+            }
+            string shown = display.ToString().Trim();
+            string prompt = shown + "\n\n[用户用 @ 指定了目标 VS / Target VS chosen via @：" + string.Join("、", names) + "] "
+                + "请把这条需求用 send_task 发布给该 VS（vs 参数填编号），任务文字按规则只做语言梳理；需要附件时 attachments 填 \"last\"。如果只是咨询或意图不完整，先向用户确认。"
+                + " / Publish this request to that VS with send_task (use its number for vs), language cleanup only; pass attachments \"last\" when needed. If it is only a question or incomplete, confirm with the user first.";
+            _input.Clear(); _pending.Clear(); RefreshChips();
+            _mentionStatus = "已交给 AI 发布到 " + string.Join("、", names) + " / Handed to the AI to publish";
+            _inputStatus.Text = _mentionStatus;
+            _ = _agent.RunAsync(prompt, shown, files);
+            FocusInput();
+            return true;
         }
 
         private int MaxCount => AttachmentPolicy.ClampMaxCount(_agent?.CurrentSettings?.AttachmentMaxCount ?? 0);
@@ -406,6 +476,7 @@ namespace VSManager
 
         private void Input_KeyDown(object sender, KeyEventArgs e)
         {
+            if (_mentions?.HandleKeyDown(e) == true) return;
             if (e.KeyCode == Keys.Enter && !e.Shift && !e.Control && !e.Alt)
             {
                 e.SuppressKeyPress = true;
@@ -419,25 +490,39 @@ namespace VSManager
             }
         }
 
+        private string _headerState;
+
         private void UpdateUi()
         {
             bool running = _agent?.Running == true;
-            _placeholder.Visible = _input.TextLength == 0 && !_input.Focused;
-            _placeholder.Text = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
-            _btnSend.Enabled = !running && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
+            // 禁用有焦点的按钮会把焦点推给下一个控件；记下来并把焦点留在输入框。
+            // Disabling a focused button pushes focus to the next control; remember it and keep focus in the input instead.
+            bool buttonFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+                || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
+            bool placeholder = _input.TextLength == 0 && !_input.Focused;
+            if (_placeholder.Visible != placeholder) _placeholder.Visible = placeholder;
+            string hint = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
+            if (_placeholder.Text != hint) _placeholder.Text = hint;
+            _btnSend.Enabled = (!running || VsMentionSession.HasIntent(_input.Text)) && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
             _btnStop.Enabled = running;
             if (_btnAttach != null) _btnAttach.Enabled = !running;
             _btnClear.Enabled = _agent != null && (running || _agent.Transcript.Messages.Count > 0);
             foreach (Control c in _toolbar.Controls) c.Enabled = !running;
+            bool stillFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+                || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
+            if (buttonFocused && !stillFocused && Form.ActiveForm != null && Form.ActiveForm == FindForm() && _input.CanFocus) _input.Focus();
             if (running && !_pulse.Enabled) { _dots = 0; _pulse.Start(); }
             else if (!running && _pulse.Enabled) _pulse.Stop();
             UpdateStatus();
             _transcript.SetActivity(running ? (_agent.Activity.Length > 0 ? _agent.Activity : "思考中…") : null, null);
-            _header.Invalidate();
+            // 标题栏只在状态变化时重绘，输入时不再逐键刷新。/ Repaint the header only when its state changes, not on every keystroke.
+            string header = _agent == null ? "" : _agent.Configured + "|" + running + "|" + _agent.ProviderName + "|" + _agent.ModelName;
+            if (header != _headerState) { _headerState = header; _header.Invalidate(); }
         }
 
         private void UpdateStatus()
         {
+            if (_mentionStatus != null) { _inputStatus.Text = _mentionStatus; _inputStatus.ForeColor = Theme.AccentText; return; }
             string text;
             Color color;
             if (_agent?.Running == true)
@@ -555,26 +640,26 @@ namespace VSManager
                 Theme.DrawRound(g, Theme.Divider, card, Dpi.S(10));
             }
 
-            int x0 = (int)card.X + Dpi.S(14), right = (int)card.Right - Dpi.S(12);
-            var badge = new RectangleF(x0, card.Y + (card.Height - Dpi.S(36)) / 2, Dpi.S(36), Dpi.S(36));
-            using (var br = new System.Drawing.Drawing2D.LinearGradientBrush(badge, Theme.Accent, Color.FromArgb(59, 130, 246), 45f))
-            using (var p = Theme.RoundRect(badge, Dpi.S(10)))
-                g.FillPath(br, p);
-            TextRenderer.DrawText(g, "✦", BadgeFont, Rectangle.Round(badge), Color.White,
+            int x0 = (int)card.X + Dpi.S(12), right = (int)card.Right - Dpi.S(12);
+            var badge = new RectangleF(x0, card.Y + (card.Height - Dpi.S(28)) / 2, Dpi.S(28), Dpi.S(28));
+            Theme.FillRound(g, Theme.AccentLight, badge, Dpi.S(6));
+            TextRenderer.DrawText(g, "✦", BadgeFont, Rectangle.Round(badge), Theme.AccentText,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
 
             var flags = TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine | TextFormatFlags.NoPrefix | TextFormatFlags.VerticalCenter;
-            int tx = (int)badge.Right + Dpi.S(12), ty = (int)card.Y + Dpi.S(10);
+            int tx = (int)badge.Right + Dpi.S(10), ty = (int)card.Y + Dpi.S(10);
             string st; Color fg, bg, dot;
             if (_agent == null || !_agent.Configured) { st = "未配置"; fg = Theme.Warning; bg = Theme.NoneBg; dot = Theme.Warning; }
             else if (_agent.Running) { st = "思考中"; fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; }
             else { st = "空闲"; fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; }
             var pw = TextRenderer.MeasureText(g, st, Theme.Small, Size.Empty, TextFormatFlags.NoPadding).Width + Dpi.S(30);
-            TextRenderer.DrawText(g, "AI 总控助手", Theme.SemiBold, new Rectangle(tx, ty, Math.Max(0, right - tx - pw - Dpi.S(6)), Dpi.S(20)),
+            int titleWidth = TextRenderer.MeasureText(g, "AI 总控助手", Theme.SemiBold, Size.Empty, TextFormatFlags.NoPadding).Width;
+            bool compact = right - tx < titleWidth + pw + Dpi.S(6);
+            TextRenderer.DrawText(g, "AI 总控助手", Theme.SemiBold, new Rectangle(tx, ty, Math.Max(0, right - tx - (compact ? 0 : pw + Dpi.S(6))), Dpi.S(20)),
                 _selected ? Color.White : Theme.Text, flags);
-            Theme.DrawPill(g, right - pw, ty - Dpi.S(1), pw, st, bg, fg, dot);
+            Theme.DrawPill(g, right - pw, ty + Dpi.S(compact ? 23 : -1), pw, st, bg, fg, dot);
             string sub = _agent == null ? "" : _agent.Configured ? _agent.ProviderName + " · " + _agent.ModelName : "点击配置 DeepSeek 等模型";
-            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(tx, ty + Dpi.S(24), Math.Max(0, right - tx), Dpi.S(18)), Theme.TextMuted, flags);
+            TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(tx, ty + Dpi.S(24), Math.Max(0, right - tx - (compact ? pw + Dpi.S(6) : 0)), Dpi.S(18)), Theme.TextMuted, flags);
         }
     }
 }

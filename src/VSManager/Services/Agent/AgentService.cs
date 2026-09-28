@@ -262,7 +262,7 @@ namespace VSManager
             {
                 AIFunctionFactory.Create((Func<string>)ListVs, "list_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)ReadVsChat, "read_vs_chat"),
-                AIFunctionFactory.Create((Func<string, string, string, Task<string>>)SendTask, "send_task"),
+                AIFunctionFactory.Create((Func<string, string, string, string, Task<string>>)SendTask, "send_task"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)WaitForVs, "wait_for_vs"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)DebugVs, "debug_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)GetErrors, "get_errors"),
@@ -293,6 +293,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, string, bool, int, int, int, CancellationToken, Task<string>>)SearchFileContents, "search_file_contents"),
                 AIFunctionFactory.Create((Func<string, int, int, CancellationToken, Task<string>>)ReadFile, "read_file"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)ListDirectory, "list_directory"),
+                AIFunctionFactory.Create((Func<string, string>)ListNotes, "list_notes"),
+                AIFunctionFactory.Create((Func<string, string>)ReadNote, "read_note"),
+                AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)PreviewNotionPlan, "preview_notion_plan"),
+                AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)DispatchNotionPlan, "dispatch_notion_plan"),
             };
         }
 
@@ -384,6 +388,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         {
             _cts?.Cancel();
             _history.Clear();
+            _notebookPromptLoaded = false;
             lock (_attachments) _attachments.Clear();
             Transcript.Messages.Clear();
             Changed?.Invoke();
@@ -503,6 +508,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             var cts = _cts = new CancellationTokenSource();
             Changed?.Invoke();
 
+            LoadNotebookPromptForConversation();
             _history.Add(new AIMessage(AIRole.User, files.Length > 0 ? ModelMessage(text, files) : text));
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
@@ -735,7 +741,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         private string SystemPrompt()
         {
             var s = _settings();
-            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel);
+            return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel, _notebookPrompt);
         }
 
         #endregion
@@ -804,6 +810,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         private async Task<string> SendTask(
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,
+            [Description("先为任务总结的中文题目，概括要做的事，不超过 20 字、单行、不加标点结尾，用于任务记录。A short Chinese title summarizing the task, at most 20 characters, one line, for task records.")] string title = null,
             [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null)
         {
             var files = ResolveTaskAttachments(attachments, out string attachmentError);
@@ -843,6 +850,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             string attachmentNote = files.Length == 0 ? "" : "\n\n" + TaskAttachmentNotice(files);
             if (_settings().AgentConfirm && !await ConfirmAsync("发布任务到「" + targetName + "」", task + attachmentNote))
                 return "用户拒绝了该操作。";
+            string taskTitle = TaskTitle.Normalize(title);
+            if (_host is IAgentTitledTaskHost titledHost)
+                return parkFor != null ? await titledHost.ParkTask(parkFor, task, files, taskTitle) : await titledHost.QueueTask(v, task, files, taskTitle);
             if (files.Length > 0)
             {
                 if (!(_host is IAgentAttachmentHost attachmentHost))
@@ -994,6 +1004,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 "有副作用的操作遵守「AgentConfirm 审批」设置；不要破坏现有功能；构建时输出到临时目录（不要覆盖正在运行的 VSManager.exe），完成后汇报改动与使用方式。" + OpenSourceTaskSuffix;
             if (_settings().AgentConfirm && !await ConfirmAsync("提交改进需求到「" + _host.NameOf(target) + "」", task))
                 return "用户拒绝了该操作。";
+            if (_host is IAgentTitledTaskHost titledHost)
+                return await titledHost.QueueTask(target, task, new AttachmentRef[0], TaskTitle.Normalize("助手改进：" + capability));
             return await _host.QueueTask(target, task);
         }
 

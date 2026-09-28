@@ -22,6 +22,8 @@ namespace VSManager
         public event Action<VsInstance, ChatTranscript, bool> Conversation;
         /// <summary>读取对话末尾若干条消息（由主窗体提供，复用 CopilotChat 的 UIA 读取）。</summary>
         public Func<VsInstance, bool, ChatTranscript> ReadTail;
+        /// <summary>轻量忙碌探测（复用缓存窗格）；未设置时使用完整搜索。/ Lightweight busy probe reusing the cached pane; falls back to the full search when unset.</summary>
+        public Func<VsInstance, AppSettings, bool, CopilotState> ProbeState;
 
         private sealed class WatchState
         {
@@ -63,7 +65,7 @@ namespace VSManager
                     foreach (var vs in all)
                     {
                         if (!_running) break;
-                        try { Update(vs, Restore(vs, s, Probe(vs, s))); } catch { }
+                        try { Update(vs, Restore(vs, s, ProbeNow(vs, s))); } catch { }
                         if (s.WatchConversations) Watch(vs, s);
                     }
                     foreach (var pid in _watch.Keys.Where(p => !all.Any(v => v.Pid == p)).ToList()) _watch.Remove(pid);
@@ -166,7 +168,7 @@ namespace VSManager
                     for (int i = 0; i < 6 && state == CopilotState.Unknown; i++)
                     {
                         Thread.Sleep(400);
-                        state = Probe(vs, s);
+                        state = ProbeNow(vs, s, true);
                     }
                     ok = state != CopilotState.Unknown;
                 }
@@ -185,6 +187,8 @@ namespace VSManager
             Native.GetWindowThreadProcessId(fg, out uint pid);
             return pid == (uint)vs.Pid;
         }
+
+        private CopilotState ProbeNow(VsInstance vs, AppSettings s, bool fresh = false) => ProbeState != null ? ProbeState(vs, s, fresh) : Probe(vs, s);
 
         public static CopilotState Probe(VsInstance vs, AppSettings s)
         {

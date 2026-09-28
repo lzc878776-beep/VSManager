@@ -119,6 +119,9 @@ namespace VSManager
         public static bool SameTarget(QueuedTask a, QueuedTask b)
         {
             if (a == null || b == null) return false;
+            if (a.HasExplicitTarget || b.HasExplicitTarget)
+                return a.HasExplicitTarget && b.HasExplicitTarget && a.ExplicitInstanceKey == b.ExplicitInstanceKey
+                    && string.Equals(a.ExplicitSolutionPath, b.ExplicitSolutionPath, StringComparison.OrdinalIgnoreCase);
             if (!string.IsNullOrEmpty(a.VsKey) && string.Equals(a.VsKey, b.VsKey, StringComparison.OrdinalIgnoreCase)) return true;
             if (IsPath(a.VsKey) && IsPath(b.VsKey) && SolutionMatcher.SamePath(a.VsKey, b.VsKey)) return true;
             return !string.IsNullOrWhiteSpace(a.Target) && string.Equals(a.Target.Trim(), (b.Target ?? "").Trim(), StringComparison.OrdinalIgnoreCase);

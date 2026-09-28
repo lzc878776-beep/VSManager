@@ -339,7 +339,9 @@ namespace VSManager.Tests
                 f.Observe(ManualChatObservation.Draft); await f.Dispatcher.PumpAsync();
                 Assert.AreEqual(0, f.Host.ManualReads); Assert.IsFalse(f.Dispatcher.IsStarted);
                 Assert.IsFalse(f.Dispatcher.CanRun(manual)); Assert.IsTrue(f.Dispatcher.CanRun(ai));
-                f.Dispatcher.DispatchNow(manual); await f.Dispatcher.PumpAsync(); Assert.AreEqual(0, f.Host.ManualReads);
+                f.Dispatcher.DispatchNow(manual); await f.Dispatcher.PumpAsync();
+                Assert.IsTrue(f.Host.ManualReads > 0); Assert.IsTrue(f.Dispatcher.CanRun(manual));
+                Assert.IsFalse(f.Dispatcher.IsStarted); Assert.IsFalse(f.Dispatcher.IsAutomatic(manual));
                 f.Dispatcher.Start(); await f.Dispatcher.PumpAsync();
                 Assert.IsNotNull(manual.ManualChatWaitReason); Assert.IsNull(ai.ManualChatWaitReason);
             }
@@ -353,9 +355,9 @@ namespace VSManager.Tests
                 var task = f.Add(); TaskStateMachine.Fail(task, "测试 / Test", f.Clock.Now);
                 f.Observe(ManualChatObservation.Draft); f.Dispatcher.Retry(task); await f.Dispatcher.PumpAsync();
                 f.Dispatcher.DispatchNow(task); await f.Dispatcher.PumpAsync();
-                Assert.AreEqual(0, task.Attempts); Assert.AreEqual(1, f.WaitNotices);
+                Assert.AreEqual(0, task.Attempts); Assert.AreEqual(2, f.WaitNotices);
                 Assert.IsTrue(f.Dispatcher.Cancel(task)); Assert.IsNull(task.ManualChatWaitReason);
-                f.Dispatcher.Retry(task); await f.Dispatcher.PumpAsync(); Assert.AreEqual(2, f.WaitNotices);
+                f.Dispatcher.Retry(task); await f.Dispatcher.PumpAsync(); Assert.AreEqual(3, f.WaitNotices);
             }
         }
 

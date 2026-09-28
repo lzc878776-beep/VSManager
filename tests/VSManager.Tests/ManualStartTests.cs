@@ -50,8 +50,6 @@ namespace VSManager.Tests
                 for (int i = 0; i < 3; i++)
                 {
                     await dispatcher.PumpAsync();
-                    dispatcher.DispatchNow(restored);
-                    dispatcher.Retry(failed);
                     await dispatcher.FinishAsync(restored, vs, TimeSpan.FromMinutes(1));
                 }
                 Assert.IsFalse(dispatcher.IsStarted);
@@ -65,7 +63,7 @@ namespace VSManager.Tests
                 Assert.AreEqual(0, host.Sent.Count);
                 Assert.AreEqual(0, git.Integrations);
                 Assert.AreEqual(0, git.Checks);
-                Assert.IsTrue(host.Status.Any(s => s == TaskDispatcher.WaitingForStart));
+                Assert.AreEqual(TaskDispatcher.WaitingForStart, dispatcher.StartStateText(restored));
                 Assert.AreEqual(0, host.Announced.Count);
 
                 dispatcher.Start();
@@ -164,7 +162,6 @@ namespace VSManager.Tests
                 host.AddVs("A");
                 var dispatcher = new TaskDispatcher(queue, host, clock.Func);
                 var task = queue.Find(1);
-                dispatcher.Retry(task);
                 await dispatcher.PumpAsync();
                 Assert.AreEqual(QueueStatus.Failed, task.Status);
                 dispatcher.Start();

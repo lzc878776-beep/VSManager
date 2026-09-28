@@ -94,6 +94,7 @@ namespace VSManager
 
         VsInstance ITaskDispatchHost.FindTargetVs(QueuedTask t)
         {
+            if (t.HasExplicitTarget) return ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t);
             if (t.Worktree != null)
                 return _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath));
             var v = FindVs(t.VsKey) ?? _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.VsKey));
@@ -111,7 +112,7 @@ namespace VSManager
         private void AnnounceTask(QueuedTask t, string zh, string en)
         {
             // 自动完成复用原有提示音、弹窗与摘要播报；其他状态继续使用任务提示。/ Automatic completion reuses the existing sound, popup and summary voice; other states use task notices.
-            var v = t.Status == QueueStatus.Done && !t.IsWorktreeMerge ? ((ITaskDispatchHost)this).FindTargetVs(t) : null;
+            var v = QueueStatus.Delivered(t.Status) && !t.IsWorktreeMerge ? ((ITaskDispatchHost)this).FindTargetVs(t) : null;
             if (v != null)
             {
                 NotifyCopilotCompleted(v, (t.Finished ?? DateTime.Now) - (t.Started ?? t.Created), t, zh, en);
@@ -151,7 +152,7 @@ namespace VSManager
 
         Task<string> IAgentHost.ParkTask(SolutionEntry e, string text) => OnUi(() => ParkTaskCore(e, text, null));
 
-        private string ParkTaskCore(SolutionEntry e, string text, AttachmentRef[] attachments)
+        private string ParkTaskCore(SolutionEntry e, string text, AttachmentRef[] attachments, string title = null)
         {
             var dup = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => TaskQueue.SameAttachments(i.Attachments, attachments)), e.Path, text);
             if (dup != null)
@@ -170,6 +171,7 @@ namespace VSManager
             var q = attachments != null && attachments.Length > 0
                 ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
                 : _tasks.AddParked(e.Path, e.Alias, text, "AI");
+            ApplyTitle(q, title);
             string hidden = HideResentFailed(q);
             string note = (hidden == null ? "" : "\n" + hidden) + (q.HasAttachments ? "\n" + AttachmentQueuedNote(q) : "");
             SendLog.Event(e.Alias, $"任务清单：任务 #{q.Id} 已暂存，等待打开「{e.Alias}」/ task #{q.Id} parked, waiting for \"{e.Alias}\" to open");

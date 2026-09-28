@@ -315,6 +315,18 @@ namespace VSManager.Tests
         [DataTestMethod]
         [DataRow(false)]
         [DataRow(true)]
+        public void AgentPrompt_DecidesForUser_WithoutAddingRequirements(bool english)
+        {
+            string prompt = Prompts.AgentSystem(english, DateTime.Now, "VS", "");
+            foreach (string s in english
+                ? new[] { "dare to decide for them", "give a clear recommendation rather than a list", "ask at most one question at a time", "Deciding for the user is not adding requirements" }
+                : new[] { "敢于替用户拍板", "给出明确推荐而不是罗列", "一次最多问一个问题", "替用户决策不等于补充需求" })
+                StringAssert.Contains(prompt, s);
+        }
+
+        [DataTestMethod]
+        [DataRow(false)]
+        [DataRow(true)]
         public void TaskWordingPrompts_OnlyPermitLanguageCleanup_AndRequireClarification(bool english)
         {
             string prompt = Prompts.AgentSystem(english, DateTime.Now, "VS", "");
@@ -385,6 +397,20 @@ namespace VSManager.Tests
             Assert.AreEqual(0, _host.Queue.Items.Count);
             StringAssert.Contains(result.ToString(), "不得自行删减要求或拆分任务");
             StringAssert.Contains(result.ToString(), "ask the user how to proceed");
+        }
+
+        [TestMethod]
+        public async Task SendTaskTool_RecordsAiTitle_OneLineWithin20Characters()
+        {
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = "1", ["task"] = "请扫描本解决方案的代码结构并说明实现", ["title"] = " 梳理代码结构\r\n" });
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = "1", ["task"] = "Second task", ["title"] = new string('题', 30) });
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = "1", ["task"] = "Untitled task" });
+            Assert.AreEqual("梳理代码结构", _host.Queue.Items[0].Title);
+            Assert.AreEqual(new string('题', 20), _host.Queue.Items[1].Title);
+            Assert.IsNull(_host.Queue.Items[2].Title);
+            string description = GetTool("send_task").JsonSchema.GetProperty("properties").GetProperty("title").GetProperty("description").GetString();
+            StringAssert.Contains(description, "20 字");
+            StringAssert.Contains(description, "20 characters");
         }
 
         [TestMethod]
@@ -628,6 +654,60 @@ namespace VSManager.Tests
             return tools.OfType<AIFunction>().Single(t => t.Name == name);
         }
 
+        [TestMethod]
+        public async Task NotebookPrompt_ReadOncePerConversation_AndAddedToSystemPrompt()
+        {
+            var client = new StreamingClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                int reads = 0;
+                string page = "总是用中文回答";
+                agent.NotebookPromptSource = () => { reads++; return page; };
+                await agent.RunAsync("你好");
+                await agent.RunAsync("继续");
+                Assert.AreEqual(1, reads, "同一对话只读取一次 / Read once per conversation");
+                string system = client.Messages[0].Text;
+                StringAssert.Contains(system, NotebookAgentPrompt.PageTitle);
+                StringAssert.Contains(system, "总是用中文回答");
+
+                page = "回答要简短";
+                agent.Clear();
+                await agent.RunAsync("新问题");
+                Assert.AreEqual(2, reads, "新对话重新读取 / A new conversation reads again");
+                StringAssert.Contains(client.Messages[0].Text, "回答要简短");
+                Assert.IsFalse(client.Messages[0].Text.Contains("总是用中文回答"));
+            }
+        }
+
+        [TestMethod]
+        public async Task NotebookPrompt_EmptyOrFailing_LeavesSystemPromptUnchanged()
+        {
+            var client = new StreamingClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                agent.NotebookPromptSource = () => throw new IOException("locked");
+                await agent.RunAsync("你好");
+                Assert.IsFalse(client.Messages[0].Text.Contains(NotebookAgentPrompt.PageTitle));
+                Assert.IsNull(agent.NotebookPrompt);
+            }
+        }
+
+        private sealed class StreamingClient : IAiClientFactory, IChatClient
+        {
+            internal List<AIMessage> Messages;
+            public IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<ChatResponse> GetResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, CancellationToken cancellationToken = default) =>
+                Task.FromResult(new ChatResponse(new AIMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "ok")));
+            public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            {
+                Messages = messages.ToList();
+                await Task.Yield();
+                yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "ok");
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
+        }
+
         private sealed class VisionClient : IAiClientFactory, IChatClient
         {
             internal int Created, Requests;
@@ -648,8 +728,13 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        private sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost
+        private sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost
         {
+            public Task<string> QueueTask(VsInstance v, string text, AttachmentRef[] attachments, string title) =>
+                Task.FromResult("Queued @" + Titled(Queue.Add(v.Key, NameOf(v), text, "AI", attachments), title).Id);
+            public Task<string> ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments, string title) =>
+                Task.FromResult("Parked @" + Titled(Queue.Add(e.Path, e.Alias, text, "AI", attachments, parked: true), title).Id);
+            private static QueuedTask Titled(QueuedTask q, string title) { if (q.Title == null) q.Title = title; return q; }
             public Task<string> QueueTask(VsInstance v, string text, AttachmentRef[] attachments) =>
                 Task.FromResult("Queued @" + Queue.Add(v.Key, NameOf(v), text, "AI", attachments).Id);
             public Task<string> ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments) =>

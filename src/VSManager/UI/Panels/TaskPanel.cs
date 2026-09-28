@@ -13,7 +13,7 @@ namespace VSManager
         private readonly TaskDragListBox _list = new TaskDragListBox();
         private readonly FlatButton _btnClear = new FlatButton { Text = "清除已完成", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
-        private readonly FlatButton _btnStart = new FlatButton { Text = "开始流程 / Start" };
+        private readonly FlatButton _btnStart = new FlatButton { Text = "▶ 开始流程 / Start" };
         private readonly ReleaseLevelSlider _levelSlider = new ReleaseLevelSlider { BackColor = Theme.Sidebar };
         /// <summary>用户在顶栏滑块上切换接续等级。/ Raised when the user switches the continuation level on the header slider.</summary>
         public event Action<ReleaseLevel> ReleaseLevelChanged;
@@ -40,7 +40,13 @@ namespace VSManager
         private static int HeaderHeight => Dpi.S(48);
         private static int CardHeight => Dpi.S(108);
         private readonly Timer _tick = new Timer { Interval = 1000 };
-        private readonly ToolTip _tips = new ToolTip();
+        private readonly ToolTip _tips = new ThemedToolTip();
+        // 任务条目的提示：指针在同一条目上停留 ItemTipDelay 毫秒后才显示，移到其他条目时重新计时。
+        // Tips for task entries: shown only after the pointer rests on the same entry for ItemTipDelay ms; moving to another entry restarts the wait.
+        internal const int ItemTipDelay = 1200;
+        private readonly ThemedToolTip _itemTips = new ThemedToolTip();
+        private readonly Timer _itemTipTimer = new Timer { Interval = ItemTipDelay };
+        private object _hoverKey;
         private TaskQueue _queue;
         private bool _collapsed;
         private bool _loadWarningSeen;
@@ -85,7 +91,9 @@ namespace VSManager
             UpdateViewButton();
             _top.Controls.Add(_btnClear);
             _top.Controls.Add(_btnCollapse);
-            _btnStart.Font = Theme.Small;
+            _btnStart.Font = Theme.SemiBold;
+            _btnStart.Primary = true;
+            _btnStart.DisabledTint = Theme.Success;
             _btnStart.Click += (s, e) => ActionRequested?.Invoke(null, "start");
             _tips.SetToolTip(_btnStart, TaskDispatcher.WaitingForStart);
             _top.Controls.Add(_btnStart);
@@ -130,14 +138,14 @@ namespace VSManager
             _list.Resize += (s, e) => _list.Invalidate();
             _list.MouseMove += (s, e) =>
             {
-                var hovered = ItemAt(e.Location);
-                string notice = hovered is TaskGroupHeader
-                    ? "点击折叠 / 展开，拖拽调整整组显示位置 / Click to collapse / expand; drag to move the whole group"
-                    : "拖拽调整显示位置，右键切换排序 / Drag to reorder display; right-click for sorting";
-                notice += "\r\n" + DisplayOrderNotice + "\r\n" + ((hovered as QueuedTask)?.PredecessorNotice ?? "");
-                if (hovered is QueuedTask task) notice += "\r\n" + TaskStateMachine.StatusText(task, DateTime.Now) + "\r\n" + EligibilityText(task);
-                if (_tips.GetToolTip(_list) != notice) _tips.SetToolTip(_list, notice);
+                object key = HoverKey(ItemAt(e.Location));
+                if (Equals(key, _hoverKey)) return;
+                ResetItemTip(key);
             };
+            _list.MouseLeave += (s, e) => ResetItemTip(null);
+            _list.MouseDown += (s, e) => ResetItemTip(null);
+            _list.MouseWheel += (s, e) => ResetItemTip(null);
+            _itemTipTimer.Tick += (s, e) => ShowItemTip();
             // 条目较高，滚轮每格滚动 1 条；焦点在其他控件时，指针位于任务清单上的滚轮也转给任务清单
             _list.WheelItemsPerNotch = 1;
             _wheel = new WheelForwarder(_list);
@@ -160,11 +168,51 @@ namespace VSManager
                 if (_queue != null) _queue.Changed -= Reload;
                 _tick.Dispose();
                 _tips.Dispose();
+                _itemTipTimer.Dispose();
+                _itemTips.Dispose();
                 _list.ContextMenuStrip?.Dispose();
             };
         }
 
         private readonly WheelForwarder _wheel;
+
+        /// <summary>按任务编号识别悬停条目，列表刷新后仍视为同一条。/ Identifies the hovered entry by task id so it stays the same across list reloads.</summary>
+        private static object HoverKey(object item) => item is QueuedTask t ? (object)("task:" + t.Id) : item;
+
+        private void ResetItemTip(object key)
+        {
+            _hoverKey = key;
+            _itemTipTimer.Stop();
+            _itemTips.HideText(_list);
+            if (key != null) _itemTipTimer.Start();
+        }
+
+        private void ShowItemTip()
+        {
+            _itemTipTimer.Stop();
+            if (IsDisposed || !_list.IsHandleCreated) return;
+            var point = _list.PointToClient(Cursor.Position);
+            var item = ItemAt(point);
+            if (item == null || !Equals(HoverKey(item), _hoverKey)) return;
+            string text = ItemTipText(item);
+            if (string.IsNullOrWhiteSpace(text)) return;
+            _itemTips.ShowText(text, _list, new Point(point.X + Dpi.S(14), point.Y + Dpi.S(18)));
+        }
+
+        /// <summary>条目提示：任务以内容 / 完成情况为主，分组标题说明折叠与拖拽。/ Entry tip: tasks focus on content / outcome; group headers explain collapsing and dragging.</summary>
+        private string ItemTipText(object item)
+        {
+            if (item is TaskGroupHeader)
+                return "点击折叠 / 展开，拖拽调整整组显示位置 / Click to collapse / expand; drag to move the whole group\n" + DisplayOrderNotice;
+            if (item is QueuedTask task)
+            {
+                string extra = null;
+                if (QueueStatus.Active(task.Status))
+                    extra = string.Join("\n", new[] { task.PredecessorNotice, EligibilityText(task) }.Where(x => !string.IsNullOrWhiteSpace(x)));
+                return TaskTooltip.Build(task, TaskStateMachine.StatusText(task, DateTime.Now), extra);
+            }
+            return "拖拽调整显示位置，右键切换排序 / Drag to reorder display; right-click for sorting\n" + DisplayOrderNotice;
+        }
 
         /// <summary>把发给其他控件（如有焦点的输入框）、但指针正位于任务清单上的滚轮消息转给任务清单；其他区域的滚轮不受影响。</summary>
         private sealed class WheelForwarder : IMessageFilter
@@ -192,7 +240,7 @@ namespace VSManager
         public void SetWorkflowStarted(bool started)
         {
             _workflowStarted = started;
-            _btnStart.Text = started ? "已启动 / Started" : "开始流程 / Start";
+            _btnStart.Text = started ? "✓ 已启动 / Started" : "▶ 开始流程 / Start";
             _btnStart.Enabled = !started;
             _tips.SetToolTip(_btnStart, started ? "本次会话已启动；下次启动需重新手动开始 / Started for this session only" : TaskDispatcher.WaitingForStart);
             _top.Invalidate();
@@ -441,105 +489,89 @@ namespace VSManager
         private ContextMenuStrip BuildMenu()
         {
             var m = new GroupedContextMenuStrip();
-            AddDisplayOrderMenu(m);
-            m.AddGroup("任务操作与历史 / Tasks and history");
-            var dispatch = m.Items.Add("立即尝试发布", null, (s, e) => Do("dispatch"));
-            var retry = m.Items.Add("重新排队", null, (s, e) => Do("retry"));
-            var supplement = m.Items.Add("补充信息后重试… / Retry with info…", null, (s, e) => Do("supplement"));
-            var release = m.Items.Add("放行后续任务 / Release successors", null, (s, e) => Do("release"));
+// 只保留关键操作，不适用于当前状态的条目直接隐藏；清除与历史使用标题栏按钮。
+// Key actions only; items that do not apply to the current state are hidden; clearing and history live in the header buttons.
+var dispatch = m.Items.Add("重新检查并推送 / Recheck and send", null, (s, e) => Do("dispatch"));
+var retry = m.Items.Add("手动重新排队 / Requeue manually", null, (s, e) => Do("retry"));
+var supplement = m.Items.Add("补充信息后重试… / Retry with info…", null, (s, e) => Do("supplement"));
+var release = m.Items.Add("放行后续任务 / Release successors", null, (s, e) => Do("release"));
+var verify = m.Items.Add("标记为已验证 / Mark as verified", null, (s, e) => Do("verify"));
             var cancel = m.Items.Add("取消任务", null, (s, e) => Do("cancel"));
+            var stop = m.Items.Add("■ 停止生成", null, (s, e) => Do("stop"));
+            var actionSeparator = new ToolStripSeparator();
+            m.Items.Add(actionSeparator);
+            var open = m.Items.Add("查看该 VS 的对话", null, (s, e) => Do("open"));
             var copy = m.Items.Add("复制任务内容", null, (s, e) => Do("copy"));
             var attachments = m.Items.Add("查看附件 / View attachments", null, (s, e) => Do("attachments"));
-            var remove = m.Items.Add("从清单中删除", null, (s, e) => Do("remove"));
-            var clear = m.Items.Add("清除已完成（仅界面）", null, (s, e) => ActionRequested?.Invoke(null, "clear"));
-            var history = new ToolStripMenuItem("显示已清除的历史", null, (s, e) => { _showHistory = !_showHistory; Reload(); });
-            m.Items.Add(history);
-            var unclear = m.Items.Add("撤销清除（恢复显示全部历史）", null, (s, e) => { _showHistory = false; ActionRequested?.Invoke(null, "unclear"); });
             var unhide = m.Items.Add("恢复显示该失败条目 / Show this failed entry again", null, (s, e) => Do("unhide"));
-            m.AddGroup("AI 对话 / AI chat");
-            var stop = m.Items.Add("■ 停止生成", null, (s, e) => Do("stop"));
-            m.AddGroup("VS 操作 / Visual Studio");
-            var open = m.Items.Add("查看该 VS 的对话", null, (s, e) => Do("open"));
+            var removeSeparator = new ToolStripSeparator();
+            m.Items.Add(removeSeparator);
+            var remove = m.Items.Add("从清单中删除", null, (s, e) => Do("remove"));
+            var resetOrder = m.Items.Add("恢复默认排序 / Reset order", null, (s, e) => ResetDisplayOrder());
             // 右键分组标题时才显示 / Shown only when a group header is right-clicked
-            m.AddGroup("任务分组 / Task groups");
             var toggleGroup = m.Items.Add("折叠该分组 / Collapse group", null, (s, e) => ToggleGroup(_menuGroupKey));
             var expandAll = m.Items.Add("全部展开 / Expand all", null, (s, e) => SetAllCollapsed(false));
             var collapseAll = m.Items.Add("全部折叠 / Collapse all", null, (s, e) => SetAllCollapsed(true));
-            var sortActivity = new ToolStripMenuItem("分组排序：执行中优先、最近活动 / Sort: running first, latest activity", null, (s, e) => SetGroupSort(TaskGrouping.SortByActivity));
-            var sortNumber = new ToolStripMenuItem("分组排序：按 VS 编号 / Sort: by VS number", null, (s, e) => SetGroupSort(TaskGrouping.SortByNumber));
-            m.Items.Add(sortActivity);
-            m.Items.Add(sortNumber);
             var flatList = m.Items.Add("切换为平铺列表 / Switch to flat list", null, (s, e) => SetGroupByVs(false));
-            var groupItems = new[] { toggleGroup, expandAll, collapseAll, sortActivity, sortNumber, flatList };
+            var groupItems = new[] { toggleGroup, expandAll, collapseAll, flatList };
+            var taskItems = new[] { dispatch, retry, supplement, release, verify, cancel, stop, actionSeparator, open, copy, attachments, unhide, removeSeparator, remove };
             m.Opening += (s, e) =>
             {
                 var header = _groupByVs ? _menuHeader : null;
                 _menuHeader = null;
                 _menuGroupKey = header?.Key;
                 foreach (var gi in groupItems) gi.Visible = header != null;
-                clear.Enabled = _btnClear.Enabled;
-                history.Checked = _showHistory;
-                history.Enabled = _hiddenCount > 0;
-                unclear.Enabled = _hiddenCount > 0;
+                foreach (var ti in taskItems) ti.Visible = header == null;
+                resetOrder.Visible = _manualOrder || _groupSort == TaskGrouping.SortManual;
                 if (header != null)
                 {
-                    dispatch.Visible = retry.Visible = cancel.Visible = copy.Visible = attachments.Visible = remove.Visible = false;
-                    supplement.Visible = release.Visible = false;
-                    unhide.Visible = stop.Visible = open.Visible = false;
                     toggleGroup.Text = header.Collapsed ? "展开该分组 / Expand group" : "折叠该分组 / Collapse group";
-                    expandAll.Enabled = _groupKeys.Any(k => _collapsedGroups.Contains(k));
-                    collapseAll.Enabled = _groupKeys.Any(k => !_collapsedGroups.Contains(k));
-                    sortActivity.Checked = _groupSort == TaskGrouping.SortByActivity;
-                    sortNumber.Checked = _groupSort == TaskGrouping.SortByNumber;
+                    expandAll.Visible = _groupKeys.Any(k => _collapsedGroups.Contains(k));
+                    collapseAll.Visible = _groupKeys.Any(k => !_collapsedGroups.Contains(k));
                     return;
                 }
-                copy.Visible = remove.Visible = open.Visible = true;
-            };
-            m.Opening += (s, e) =>
-            {
-                if (_menuGroupKey != null) return;
-                clear.Enabled = _btnClear.Enabled;
-                history.Checked = _showHistory;
-                history.Enabled = _hiddenCount > 0;
-                unclear.Enabled = _hiddenCount > 0;
                 var c = _list.SelectedItem as ExternalChat;
-                bool isChat = c != null;
-                dispatch.Visible = retry.Visible = cancel.Visible = !isChat;
-                supplement.Visible = release.Visible = !isChat;
-                attachments.Visible = false;
-                stop.Visible = isChat;
-                unhide.Visible = !isChat && _list.SelectedItem is QueuedTask ht && IsResentHidden(ht);
-                if (isChat)
-                {
-                    stop.Enabled = c.Generating;
+if (c != null)
+{
+    dispatch.Visible = retry.Visible = supplement.Visible = release.Visible = verify.Visible = cancel.Visible = attachments.Visible = unhide.Visible = false;
+                    stop.Visible = stop.Enabled = c.Generating;
                     open.Enabled = copy.Enabled = remove.Enabled = true;
                     open.Text = "打开该 VS 并定位对话";
                     copy.Text = "复制提问与回答";
                     remove.Text = "从清单中移除";
                     return;
                 }
+                stop.Visible = false;
                 open.Text = "查看该 VS 的对话";
                 copy.Text = "复制任务内容";
                 remove.Text = "从清单中删除";
                 var t = _list.SelectedItem as QueuedTask;
                 bool has = t != null;
-                open.Enabled = copy.Enabled = has;
-                // 只在任务带附件时显示，其余菜单保持原样 / Shown only for tasks with attachments; the rest of the menu is unchanged
+                open.Visible = copy.Visible = open.Enabled = copy.Enabled = has;
                 bool withFiles = has && t.HasAttachments;
                 attachments.Visible = attachments.Enabled = withFiles;
                 if (withFiles) attachments.Text = $"查看附件（{t.Attachments.Length}）/ View attachments";
-                dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
-                retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled);
-                supplement.Enabled = has && TaskStateMachine.IsHoldOutcome(t) && t.SupplementCount < TaskStateMachine.MaxSupplements;
+                unhide.Visible = has && IsResentHidden(t);
+                dispatch.Visible = dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
+                retry.Visible = retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled || t.Status == QueueStatus.Unverified);
+                verify.Visible = verify.Enabled = has && TaskTestChecklist.Pending(t);
+                supplement.Visible = has && TaskStateMachine.IsHoldOutcome(t);
+                supplement.Enabled = supplement.Visible && t.SupplementCount < TaskStateMachine.MaxSupplements;
                 supplement.Text = has && t.SupplementCount > 0
                     ? $"补充信息后重试…（{t.SupplementCount}/{TaskStateMachine.MaxSupplements}）/ Retry with info…"
                     : "补充信息后重试… / Retry with info…";
                 // 仅当前等级下会阻塞后续的结果才需要放行 / Release only matters for outcomes that block at the current level
-                release.Enabled = has && !t.Released && TaskStateMachine.IsHoldOutcome(t) && ReleaseLevels.Blocks(_queue.ReleaseLevel, t);
+                release.Visible = has && TaskStateMachine.IsHoldOutcome(t) && _queue != null && ReleaseLevels.Blocks(_queue.ReleaseLevel, t);
+                release.Enabled = release.Visible && !t.Released;
                 release.Text = has && t.Released ? "已放行 / Released" : "放行后续任务 / Release successors";
-                cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
+                cancel.Visible = cancel.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs || t.Status == QueueStatus.Running);
                 cancel.Text = has && t.Status == QueueStatus.Running ? "停止跟踪（不停止 Copilot）" : "取消任务";
+                remove.Visible = has;
                 remove.Enabled = has && t.Status != QueueStatus.Sending;
+            };
+            m.Opening += (s, e) =>
+            {
+                if (!m.Items.Cast<ToolStripItem>().Any(i => i.Available && !(i is ToolStripSeparator))) e.Cancel = true;
             };
             return m;
         }
@@ -708,9 +740,9 @@ namespace VSManager
             TextRenderer.DrawText(g, vsLine, Theme.SemiBold, new Rectangle(x, y, right - x, Dpi.S(18)), active ? Theme.AccentText : Theme.TextSecondary, flags | TextFormatFlags.SingleLine);
             y += Dpi.S(20);
             string body = OneLine(t.Text);
-            // 待确认 / 失败显示记录的待处理内容或失败原因，点击条目可在下方查看全文 / Awaiting confirmation / failed show the recorded note; click for the full text below
-            string tail = t.Status == QueueStatus.Done && t.NeedsUser && !string.IsNullOrEmpty(t.PendingNote) ? "⚑ 待处理：" + OneLine(t.PendingNote)
-                : t.Status == QueueStatus.Done && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
+            // 待确认 / 未验证 / 失败显示记录的待处理内容或失败原因，点击条目可在下方查看全文 / Pending / unverified / failed show the recorded note; click for the full text below
+            string tail = TaskHoldNote.IsPending(t) && !string.IsNullOrEmpty(t.PendingNote) ? "⚑ 待处理：" + OneLine(t.PendingNote)
+                : QueueStatus.Delivered(t.Status) && !string.IsNullOrEmpty(t.Result) ? "↳ " + OneLine(t.Result)
                 : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureReason) ? "⚠ " + OneLine(t.FailureReason)
                 : t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.Error) ? "⚠ " + OneLine(t.Error)
                 : QueueStatus.Active(t.Status) ? (t.ManualChatWaitReason ?? EligibilityText(t))
@@ -726,7 +758,7 @@ namespace VSManager
             TextRenderer.DrawText(g, body, Theme.Small, new Rectangle(x, y, right - x, bodyH), active ? Theme.Text : Theme.TextSecondary, flags | TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
             if (tail != null)
                 TextRenderer.DrawText(g, tail, Theme.Small, new Rectangle(x, y + Dpi.S(18), right - x, Dpi.S(17)),
-                    t.Status == QueueStatus.Failed ? Theme.Danger : t.Status == QueueStatus.Done && t.NeedsUser ? Theme.Warning : Theme.TextMuted, flags | TextFormatFlags.SingleLine);
+                    t.Status == QueueStatus.Failed ? Theme.Danger : TaskHoldNote.IsPending(t) ? Theme.Warning : Theme.TextMuted, flags | TextFormatFlags.SingleLine);
         }
 
         private void StatusLook(QueuedTask t, out string text, out Color fg, out Color bg, out Color dot)
@@ -744,8 +776,11 @@ namespace VSManager
                 case QueueStatus.Running:
                     text = "执行中 · " + Dur(DateTime.Now - (t.Started ?? DateTime.Now)); fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; break;
                 case QueueStatus.Done:
-                    text = (t.NeedsUser ? "✓ 待验证" : "✓ 已完成") + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
-                    fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
+    text = (t.NeedsUser ? "✓ 待验证" : "✓ 已完成") + (t.Released ? " · 已放行" : "") + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+    fg = t.NeedsUser ? Theme.Warning : Theme.IdleFg; bg = Theme.IdleBg; dot = t.NeedsUser ? Theme.Warning : Theme.IdleDot; break;
+case QueueStatus.Unverified:
+                    text = "◐ 未验证" + (t.Started.HasValue && t.Finished.HasValue ? " · " + Dur(t.Finished.Value - t.Started.Value) : "");
+                    fg = Theme.UnverifiedFg; bg = Theme.UnverifiedBg; dot = Theme.UnverifiedDot; break;
                 case QueueStatus.Failed:
                     text = t.Released ? "失败 · 已放行" : "失败"; fg = Theme.Danger; bg = Color.FromArgb(60, 22, 26); dot = Theme.Danger; break;
                 default:

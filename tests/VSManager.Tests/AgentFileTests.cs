@@ -496,6 +496,37 @@ namespace VSManager.Tests
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         private static extern bool CreateHardLink(string newName, string existingName, IntPtr security);
 
+        private NotebookStore UseNotebook()
+        {
+            var store = new NotebookStore(_data.File("Notebooks"));
+            _agent.NotebookStoreFactory = () => store;
+            return store;
+        }
+
+        [TestMethod]
+        public async Task ListNotes_ReturnsIdAndTitlePath()
+        {
+            var store = UseNotebook();
+            string parent = store.CreatePage("", "计划");
+            string child = store.CreatePage(parent, "登录改造", "给 1 号 VS 加表单校验");
+            Assert.IsTrue((await Invoke("list_notes", new AIFunctionArguments { ["query"] = "表单" })).Contains(child + "  计划 / 登录改造"));
+        }
+
+        [TestMethod]
+        public async Task ReadNote_ReturnsBody()
+        {
+            var store = UseNotebook();
+            string id = store.CreatePage("", "登录改造", "note-body-marker");
+            Assert.IsTrue((await Invoke("read_note", new AIFunctionArguments { ["page"] = id })).Contains("note-body-marker"));
+        }
+
+        [TestMethod]
+        public async Task ReadNote_InvalidId_ReturnsError()
+        {
+            UseNotebook();
+            Assert.IsTrue((await Invoke("read_note", new AIFunctionArguments { ["page"] = "..\\x" })).StartsWith("读取笔记失败"));
+        }
+
         private sealed class FileHost : IAgentHost
         {
             public IList<VsInstance> Instances { get; } = new List<VsInstance>();

@@ -98,7 +98,7 @@ namespace VSManager
             _btnScan.Click += (s, e) => Start(true);
             var btnTerms = new FlatButton { Text = "编辑自检词表", Dock = DockStyle.Left, Width = Dpi.S(120) };
             btnTerms.Click += (s, e) => EditTerms();
-            var tips = new ToolTip();
+            var tips = new ThemedToolTip();
             tips.SetToolTip(_btnScan, "只扫描待提交文件中的敏感信息，不修改仓库\nScan the files to be committed without changing the repository");
             tips.SetToolTip(btnTerms, "内部项目名、客户名等（每行一个），保存在本机，不会提交\nInternal/customer names (one per line), stored locally and never committed");
             tips.SetToolTip(_btnPublish, "git init → .gitignore → 自检 → 提交 → 创建/关联远程 → push");

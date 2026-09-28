@@ -22,7 +22,16 @@ namespace VSManager
         /// <summary>未结束（排队 / 等待目标 VS / 发送中 / 执行中）。/ Not finished yet (waiting / waiting for VS / sending / running).</summary>
         public static bool Active(string s) => s == Waiting || s == WaitingVs || s == Sending || s == Running;
 
-        public static bool Known(string s) => Active(s) || s == Done || s == Failed || s == Cancelled;
+        /// <summary>
+        /// 未验证：功能已实现（构建 / 测试通过），仅尚未在运行中的程序里实际验证；与「已完成」「失败」并列的结束状态。
+        /// Unverified: implemented (build / tests pass) but not yet verified in the running app; a terminal status alongside done and failed.
+        /// </summary>
+        public const string Unverified = "unverified";
+
+        /// <summary>已产出结果（已完成或未验证），不阻塞后续任务。/ Produced a result (done or unverified); never blocks successors.</summary>
+        public static bool Delivered(string s) => s == Done || s == Unverified;
+
+        public static bool Known(string s) => Active(s) || s == Done || s == Unverified || s == Failed || s == Cancelled;
     }
 
     /// <summary>
@@ -30,13 +39,38 @@ namespace VSManager
     /// One task-list entry: always queued by ID and dispatched under policy after predecessors finish and the target is ready.
     /// Field names are the tasks.json field names.
     /// </summary>
+    /// <summary>任务题目规则：单行，最多 20 字。/ Task title rules: one line, at most 20 characters.</summary>
+    public static class TaskTitle
+    {
+        public const int MaxLength = 20;
+
+        /// <summary>规范为单行并截断到上限；为空时返回 null。/ Normalizes to one line and truncates to the limit; null when empty.</summary>
+        public static string Normalize(string title)
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (char c in title ?? "") sb.Append(char.IsControl(c) || char.IsWhiteSpace(c) ? ' ' : c);
+            string result = System.Text.RegularExpressions.Regex.Replace(sb.ToString(), " +", " ").Trim();
+            if (result.Length > MaxLength) result = result.Substring(0, MaxLength).TrimEnd();
+            return result.Length == 0 ? null : result;
+        }
+    }
+
     [DataContract]
     public sealed class QueuedTask
     {
         [DataMember] public int Id;
         [DataMember] public string VsKey;
         [DataMember] public string VsName;
+        // 显式提及固定进程会话与解决方案，不回退到同名实例。/ Explicit mentions pin process session and solution, never a namesake.
+        [DataMember(EmitDefaultValue = false)] public string ExplicitInstanceKey;
+        [DataMember(EmitDefaultValue = false)] public string ExplicitSolutionPath;
+        public bool HasExplicitTarget => ExplicitInstanceKey != null || ExplicitSolutionPath != null;
+        public bool MatchesExplicitTarget(VsInstance v) => v != null && !string.IsNullOrEmpty(ExplicitInstanceKey)
+            && v.InstanceKey == ExplicitInstanceKey && ExplicitSolutionPath != null
+            && string.Equals(v.SolutionPath ?? "", ExplicitSolutionPath, StringComparison.OrdinalIgnoreCase);
         [DataMember] public string Text;
+        /// <summary>任务题目（AI 发布时总结，最多 <see cref="TaskTitle.MaxLength"/> 字）；未提供时为 null。/ Task title (summarized by the AI on submission, at most <see cref="TaskTitle.MaxLength"/> characters); null when not provided.</summary>
+        [DataMember(EmitDefaultValue = false)] public string Title;
         [DataMember] public string Source;
         [DataMember] public string Status;
         [DataMember] public DateTime Created;
@@ -94,8 +128,17 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public string PendingNote;
         /// <summary>失败时的原因说明，其他状态为 null。/ Why the task failed; null otherwise.</summary>
         [DataMember(EmitDefaultValue = false)] public string FailureReason;
+        /// <summary>
+        /// 测试清单：未验证 / 待用户验证的任务需要用户在环境中实测的项目；全部勾选后任务转为已完成。没有时为 null。
+        /// Test checklist: items the user must test in the environment for unverified / awaiting-verification tasks; checking all of them
+        /// completes the task. Null when there are none.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public TaskTestItem[] TestItems;
 
         public bool HasAttachments => Attachments != null && Attachments.Length > 0;
+
+        /// <summary>本次完成的完整回复（仅内存，不写入 tasks.json）。/ Full reply of this completion (memory only, not written to tasks.json).</summary>
+        public string FullResult;
 
         /// <summary>运行期：执行中是否观察到 Copilot 忙碌。/ Runtime only: whether Copilot was seen busy while running.</summary>
         [IgnoreDataMember] public bool SawBusy;
@@ -111,7 +154,8 @@ namespace VSManager
         /// <summary>复制持久化字段（不含运行期字段）。/ Copies the persisted fields (runtime fields excluded).</summary>
         public QueuedTask Clone() => new QueuedTask
         {
-            Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Source = Source, Status = Status, Created = Created,
+            Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Title = Title, Source = Source, Status = Status, Created = Created,
+            ExplicitInstanceKey = ExplicitInstanceKey, ExplicitSolutionPath = ExplicitSolutionPath,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
             CompletionToken = CompletionToken, Worktree = Worktree?.Clone(), IsWorktreeMerge = IsWorktreeMerge,
@@ -120,7 +164,18 @@ namespace VSManager
             FailureKind = FailureKind, NeedsUser = NeedsUser, PriorFailure = PriorFailure,
             Released = Released, Supplement = Supplement, SupplementCount = SupplementCount,
             ContentRuns = ContentRuns, RecoveryRetries = RecoveryRetries, PriorRuns = PriorRuns,
-            PendingNote = PendingNote, FailureReason = FailureReason
+            PendingNote = PendingNote, FailureReason = FailureReason,
+            TestItems = TestItems?.Select(i => i?.Clone()).ToArray()
         };
+    }
+
+    /// <summary>测试清单中的一项（由用户手动勾选）。/ One test checklist item (checked off manually by the user).</summary>
+    [DataContract]
+    public sealed class TaskTestItem
+    {
+        [DataMember] public string Text;
+        [DataMember(EmitDefaultValue = false)] public bool Checked;
+
+        public TaskTestItem Clone() => new TaskTestItem { Text = Text, Checked = Checked };
     }
 }

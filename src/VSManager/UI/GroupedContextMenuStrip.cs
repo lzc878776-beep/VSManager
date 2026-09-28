@@ -41,6 +41,22 @@ namespace VSManager
                 }
                 header.Available = hasItems;
             }
+            // 隐藏开头、结尾和连续的分隔线。/ Hide leading, trailing and consecutive separators.
+            ToolStripSeparator pending = null;
+            bool anyBefore = false;
+            foreach (ToolStripItem item in Items)
+            {
+                if (item is ToolStripSeparator separator)
+                {
+                    separator.Available = false;
+                    if (anyBefore && pending == null) pending = separator;
+                    continue;
+                }
+                if (!item.Available) continue;
+                if (item is MenuGroupHeader) { pending = null; anyBefore = true; continue; }
+                if (pending != null) { pending.Available = true; pending = null; }
+                anyBefore = true;
+            }
         }
     }
 

@@ -17,6 +17,17 @@ namespace VSManager
         Task<string> ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments);
     }
 
+    /// <summary>
+    /// 可选宿主能力：发布任务时一并记录 AI 总结的任务题目（用于任务记录等显示）。未实现时退回 <see cref="IAgentHost"/> / <see cref="IAgentAttachmentHost"/>。
+    /// Optional host capability: records the AI-summarized task title when enqueuing (used by task records and similar views).
+    /// Without it, <see cref="IAgentHost"/> / <see cref="IAgentAttachmentHost"/> are used.
+    /// </summary>
+    public interface IAgentTitledTaskHost
+    {
+        Task<string> QueueTask(VsInstance v, string text, AttachmentRef[] attachments, string title);
+        Task<string> ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments, string title);
+    }
+
     public sealed partial class AgentService
     {
         /// <summary>本次对话中用户提供的附件（按编号）。/ Attachments provided by the user in this conversation (by id).</summary>

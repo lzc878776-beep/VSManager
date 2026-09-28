@@ -1,10 +1,15 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 
 namespace VSManager
 {
+    /// <summary>按不可变身份查找提及目标。/ Resolve a mentioned target by immutable identity.</summary>
+    public interface IExplicitTaskDispatchHost
+    {
+        VsInstance FindExplicitTarget(QueuedTask task);
+    }
     /// <summary>
     /// 任务调度器依赖的宿主能力（由主窗口实现）：查找 VS、判断能否发布、发送消息、读取回复、状态提示与通知 AI 助手。
     /// 单元测试可用模拟实现替换。
@@ -52,6 +57,12 @@ namespace VSManager
         Task<string> SendTaskAsync(VsInstance v, QueuedTask t);
     }
 
+    /// <summary>可选宿主能力：任务成功后、发布下一个任务前整理目标 VS（如保存并关闭文档）。/ Optional host capability: tidies the target VS (e.g. save and close documents) after success, before the next task is published.</summary>
+    public interface ITaskCompletionHost
+    {
+        Task AfterTaskCompletedAsync(QueuedTask t, VsInstance v);
+    }
+
     /// <summary>
     /// 任务调度器：跟踪执行中的任务，并把每个空闲 VS 最早排队的任务发布出去；失败、完成、取消、重试也在这里处理。
     /// 状态流转统一交给 <see cref="TaskStateMachine"/>，只在界面线程调用。
@@ -64,13 +75,19 @@ namespace VSManager
         private readonly ITaskDispatchHost _host;
         private readonly Func<DateTime> _clock;
         private readonly IWorktreeTaskService _worktrees;
+        private VsInstance ResolveTarget(QueuedTask task, bool useWorktree = false)
+        {
+            if (!task.HasExplicitTarget) return !useWorktree || task.Worktree == null ? _host.FindVs(task.VsKey) : _host.FindTargetVs(task);
+            var target = (_host as IExplicitTaskDispatchHost)?.FindExplicitTarget(task);
+            return task.MatchesExplicitTarget(target) ? target : null;
+        }
         private bool _pumping;
         private readonly HashSet<QueuedTask> _finishing = new HashSet<QueuedTask>();
         private readonly HashSet<QueuedTask> _integrating = new HashSet<QueuedTask>();
         private readonly Dictionary<QueuedTask, (TimeSpan? Duration, string Token)> _pendingCompletions
             = new Dictionary<QueuedTask, (TimeSpan?, string)>();
 
-        public const string WaitingForStart = "等待手动开始：请点击任务清单「开始流程 / Start」/ Waiting for manual start: click Start in the task list";
+        public const string WaitingForStart = "等待手动授权：点击「开始流程 / Start」或右键当前任务重新检查 / Waiting for manual start or task authorization: click Start or recheck this task from its context menu";
         public bool IsStarted { get; private set; }
 
         /// <summary>仅本次会话有效；只能由用户开始，不持久化。/ User opt-in for this session only; never persisted.</summary>
@@ -127,7 +144,7 @@ namespace VSManager
                             continue;
                         }
                         if (!CanRun(task)) continue;
-                        var target = _host.FindVs(task.VsKey);
+                        var target = ResolveTarget(task);
                         if (target == null || target.Copilot == CopilotState.Busy || !_host.CanDispatch(target)) continue;
                         _pendingCompletions.Remove(task);
                         await FinishAsync(task, target, completion.Duration);
@@ -138,7 +155,8 @@ namespace VSManager
                 {
                     if (now < _host.TrackingReadyAt) break;
                     if (_finishing.Contains(t) || !CanRun(t)) continue;
-                    var v = _host.FindVs(t.VsKey);
+                    var v = ResolveTarget(t);
+                    if (v == null && t.HasExplicitTarget) { Fail(t, VsMentionSession.MissingError); continue; }
                     switch (TaskStateMachine.CheckRunning(t, v != null, v?.Copilot ?? CopilotState.Unknown, () => _host.CanDispatch(v), now))
                     {
                         case RunningVerdict.VsClosed: Fail(t, TaskStateMachine.VsClosedError, FailureKind.VsClosed); break;
@@ -151,8 +169,8 @@ namespace VSManager
                 {
                     if (_host.IsSending) break;
                     if (!CanRun(t) || (!IsStarted && _tasks.SaveError != null)) continue;
-                    var v = _host.FindVs(t.VsKey);
-                    if (t.Worktree != null) v = _host.FindTargetVs(t);
+                    var v = ResolveTarget(t, true);
+                    if (v == null && t.HasExplicitTarget) { Fail(t, VsMentionSession.MissingError); continue; }
                     if (v == null || t.Status != QueueStatus.Waiting
                         || _tasks.Find(t.Id) != t || DispatchBlocker(t) != null) continue;
                     if (t.Worktree != null && !SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath)) continue;
@@ -161,8 +179,8 @@ namespace VSManager
                     if (!_host.CanDispatch(v) || _host.IsSending || t.Status != QueueStatus.Waiting || !CanRun(t)
                         || !SameTarget(t, v, targetPath, targetIdentity) || DispatchBlocker(t) != null || (!IsStarted && _tasks.SaveError != null)) continue;
                     var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
-                        && ResentTaskMatcher.SameTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
-                    TaskStateMachine.BeginSend(t, _host.NameOf(v));
+                        && TaskStateMachine.SharesDispatchTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
+                    TaskStateMachine.BeginSend(t, t.HasExplicitTarget ? t.VsName : _host.NameOf(v));
                     if (t.Worktree != null) t.VsKey = v.Key;
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
@@ -194,6 +212,8 @@ namespace VSManager
                             if (!SolutionMatcher.SamePath(v.SolutionPath, t.Worktree.SolutionPath) || !_host.CanDispatch(v))
                                 throw new InvalidOperationException("目标 VS 已变化 / Target VS changed");
                         }
+                        if (t.HasExplicitTarget && !SameTarget(t, v, targetPath, targetIdentity))
+                            throw new InvalidOperationException(VsMentionSession.MissingError);
                         if (t.Status != QueueStatus.Sending || !CanRun(t)) continue;
                         r = _host is IManualChatDispatchHost protectedHost
                             ? await protectedHost.SendQueuedAsync(v, t, () => t.Status == QueueStatus.Sending && CanRun(t)
@@ -205,9 +225,9 @@ namespace VSManager
                     }
                     catch (Exception ex)
                     {
-                        Fail(t, (t.Worktree == null ? "发送异常，送达状态未知，请检查后重试："
-                            : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message,
-                            t.Worktree == null ? FailureKind.Delivery : null);
+Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异常 / Send exception: "
+    : "Worktree 任务失败，请检查 Git 和 VS 后重试 / Worktree task failed; inspect Git and VS: ") + ex.Message,
+    t.Worktree == null ? FailureKind.Delivery : null);
                         continue;
                     }
                     switch (TaskStateMachine.ApplySendResult(t, r, _clock()))
@@ -223,9 +243,7 @@ namespace VSManager
                             if (ManualChatProtection.IsWait(r) && WaitForManualChat && SameTarget(t, v, targetPath))
                                 RecordManualWait(t, v, ManualChatObservation.Unknown);
                             _tasks.Commit();
-                            _host.SetStatus(SendRetryPolicy.IsBlocked(r)
-                                ? $"任务清单：#{t.Id} {r}；处理后自动继续，未消耗重试次数"
-                                : $"任务清单：#{t.Id} 发送失败（{r}），30 秒后重试");
+                            _host.SetStatus($"任务清单：#{t.Id} {r}；尚未提交，处理后继续等待检查 / Not submitted; waiting for protection to clear");
                             break;
                     }
                 }
@@ -303,7 +321,12 @@ namespace VSManager
             ClearManualWait(t);
             _yielded.Remove(t);
             _tasks.Commit();
-            _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；{FailurePolicyText}");
+            string diagnostic = $"任务 #{t.Id} 失败即终止 / Failed; automatic retry stopped; " +
+                $"阶段 / Stage={(t.Started.HasValue ? "Result" : "Send")}; 次数 / Attempts={t.Attempts}; " +
+                $"送达待核实 / Uncertain={error?.StartsWith(ManualChatProtection.UncertainPrefix, StringComparison.Ordinal) == true}";
+            AppLog.Write(AppLog.TasksFile, diagnostic);
+            _host.LogEvent("任务 / Task", diagnostic);
+            _host.SetStatus($"任务清单：#{t.Id}「{t.VsName}」失败 / Task #{t.Id} failed: {error}；已停止自动重试，可手动重新排队 / Automatic retry stopped; manual requeue available；{FailurePolicyText}");
             if (t.FromAgent)
             {
                 bool content = FailureKind.IsContent(t.FailureKind);
@@ -354,6 +377,7 @@ namespace VSManager
         public async Task FinishAsync(QueuedTask t, VsInstance v, TimeSpan? dur)
         {
             if (t == null || t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
+            if (t.HasExplicitTarget && (!t.MatchesExplicitTarget(v) || ResolveTarget(t) != v)) return;
             if (!CanRun(t))
             {
                 // 忙→闲事件可能仅触发一次；开始后继续核验，不重发。/ Keep one-shot completion events for verification after Start, never resend.
@@ -373,21 +397,25 @@ namespace VSManager
                     return;
                 }
                 if (t.Status != QueueStatus.Running || _tasks.Find(t.Id) != t) return;
-                var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
-                if (receipt == TaskReceipt.Failed)
+                if (t.HasExplicitTarget && (!t.MatchesExplicitTarget(v) || ResolveTarget(t) != v))
                 {
-                    t.Result = TextUtil.Clip(result, 1500);
-                    Fail(t, "Copilot 回报本任务未完成 / Copilot reported the task as not completed: " + TextUtil.Clip(result, 300), FailureKind.Reported);
+                    Fail(t, VsMentionSession.MissingError);
                     return;
                 }
-                if (receipt == TaskReceipt.None)
+                var receipt = TaskStateMachine.ReadReceipt(t, answer, out string result);
+                if (receipt == TaskReceipt.Failed || receipt == TaskReceipt.None)
                 {
-                    t.Result = TextUtil.Clip(answer, 1500);
+                    bool reported = receipt == TaskReceipt.Failed;
+                    t.Result = TextUtil.Clip(reported ? result : answer, 1500);
+                    if (reported)
+                        Fail(t, "Copilot 回报本任务未完成 / Copilot reported the task as not completed: " + TextUtil.Clip(result, 300), FailureKind.Reported);
                     // 空回复或 Copilot 自身的错误 / 中断提示：本轮没执行完，不算任务内容失败 / Empty reply or Copilot's own error notice: the run did not finish; not a content failure
-                    if (TaskFailureAnalyzer.LooksInterrupted(answer))
-                        Fail(t, "Copilot 本轮未执行完（网络 / 服务错误或被中断）/ Copilot's run did not finish (network / service error or interrupted): " + TextUtil.Clip(answer, 300), FailureKind.Interrupted);
+                    else if (TaskFailureAnalyzer.LooksInterrupted(answer))
+                        Fail(t, "Copilot 本轮未执行完（网络 / 服务错误或被中断）/ Copilot's run did not finish (network / service error or interrupted): " + TextUtil.Clip(StripReceipt(t, answer), 300), FailureKind.Interrupted);
                     else
-                        Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(answer, 300), FailureKind.NoReceipt);
+                        Fail(t, "未收到本次任务的成功回执 / No success receipt for this task attempt: " + TextUtil.Clip(StripReceipt(t, answer), 300), FailureKind.NoReceipt);
+                    // Copilot 已结束本轮回复，文件同样需要保存。/ Copilot finished this turn, so its edits still need saving.
+                    await TidyAsync(t, v);
                     return;
                 }
                 if (t.Worktree != null)
@@ -416,25 +444,72 @@ namespace VSManager
                 }
                 bool needsUser = receipt == TaskReceipt.NeedsUser;
                 t.Result = TextUtil.Clip(result, 1500);
-                TaskStateMachine.Complete(t, _clock(), needsUser);
+                t.FullResult = result;
+                bool unverified = receipt == TaskReceipt.Unverified;
+                if (unverified) _host.LogEvent(t.VsName, $"任务 #{t.Id} 已实现但未实际验证 / Task implemented but not verified at runtime");
+                TaskStateMachine.Complete(t, _clock(), needsUser, unverified);
+                if (needsUser || unverified) t.TestItems = TaskTestChecklist.Parse(result);
                 CommitCompletion(t);
                 if (t.FromAgent)
                 {
                     string took = TextUtil.FormatDuration(dur ?? (t.Finished.Value - (t.Started ?? t.Finished.Value)));
                     int left = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
-                    _host.NotifyAgent($"📋 任务 #{t.Id} 已完成{(needsUser ? "（待用户验证）" : "")} · {t.VsName}（{took}）/ Task completed{(needsUser ? " (awaiting verification)" : "")}",
+                    string label = unverified ? "未验证" : needsUser ? "已完成（待用户验证）" : "已完成";
+                    string labelEn = unverified ? "unverified" : needsUser ? "completed (awaiting verification)" : "completed";
+                    _host.NotifyAgent($"📋 任务 #{t.Id} {label} · {t.VsName}（{took}）/ Task {labelEn}",
                         $"[任务完成通知 / Task completed] 任务 #{t.Id} 已在「{t.VsName}」返回结果（用时 {took}）/ Task #{t.Id} returned its result in {took}. 任务 / Task: {TextUtil.Clip(t.Text, 300)}\n" +
                         "Copilot 回复 / Reply: " + t.Result + AutomaticCompletionText(t) + ManualCompletionText(t) +
-                        (needsUser && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
+                        ((needsUser || unverified) && !string.IsNullOrEmpty(t.PendingNote) ? "\n待处理 / Pending：" + t.PendingNote : "") +
+                        (unverified ? "\n结论：未验证（不是失败）。Copilot 说明功能已实现，只是尚未在运行中的程序里实际验证；请按「未验证」汇报并列出未验证项，不要判为失败，也不要说成已实测成功。/ Verdict: unverified, not failed. The work is implemented but not yet verified in the running app; report it as unverified with the pending checks, neither as a failure nor as a verified success." : "") +
                         (needsUser ? "\n改动已完成，但需要用户测试或确认：请把需要验证的内容转告用户并等待反馈，不要重发，也不要把它当作已验证的依赖。/ Changes are done but need user testing or confirmation: relay what to verify and wait for feedback; do not resend or treat it as a verified dependency." : "") +
                         (needsUser && ReleaseLevels.Blocks(_tasks.ReleaseLevel, t)
                             ? $"\n接续等级为「{ReleaseLevels.ShortName(_tasks.ReleaseLevel)}」：同一 VS 的后续任务已暂停，等待用户处理；用户确认验证通过后调用 release_task 放行；验证不通过时用 retry_task_with_info 带上问题重试。/ Continuation level \"{ReleaseLevels.ShortNameEn(_tasks.ReleaseLevel)}\": successors on the same VS are paused until the user handles this; call release_task once the user confirms, or retry_task_with_info with the problems if verification fails." : "") +
                         (string.IsNullOrEmpty(t.PredecessorNotice) ? "" : "\n" + t.PredecessorNotice) +
                         $"\n任务清单中还有 {left} 个未完成任务。请向用户简要汇报，不要重复发布清单中已有的任务。/ {left} unfinished tasks remain. Briefly report to the user; do not duplicate queued tasks.");
                 }
+                await TidyAsync(t, v);
             }
             finally { _finishing.Remove(t); _integrating.Remove(t); }
             Pump();
+        }
+
+        /// <summary>任务回复结束后整理目标 VS；异常只记录，不影响任务状态。/ Tidies the target VS after the reply ends; errors are logged only.</summary>
+        private async Task TidyAsync(QueuedTask t, VsInstance v)
+        {
+            if (!(_host is ITaskCompletionHost completion) || v == null) return;
+            try { await completion.AfterTaskCompletedAsync(t, v); }
+            catch (Exception ex) { _host.LogEvent(t.VsName, "任务后整理失败 / Post-task tidy failed: " + ex.Message); }
+        }
+
+        private static string StripReceipt(QueuedTask t, string answer)
+        {
+            string text = (answer ?? "").Trim();
+            if (!string.IsNullOrEmpty(t.CompletionToken))
+                text = text.Replace(TaskStateMachine.FailureReceipt(t), "").Replace(TaskStateMachine.SuccessReceipt(t), "").Trim();
+            return text;
+        }
+
+        /// <summary>用户确认待测试任务已实际验证：转为已完成，并继续发布被它暂停的后续任务。/ The user confirms a task awaiting tests was verified: it becomes done and paused successors continue.</summary>
+        public bool MarkVerified(QueuedTask t)
+        {
+            if (t == null || _tasks.Find(t.Id) != t || !TaskStateMachine.MarkVerified(t)) return false;
+            _host.LogEvent(t.VsName, $"任务 #{t.Id} 已由用户确认验证 / Task verified by the user");
+            _tasks.Commit();
+            Pump();
+            return true;
+        }
+
+        /// <summary>
+        /// 勾选 / 取消勾选测试项；全部勾选后任务自动标记为已完成。任务不在待测试状态时返回 false。
+        /// Checks / unchecks a test item; the task is marked done once every item is checked. Returns false when the task no longer awaits tests.
+        /// </summary>
+        public bool SetTestItem(QueuedTask t, int index, bool done)
+        {
+            if (t == null || _tasks.Find(t.Id) != t || !TaskTestChecklist.Pending(t)) return false;
+            if (!TaskStateMachine.SetTestItem(t, index, done, out bool allChecked)) return false;
+            if (allChecked && MarkVerified(t)) return true;
+            _tasks.Commit();
+            return true;
         }
 
         /// <summary>取消排队中或执行中的任务。/ Cancels a waiting or running task.</summary>
@@ -451,13 +526,13 @@ namespace VSManager
         /// <summary>重新排队并立即尝试发布。/ Requeues a task and tries to publish it right away.</summary>
         public void Retry(QueuedTask t)
         {
-            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)
-                || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled))
+                || (t.Status != QueueStatus.Failed && t.Status != QueueStatus.Cancelled && t.Status != QueueStatus.Unverified))
             {
                 _host.SetStatus("任务已被替换、正在处理或不可重试，请刷新任务清单");
                 return;
             }
+            PrepareManualRecheck(t);
             TaskStateMachine.Requeue(t);
             _tasks.Commit();
             Pump();
@@ -488,10 +563,11 @@ namespace VSManager
             return true;
         }
 
-        /// <summary>立即发布（跳过重试等待）；不能立即发布时说明原因。/ Publishes now (skips the retry delay); explains why when it cannot.</summary>
+        /// <summary>用户只授权当前任务重新检查；仍保护草稿、忙状态和前序任务。/ User authorizes only this task for rechecking; drafts, busy targets and predecessors remain protected.</summary>
         public void DispatchNow(QueuedTask t)
         {
-            if (!CanRun(t)) { _host.SetStatus(WaitingForStart); return; }
+            if (t == null || _tasks.Find(t.Id) != t || (t.Status != QueueStatus.Waiting && t.Status != QueueStatus.WaitingVs)) return;
+            PrepareManualRecheck(t);
             t.NextTry = DateTime.MinValue;
             if (t.Status == QueueStatus.WaitingVs)
             {
@@ -500,13 +576,26 @@ namespace VSManager
                 Pump();
                 return;
             }
-            var target = _host.FindVs(t.VsKey);
+            var target = ResolveTarget(t);
+            if (target == null && t.HasExplicitTarget) { Fail(t, VsMentionSession.MissingError); return; }
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
             else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
             else if (DispatchBlocker(t) is QueuedTask blocker)
                 _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id}（{TaskStateMachine.StatusText(blocker, _clock())}）/ Task #{t.Id} is blocked by predecessor #{blocker.Id}");
             Pump();
+        }
+
+        private void PrepareManualRecheck(QueuedTask task)
+        {
+            if (!CanRun(task)) _manual.Add(task);
+            ClearManualWait(task);
+            _yielded.Remove(task);
+            var target = task.Status == QueueStatus.WaitingVs ? _host.FindTargetVs(task) : ResolveTarget(task, true);
+            (_host as IManualChatRefreshHost)?.RefreshManualChat(target);
+            AppLog.Write(AppLog.TasksFile, $"任务 #{task.Id} 手动重新检查，未发送；仍保护草稿及前序 / Manual recheck requested; not sent; drafts and predecessors protected");
+            _host.SetStatus($"任务 #{task.Id} 重新检查并推送：请先核实历史送达并处理目标草稿，不会强制覆盖 / Recheck and send: verify prior delivery and resolve target drafts; never force overwrite");
+            _host.QueueActivityChanged(HasDispatchActivity);
         }
     }
 }

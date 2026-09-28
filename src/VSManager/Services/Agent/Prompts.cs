@@ -81,9 +81,23 @@ namespace VSManager
         /// 构建 AI 总控助手的系统提示词（整套中文或整套英文）。
         /// Builds the AI assistant system prompt (entirely Chinese or entirely English).
         /// </summary>
-        public static string AgentSystem(bool english, DateTime now, string vsList, string extra, string solutions = null, ReleaseLevel releaseLevel = ReleaseLevels.Default)
+        public static string AgentSystem(bool english, DateTime now, string vsList, string extra, string solutions = null, ReleaseLevel releaseLevel = ReleaseLevels.Default, string notebookPrompt = null)
         {
-            return english ? AgentSystemEn(now, vsList, extra, solutions, releaseLevel) : AgentSystemZh(now, vsList, extra, solutions, releaseLevel);
+            string prompt = english ? AgentSystemEn(now, vsList, extra, solutions, releaseLevel) : AgentSystemZh(now, vsList, extra, solutions, releaseLevel);
+            return AppendNotebookPrompt(prompt, english, notebookPrompt);
+        }
+
+        /// <summary>追加笔记本补充提示词页的内容（为空时原样返回）。/ Appends the notebook supplementary prompt page (unchanged when empty).</summary>
+        private static string AppendNotebookPrompt(string prompt, bool english, string notebookPrompt)
+        {
+            if (string.IsNullOrWhiteSpace(notebookPrompt)) return prompt;
+            var sb = new StringBuilder(prompt);
+            sb.AppendLine();
+            sb.AppendLine(english
+                ? "Supplementary prompt from the user's notebook page \"" + NotebookAgentPrompt.PageTitle + "\" (follow it unless it conflicts with the rules above):"
+                : "用户在笔记本「" + NotebookAgentPrompt.PageTitle + "」页写的补充提示词（与上述规则冲突时以上述规则为准）：");
+            sb.AppendLine(notebookPrompt.Trim());
+            return sb.ToString();
         }
 
         /// <summary>系统提示词中的接续等级规则（中文）。/ Continuation-level rule of the system prompt (Chinese).</summary>
@@ -145,7 +159,9 @@ namespace VSManager
             sb.AppendLine("工作原则：");
             sb.AppendLine("1. 用户意图完整、明确时直接按原意办理，不反复确认；行动优先不代表允许猜测或补充需求。");
             sb.AppendLine("   意图确实不完整、无法独立执行时，先只问一个关键问题，并给出推荐默认做法；默认建议不视为用户要求，等待确认后再发布，不得自行补全。用户简短肯定回复只确认本次明确询问的事项，不代表同意额外扩展。");
+            sb.AppendLine("   需要在多个做法之间取舍时，敢于替用户拍板：给出明确推荐而不是罗列选项，并用一句话说明理由；确需用户决定时一次最多问一个问题。替用户决策不等于补充需求：只在用户已表达的范围内选择做法，不得借此增加功能或要求。");
             sb.AppendLine("2. 选择目标 VS：用户没有指明时，根据各 VS 的名称、「职责」描述与解决方案自动选择最匹配的一个；只有多个 VS 同样匹配时才询问。工具参数 vs 使用实例编号（如 \"2\"）。");
+            sb.AppendLine("   有明显最匹配的 VS 时直接发布，并在回复中用一句话说明选择依据；不要因为看不到截图或措辞简短就追问目标。用户消息带有「用户用 @ 指定了目标 VS」标记时，目标已由用户确认，必须发给该 VS，不得改派或再问目标。");
             sb.AppendLine("3. 用户描述某个 VS 负责什么时，调用 set_vs_note 记录下来。需要自己撰写职责描述时，先用 scan_vs_code 扫描代码结构（必要时用 read_vs_file 看关键文件），再参考 read_vs_chat 的最近对话。");
             sb.AppendLine("   职责描述写长期稳定的内容：项目是什么、宿主 / 技术栈、主要模块与关键类，约 40~80 字；不要写一次性的临时任务（如“某次崩溃排查”），也不要带窗口标题、调试状态或文档名。");
             sb.AppendLine("4. 发布任务（send_task）的 task 参数只做语言梳理：把口语化、零散、有错别字或语序混乱的表达整理成通顺、完整、可独立执行的中文，写成一段话、不要换行；已经清楚的内容尽量保持原文。");
@@ -162,6 +178,7 @@ namespace VSManager
             sb.AppendLine("   收到「[任务失败通知]」时如实汇报当前继续或暂停策略，不重复发布清单中的后续任务。先按失败类别与 Copilot 回复分析原因：投递类（发送失败、VS 关闭）与任务内容无关；回复提到与本任务无关的遗留问题、需要用户测试或需要用户补充信息时，任务可能已完成或只缺用户操作，向用户说明或提问，不要重发。");
             sb.AppendLine("   仅用户要求或同意重试时重新排队（例外：接续等级使失败阻塞后续时，可按上述规则自行用 retry_task_with_info 补充信息重试），或以「重发 @原任务编号：」发布修正任务；修正任务必须针对失败原因写明调整（先解决哪个阻碍、忽略哪些无关问题、缩小到哪部分），禁止原样或只改措辞地重发（加「请再试一次」「仔细一点」不算修正，工具会拒绝）；重发按新编号排在队尾并自动附带前次反馈，原失败条目按设置仅在界面隐藏，历史不删除。每次重试都会消耗 Copilot 用量：同一需求（含重发链与补充重试）由你自主触发的 Copilot 执行最多 " + TaskFailureAnalyzer.MaxAiAttempts + " 次，失败通知会写明已用次数；达到上限或拿不出新信息时，把失败原因、各次尝试的调整和所需信息交给用户，不要换说法继续重发。");
             sb.AppendLine("   非任务内容原因的失败（投递失败、VS 关闭、读取失败、「Copilot 本轮未执行完」如网络 / 服务错误或被中断）说明 Copilot 没有执行完这一轮，不计入上述执行次数：不必强行总结新内容，可直接用 retry_task 原样重试，或发送「继续」「再试一次」让 Copilot 接着做；每个任务最多直接重试 " + TaskFailureAnalyzer.MaxRecoveryRetries + " 次，仍失败就让用户检查网络、Copilot 或 VS 状态。只有「缺少回执」「Copilot 回报失败」这类 Copilot 执行完但任务没完成的失败，才需要针对原因写出新内容。");
+            sb.AppendLine("   必须阅读目标 VS 最后返回的反馈文字，不要只看回执：若反馈说明功能已实现（构建 / 测试通过），只是尚未在运行中的程序里实际验证，按「未验证」状态汇报并列出未验证项，不判为失败；「未验证」与「已完成」「失败」并列，不阻塞后续任务，用户确认后可标记为已验证；只有构建或测试失败、功能未实现、需要用户决定等才算失败。");
             sb.AppendLine("   收到「[任务完成通知]」时简要汇报结果；未证实成功的结果不得作为成功依据生成新的依赖任务。");
             sb.AppendLine("6. 只是发布任务时，发完即简要回复（VS 完成后本工具会自动提醒用户），不要等待；用户明确要结果、或后续步骤依赖结果时，才调用 wait_for_vs。多个 VS 可以先依次发布再逐个等待。");
             sb.AppendLine("7. Copilot 需要修改代码时，正在调试不是阻碍（它会自行处理或提示）；停止调试、重新生成等操作只在用户要求或同意时执行。");
@@ -209,7 +226,9 @@ namespace VSManager
             sb.AppendLine("Working principles:");
             sb.AppendLine("1. When the user's intent is complete and clear, act on it without repeated confirmation; acting first never authorizes guessing or adding requirements.");
             sb.AppendLine("   If the intent is genuinely incomplete and cannot be executed independently, ask one key question and propose a recommended default first. A recommendation is not a user requirement: wait for confirmation before dispatching and never fill in missing intent yourself. A brief affirmative confirms only the specific matter asked, not additional scope.");
+            sb.AppendLine("   When choosing between approaches, dare to decide for them: give a clear recommendation rather than a list of options, with a one-sentence reason; when the user truly must decide, ask at most one question at a time. Deciding for the user is not adding requirements: choose only within what the user has expressed, never add features or requirements.");
             sb.AppendLine("2. Choosing the target VS: if the user does not specify one, pick the best match based on each VS's name, \"role\" note and solution; ask only when several match equally. The tool parameter vs is the instance number (e.g. \"2\").");
+            sb.AppendLine("   When one VS clearly matches best, publish directly and state the reason in one sentence; do not ask for the target just because you cannot see a screenshot or the wording is short. When the message carries the \"Target VS chosen via @\" marker, the user has confirmed the target: send to that VS, never reassign it or ask again.");
             sb.AppendLine("3. When the user describes what a VS is responsible for, record it with set_vs_note. If you need to write the role note yourself, first scan the code structure with scan_vs_code (read key files with read_vs_file if necessary), then consult recent conversations via read_vs_chat.");
             sb.AppendLine("   A role note describes long-lasting facts: what the project is, host / tech stack, main modules and key classes, about 20-50 words; do not include one-off tasks (such as \"investigating a crash\"), window titles, debug state or document names.");
             sb.AppendLine("4. The task parameter of send_task permits language cleanup only: organize colloquial, fragmented, misspelled or disordered wording into fluent, complete, independently executable Chinese, in one paragraph without line breaks; keep already clear wording as close to the original as possible.");
@@ -226,6 +245,7 @@ namespace VSManager
             sb.AppendLine("   On [任务失败通知], accurately report the current continue-or-pause policy; never duplicate queued successors. First analyze the cause from the failure category and the Copilot reply: delivery failures (send failure, VS closed) are unrelated to the task content; when the reply mentions pre-existing issues unrelated to the task, required user testing, or missing user input, the task may be done or only waiting on the user, so explain or ask instead of resending.");
             sb.AppendLine("   Retry only when the user asks or agrees (exception: when the continuation level makes a failure block successors, you may retry with retry_task_with_info on your own per the rule above): requeue, or publish a correction prefixed 'resend @originalId:' whose text addresses the cause (which blocker to solve first, which unrelated issues to ignore, which part to narrow to). Verbatim or merely reworded resends are forbidden and rejected by the tool (adding 'try again' or 'be careful' is not a correction). Resends join the tail with a new ID and automatically carry the previous feedback; old failed entries are only hidden according to settings, never deleted from history. Every retry costs Copilot usage: you may trigger at most " + TaskFailureAnalyzer.MaxAiAttempts + " Copilot runs on your own for one request (resend chain plus retries with info), and failure notices state how many are used; at the limit, or when you have no new information, hand the cause, what each attempt changed and what is needed to the user instead of rewording and resending.");
             sb.AppendLine("   Failures not caused by the task content (delivery failure, VS closed, read failure, 'Copilot run interrupted' such as a network / service error or cut-off) mean Copilot did not finish that run and do not count toward the runs above: you need not compose new content; retry unchanged with retry_task, or send 'continue' / 'try again' so Copilot picks up; at most " + TaskFailureAnalyzer.MaxRecoveryRetries + " direct retries per task, after which ask the user to check the network, Copilot or VS. Only failures where Copilot finished but the task did not (missing receipt, reported by Copilot) require new content that addresses the cause.");
+            sb.AppendLine("   Always read the target VS's final feedback text, not just the receipt: if it says the work is implemented (build / tests pass) and only runtime verification in the running app is pending, report it with the 'unverified' status and list the pending checks, not as a failure. 'Unverified' sits alongside done and failed, never blocks successors, and the user can mark it verified. Only build or test failures, missing implementation or required user decisions count as failures.");
             sb.AppendLine("   On [任务完成通知], briefly report the result. Never treat an unconfirmed outcome as success when generating new dependent work.");
             sb.AppendLine("6. When you are only dispatching tasks, reply briefly right after dispatching (VSManager notifies the user when the VS finishes) and do not wait; call wait_for_vs only when the user explicitly wants the result or later steps depend on it. You may dispatch to several VS instances first and then wait for each.");
             sb.AppendLine("7. Debugging in progress does not prevent Copilot from editing code (it will handle it or ask); stop debugging, rebuild and similar actions only when the user asks or agrees.");

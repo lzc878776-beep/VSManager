@@ -37,7 +37,8 @@ namespace VSManager
         /// Normalizes text for comparison: NFKC (full-width → half-width, compatibility characters unified), then drops all
         /// whitespace (line breaks, ideographic and no-break spaces) and zero-width / control characters.
         /// </summary>
-        public static string Normalize(string s)
+        /// <param name="preserveControls">草稿保护时保留非空白控制字符；比对默认忽略。/ Preserve non-whitespace controls for draft protection; comparisons ignore them by default.</param>
+        public static string Normalize(string s, bool preserveControls = false)
         {
             if (string.IsNullOrEmpty(s)) return "";
             string n;
@@ -49,7 +50,7 @@ namespace VSManager
             {
                 if (char.IsWhiteSpace(c)) continue;
                 var cat = char.GetUnicodeCategory(c);
-                if (cat == UnicodeCategory.Format || cat == UnicodeCategory.Control) continue;
+                if (cat == UnicodeCategory.Format || (!preserveControls && cat == UnicodeCategory.Control)) continue;
                 sb.Append(c);
             }
             return sb.ToString();

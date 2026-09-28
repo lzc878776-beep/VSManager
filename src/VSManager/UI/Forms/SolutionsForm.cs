@@ -79,7 +79,7 @@ namespace VSManager
                 grid.Controls.Add(lbl, 0, row);
                 grid.Controls.Add(host, 1, row);
                 if (extra != null) grid.Controls.Add(extra, 2, row); else grid.SetColumnSpan(host, 2);
-                if (tip != null) new ToolTip().SetToolTip(box, tip);
+                if (tip != null) new ThemedToolTip().SetToolTip(box, tip);
                 row++;
                 return box;
             }

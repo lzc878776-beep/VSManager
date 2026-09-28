@@ -13,13 +13,19 @@ namespace VSManager
     /// Attachment features of the main window: enqueueing AI tasks with attachments, sending them (images pasted, text inlined,
     /// other files as paths), viewing attachments and expiry cleanup.
     /// </summary>
-    public partial class MainForm : IAgentAttachmentHost, ITaskAttachmentDispatchHost
+    public partial class MainForm : IAgentAttachmentHost, IAgentTitledTaskHost, ITaskAttachmentDispatchHost
     {
         private System.Threading.Timer _attachmentCleanupTimer;
         private int _attachmentCleanupRunning;
 
         Task<string> IAgentAttachmentHost.QueueTask(VsInstance v, string text, AttachmentRef[] attachments) =>
             OnUi(() => EnqueueTextTask(v, text, "AI", attachments));
+
+        Task<string> IAgentTitledTaskHost.QueueTask(VsInstance v, string text, AttachmentRef[] attachments, string title) =>
+            OnUi(() => EnqueueTextTask(v, text, "AI", attachments, title));
+
+        Task<string> IAgentTitledTaskHost.ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments, string title) =>
+            OnUi(() => ParkTaskCore(e, text, attachments, title));
 
         Task<string> IAgentAttachmentHost.ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments) =>
             OnUi(() =>
@@ -136,6 +142,7 @@ namespace VSManager
         /// </summary>
         internal static bool IsPreSubmitImageFailure(string r) =>
             r != null && r.IndexOf("草稿", StringComparison.Ordinal) < 0 && !SendRetryPolicy.IsBlocked(r)
+            && !r.StartsWith(ManualChatProtection.UncertainPrefix, StringComparison.Ordinal)
             && (r.EndsWith("未发送图片", StringComparison.Ordinal) || r.EndsWith("已取消图片发送", StringComparison.Ordinal)
                 || r.StartsWith("无法备份剪贴板，未发送图片", StringComparison.Ordinal) || r == "图片附件无效");
 

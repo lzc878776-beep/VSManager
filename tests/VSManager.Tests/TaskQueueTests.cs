@@ -158,6 +158,8 @@ namespace VSManager.Tests
             q.Commit(); // 无变化不写 / no change, no event
             TaskStateMachine.BeginSend(a, "A"); q.Commit();
             TaskStateMachine.ApplySendResult(a, "失败", _clock.Now); q.Commit();
+            Assert.AreEqual(QueueStatus.Failed, a.Status);
+            TaskStateMachine.Requeue(a); q.Commit();
             TaskStateMachine.BeginSend(a, "A"); q.Commit();
             TaskStateMachine.ApplySendResult(a, "已发送", _clock.Now); q.Commit();
             a.Result = "r"; q.Commit();
@@ -165,7 +167,7 @@ namespace VSManager.Tests
             q.Remove(a.Id);
             CollectionAssert.AreEqual(new[]
             {
-                "#1:created", "#1:sending", "#1:retry", "#1:sending", "#1:running", "#1:update", "#1:done", "#1:removed"
+                "#1:created", "#1:sending", "#1:failed", "#1:retry", "#1:sending", "#1:running", "#1:update", "#1:done", "#1:removed"
             }, _archive.Events.ToArray());
         }
 
