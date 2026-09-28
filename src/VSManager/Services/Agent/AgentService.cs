@@ -549,6 +549,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
             var toolNames = new List<string>();
+            // 本轮工具返回（工具名, 文字），用于核对「已入队」说法 / This round's tool results (name, text), used to check enqueue claims
+            var callNames = new Dictionary<string, string>();
+            var toolResults = new List<KeyValuePair<string, string>>();
             ClaimCheckResult claim = null;
             // 自动更正的一轮不再触发更正，避免循环 / A correction round never triggers another correction (no loops)
             bool correctionRound = text.StartsWith(ToolClaimCheck.Marker, StringComparison.Ordinal);
@@ -589,12 +592,16 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                             string step = DescribeCall(fc);
                             if (!string.IsNullOrEmpty(fc.CallId)) calls[fc.CallId] = step;
                             if (!string.IsNullOrEmpty(fc.Name)) toolNames.Add(fc.Name);
+                            if (!string.IsNullOrEmpty(fc.CallId) && !string.IsNullOrEmpty(fc.Name)) callNames[fc.CallId] = fc.Name;
                             AddStep(reply, "⚙ " + step);
                             Activity = step + "…";
                         }
                         else if (c is FunctionResultContent fr)
                         {
-                            string result = OneLine(fr.Exception?.Message ?? fr.Result?.ToString(), 160);
+                            string full = fr.Exception?.Message ?? fr.Result?.ToString() ?? "";
+                            if (!string.IsNullOrEmpty(fr.CallId) && callNames.TryGetValue(fr.CallId, out var calledName))
+                                toolResults.Add(new KeyValuePair<string, string>(calledName, full));
+                            string result = OneLine(full, 160);
                             AddStep(reply, "↳ " + (result.Length == 0 ? "完成" : result));
                             Activity = "思考中…";
                         }
@@ -641,7 +648,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     AddStep(reply, "⚠ " + error);
                 }
                 StripLeakedToolMarkup(reply);
-                if (error == null) claim = CheckToolClaims(reply, toolNames, userRound);
+                if (error == null) claim = CheckToolClaims(reply, toolNames, toolResults, userRound, text);
                 if (claim != null && claim.Verdict == ClaimVerdict.Fabricated) RetractFromHistory(historyStart);
                 if (reply.Parts.Count == 0) AddText(reply, "（没有返回内容）");
                 try
@@ -666,8 +673,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (claim != null && claim.Verdict == ClaimVerdict.Fabricated && !correctionRound)
             {
                 int next = NextTaskIdSource?.Invoke() ?? 0;
-                Notify("⚠ 自动核查：" + string.Join("、", claim.MissingIds.Select(i => "@" + i)) + " 不在任务清单中，已要求助手更正 / Auto check: claimed tasks are not in the task list; asked the assistant to correct",
-                    ToolClaimCheck.Correction(claim, next));
+                Notify(ToolClaimCheck.Notice(claim), ToolClaimCheck.Correction(claim, next));
             }
             if (internalError != null)
                 RaiseFault(AgentFaultKind.Exception, internalError.GetType().Name + "：" + OneLine(internalError.Message, 160));
@@ -738,8 +744,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         }
 
         /// <summary>核查本轮回复的入队 / 核实说法，未通过时在回复下方加一条核查步骤。/ Checks this round's queued / verified claims and adds a check step when they fail.</summary>
-        /// <remarks>「未证实」提醒只用于用户发起的一轮：通知轮常转述已有结果，提醒只会成为噪音。/ "Unconfirmed" warnings apply to user rounds only: notice rounds often recap earlier results.</remarks>
-        private ClaimCheckResult CheckToolClaims(ChatMessage reply, IList<string> toolNames, bool userRound)
+        /// <remarks>
+        /// 虚报在用户轮与通知轮都核查并要求更正；「未证实」提醒只用于用户轮（通知轮常转述已有结果，提醒只会成为噪音）。
+        /// False claims are checked and corrected in user and notice rounds alike; "unconfirmed" warnings apply to user rounds only (notice rounds often recap results).
+        /// </remarks>
+        private ClaimCheckResult CheckToolClaims(ChatMessage reply, IList<string> toolNames, IList<KeyValuePair<string, string>> toolResults, bool userRound, string roundInput)
         {
             if (Profile == AgentProfile.Notes) return null;
             int next = 0;
@@ -747,11 +756,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             string text = string.Join("\n", reply.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text));
             ICollection<int> ids = null;
             try { ids = TaskIdsSource?.Invoke(); } catch { }
-            var r = ToolClaimCheck.Check(text, toolNames, next, ids);
+            var r = ToolClaimCheck.Check(text, toolNames, next, ids, toolResults, userRound, roundInput);
             if (r.Verdict == ClaimVerdict.Ok || (r.Verdict == ClaimVerdict.Unconfirmed && !userRound)) return r;
             AddStep(reply, r.Step);
             if (r.Verdict == ClaimVerdict.Fabricated)
-                AppLog.Write(LogFile, "回复声称的任务不存在 / Reply claimed tasks that do not exist：" + string.Join(",", r.MissingIds) + "；tools=" + string.Join(",", toolNames));
+                AppLog.Write(LogFile, "回复声称的入队结果不属实 / Reply made a false enqueue claim：" + r.Reason + "；ids=" + string.Join(",", r.MissingIds) + "；tools=" + string.Join(",", toolNames));
             return r;
         }
 

@@ -69,11 +69,152 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void EnqueueClaim_WithoutToolOrIds_IsUnconfirmed()
+        public void EnqueueClaim_WithoutToolOrIds_IsFabricated()
         {
+            // 用户轮里没有调用入队工具却声称刚发布：直接要求更正 / A fresh claim without an enqueue tool in a user round: demand a correction
             var r = Check("已发布到 #1 文档工具，排队中。", 50);
-            Assert.AreEqual(ClaimVerdict.Unconfirmed, r.Verdict);
-            StringAssert.Contains(r.Step, "send_task");
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            Assert.AreEqual(ClaimReason.NoEnqueueTool, r.Reason);
+            StringAssert.Contains(ToolClaimCheck.Correction(r, 50), "send_task");
+        }
+
+        [TestMethod]
+        public void WiderEnqueuePhrasings_WithoutTool_AreFabricated()
+        {
+            string[] claims =
+            {
+                "好的，已经把这个任务加入任务清单了。",
+                "已排队，等 VS 空闲后自动发送。",
+                "任务已创建，稍后会自动推送。",
+                "已发送给「Sap2000」的 Copilot。",
+                "已同时推送到两个 VS 的 Copilot",
+                "已经入队。",
+                "已加入队列",
+                "已重新排队。",
+                "The task has been queued.",
+                "I sent it to Copilot on Sap2000.",
+                "Added it to the task list.",
+            };
+            foreach (var c in claims)
+            {
+                var r = Check(c, 50);
+                Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict, c);
+                Assert.AreEqual(ClaimReason.NoEnqueueTool, r.Reason, c);
+            }
+        }
+
+        [TestMethod]
+        public void NonClaims_AreNotFlagged()
+        {
+            string[] texts =
+            {
+                "改动已推送到 origin/master。",
+                "代码已提交到仓库并推送。",
+                "需要的话，我可以把它加入任务清单。",
+                "**@49 已完成**，Copilot 已提交推送。",
+                "Pushed to origin/master.",
+                "要我发布这个任务吗？",
+            };
+            foreach (var t in texts) Assert.AreEqual(ClaimVerdict.Ok, Check(t, 50).Verdict, t);
+        }
+
+        [TestMethod]
+        public void CopiedToolBoilerplate_DoesNotExemptTheClaim()
+        {
+            // 照抄 send_task 返回的格式：其中「未推送」「失败后通知」不是承认失败 / Copied send_task text: "not pushed" / "notify on failure" are not admissions
+            string copied = "⏳ 已加入任务清单 @50，尚未推送到 Copilot；原因 / Queued, not yet pushed: 等待前序任务；送达或失败后会另行通知 / you will be notified on delivery or failure";
+            var r = Check(copied, 50);
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            CollectionAssert.AreEqual(new[] { 50 }, r.MissingIds.ToArray());
+            var r2 = ToolClaimCheck.Check(copied.Replace("@50", "@49"), new string[0], 50, new HashSet<int> { 49 });
+            Assert.AreEqual(ClaimVerdict.Fabricated, r2.Verdict);
+            Assert.AreEqual(ClaimReason.NoEnqueueTool, r2.Reason);
+        }
+
+        [TestMethod]
+        public void SuccessClaim_AfterToolRefusal_IsFabricated()
+        {
+            var refused = new List<KeyValuePair<string, string>>
+            {
+                new KeyValuePair<string, string>("send_task", "❌ 未推送 / Not pushed: 「Cadmium」同时在多个 VS 中打开，请指定实例"),
+            };
+            var r = ToolClaimCheck.Check("已加入任务清单，排队中，完成后通知你。", new[] { "send_task" }, 50, null, refused);
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            Assert.AreEqual(ClaimReason.EnqueueRejected, r.Reason);
+            StringAssert.Contains(r.Step, "未推送");
+            StringAssert.Contains(ToolClaimCheck.Correction(r, 50), "❌");
+
+            var denied = new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>("send_task", "用户拒绝了该操作。") };
+            Assert.AreEqual(ClaimReason.EnqueueRejected, ToolClaimCheck.Check("已推送给 Copilot。", new[] { "send_task" }, 50, null, denied).Reason);
+
+            // 如实转述拒绝原因不算虚报 / Honestly relaying the refusal is fine
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("任务未推送：同一解决方案在多个 VS 中打开，请指定实例。", new[] { "send_task" }, 50, null, refused).Verdict);
+
+            var ok = new List<KeyValuePair<string, string>>
+            {
+                refused[0],
+                new KeyValuePair<string, string>("send_task", "已加入任务清单：@50「Sap2000」（排队中，前面 0 个）；按编号调度"),
+            };
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("已加入任务清单 @50，排队中。", new[] { "send_task", "send_task" }, 51, null, ok).Verdict);
+        }
+
+        [TestMethod]
+        public void EnqueueSucceeded_RecognizesResults()
+        {
+            Assert.IsTrue(ToolClaimCheck.EnqueueSucceeded("⏳ 已加入任务清单 @5，尚未推送到 Copilot"));
+            Assert.IsTrue(ToolClaimCheck.EnqueueSucceeded("✅ 推送成功：任务 @5 已送达「A」的 Copilot"));
+            Assert.IsTrue(ToolClaimCheck.EnqueueSucceeded("已原样重新排队任务 #5（直接重试第 1/2 次）"));
+            Assert.IsTrue(ToolClaimCheck.EnqueueSucceeded("已为任务 #5 插入补充信息并在原条目重新排队"));
+            Assert.IsFalse(ToolClaimCheck.EnqueueSucceeded("❌ 未推送：未能确认任务已加入任务清单"));
+            Assert.IsFalse(ToolClaimCheck.EnqueueSucceeded("任务 #5 暂时不能重新排队（任务清单未开始或正在处理）"));
+            Assert.IsFalse(ToolClaimCheck.EnqueueSucceeded("任务内容为空"));
+            Assert.IsFalse(ToolClaimCheck.EnqueueSucceeded(null));
+        }
+
+        [TestMethod]
+        public void NoticeRounds_AreCheckedToo()
+        {
+            var queue = new HashSet<int> { 12 };
+            // 通知轮转述已有编号：仅提醒 / Notice round recapping an existing ID: warn only
+            var recap = ToolClaimCheck.Check("@12 已加入任务清单，排队中。", new string[0], 13, queue, null, userRound: false);
+            Assert.AreEqual(ClaimVerdict.Unconfirmed, recap.Verdict);
+            Assert.AreEqual(ClaimReason.RecapUnconfirmed, recap.Reason);
+            // 通知轮里不带编号声称刚推送：更正 / Notice round claiming a fresh push without any ID: correct it
+            var fresh = ToolClaimCheck.Check("已把修复任务推送给 Sap2000 的 Copilot。", new string[0], 13, queue, null, userRound: false);
+            Assert.AreEqual(ClaimVerdict.Fabricated, fresh.Verdict);
+            Assert.AreEqual(ClaimReason.NoEnqueueTool, fresh.Reason);
+            // 通知轮里的虚构编号照样更正 / Invented IDs in notice rounds are corrected as before
+            Assert.AreEqual(ClaimReason.MissingIds, ToolClaimCheck.Check("已加入任务清单 @13", new string[0], 13, queue, null, userRound: false).Reason);
+            // 用户轮：带现有编号的「刚入队」也要更正；明确是回顾的只提醒 / User round: a fresh claim with an existing ID is corrected; explicit recaps only warn
+            Assert.AreEqual(ClaimVerdict.Fabricated, ToolClaimCheck.Check("@12 已加入任务清单，排队中。", new string[0], 13, queue).Verdict);
+            Assert.AreEqual(ClaimVerdict.Unconfirmed, ToolClaimCheck.Check("之前已入队的 @12 还在排队中。", new string[0], 13, queue).Verdict);
+        }
+
+        [TestMethod]
+        public void QuotedUiText_ChecklistsAndInputRecaps_AreNotFreshClaims()
+        {
+            // 完成汇报引用界面文字与测试清单 / Completion reports citing UI text and checklists
+            string report = "修复后只有确认送达时才显示「✅ 推送成功」。\n- [ ] 目标 VS 忙碌时发布任务：显示「⏳ 已加入任务清单，尚未推送」";
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check(report, new string[0], 50, null, null, userRound: false).Verdict);
+            // 转述本轮通知里的原文 / Recapping wording from this round's notice
+            string notice = "任务 #48 已完成。Copilot 回复：- **✅ 推送成功**：只有确认已送达时才提示";
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("- **✅ 推送成功**：只有确认已送达时才提示", new string[0], 50, null, null, false, notice).Verdict);
+        }
+
+        [TestMethod]
+        public void StatusOfExistingTasks_AfterListTasks_IsOk()
+        {
+            var queue = new HashSet<int> { 60, 61 };
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("我核实了清单，**@61 已经入队**，当前状态是「发送中」", new[] { "list_tasks" }, 62, queue).Verdict);
+            // 没有编号的「已推送」即使查过清单也要更正 / An ID-less "pushed" claim is still corrected after list_tasks
+            Assert.AreEqual(ClaimVerdict.Fabricated, ToolClaimCheck.Check("已推送给 Sap2000 的 Copilot。", new[] { "list_tasks" }, 62, queue).Verdict);
+        }
+
+        [TestMethod]
+        public void Notice_DescribesEachReason()
+        {
+            StringAssert.Contains(ToolClaimCheck.Notice(Check("已排队。", 50)), "没有调用入队工具");
+            StringAssert.Contains(ToolClaimCheck.Notice(Check("已确认入队 @50", 50)), "@50");
         }
 
         [TestMethod]
