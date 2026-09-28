@@ -53,6 +53,8 @@ namespace VSManager
 
         [DataMember] public bool TopMost;
         [DataMember] public int SidebarWidth;
+        /// <summary>测试清单宽度（拖动分隔条后保存，0 为默认）。/ Test checklist width (saved after dragging the splitter; 0 = default).</summary>
+        [DataMember] public int TestChecklistWidth;
         [DataMember] public List<AliasEntry> Aliases;
         /// <summary>各 VS 的职责描述（AI 总控助手据此自动分派任务），Alias 字段存描述文本。</summary>
         [DataMember] public List<AliasEntry> VsNotes;

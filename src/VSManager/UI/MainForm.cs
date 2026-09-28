@@ -373,23 +373,27 @@ namespace VSManager
 			_taskPanel.SetCollapsed(_settings.TaskPanelCollapsed);
 			_taskPanel.CollapsedChanged += c => { _settings.TaskPanelCollapsed = c; _settings.Save(); _testPanel.SetSuppressed(c); };
 			_taskPanel.ActionRequested += OnTaskAction;
-			// 测试清单：逐项勾选，全部勾选后任务转为已完成 / Test checklist: check items off; the task completes once all are checked
+			// 测试清单：每个任务一个测试条目，勾选后任务转为已完成 / Test checklist: one test entry per task; checking it completes the task
 			_testPanel.Bind(_tasks, () => _settings.TaskListClearedAt);
 			_testPanel.SetSuppressed(_settings.TaskPanelCollapsed);
-			_testPanel.ItemToggled += (t, index, done) =>
+			_testPanel.TaskChecked += t =>
 			{
-				bool wasPending = TaskTestChecklist.Pending(t);
-				if (!_dispatcher.SetTestItem(t, index, done)) { SetStatus("该任务已不在待验证状态 / The task no longer awaits verification"); return; }
-				if (wasPending && !TaskTestChecklist.Pending(t))
-					SetStatus($"任务 #{t.Id} 测试项已全部勾选，已标记为完成 / All test items of task #{t.Id} checked; marked done");
+				if (!_dispatcher.MarkVerified(t)) { SetStatus("该任务已不在待验证状态 / The task no longer awaits verification"); return; }
+				SetStatus($"任务 #{t.Id} 测试已勾选，已标记为完成 / Task #{t.Id} tests checked; marked done");
 				_taskPanel.RefreshItems();
 			};
 			_testPanel.ActionRequested += OnTaskAction;
+			// 主对话栏与测试清单之间的分隔条：拖动调整测试清单宽度并保存 / Splitter between the main chat and the test checklist: drag to resize, width is saved
+			if (_settings.TestChecklistWidth > 0) _testPanel.Width = Math.Max(Dpi.S(200), _settings.TestChecklistWidth);
+			var testSplitter = new Splitter { Dock = DockStyle.Right, Width = Dpi.S(4), BackColor = Theme.Background, MinSize = Dpi.S(200), MinExtra = Dpi.S(360), Visible = _testPanel.Visible };
+			testSplitter.SplitterMoved += (s, e) => { _settings.TestChecklistWidth = _testPanel.Width; _settings.Save(); };
+			_testPanel.VisibleChanged += (s, e) => testSplitter.Visible = _testPanel.Visible;
 			_taskTimer.Tick += (s, e) => PumpTasks();
 
 			Controls.Add(_chat);
 			Controls.Add(_agentPanel);
 			Controls.Add(_notebookHost);
+			Controls.Add(testSplitter);
 			Controls.Add(_testPanel);
 			Controls.Add(_taskPanel);
 			Controls.Add(splitter);
