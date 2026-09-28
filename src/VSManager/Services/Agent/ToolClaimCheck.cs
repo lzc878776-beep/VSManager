@@ -52,9 +52,12 @@ namespace VSManager
         };
 
         private static readonly Regex EnqueueClaim = new Regex(
-            @"已(?:确认|重新|成功)?(?:入队|加入(?:任务)?清单)" +
-            @"|已(?:确认|重新|成功)?(?:发布|发送|推送|派发)(?:到|至|给)\s*[*「]*(?:#\d|Copilot)" +
+            @"已(?:确认|重新|成功|实际|真正|逐条)*(?:入队|加入(?:任务)?清单)" +
+            @"|已(?:确认|重新|成功|实际|真正|逐条)*(?:发布|发送|推送|派发)(?:到|至|给)\s*[*「]*(?:#\d|Copilot)" +
+            @"|已(?:确认|重新|成功|实际|真正|逐条)*(?:发布|派发)(?!说明|版本|的)" +
             @"|(?:入队|发布)成功|推送成功" +
+            // 表格 / 列表中「@编号 … 排队中 / 前面 n 个」也是入队结果 / "@ID … queued / n ahead" rows are enqueue results too
+            @"|@\d+[^。\n]{0,60}(?:排队中|前面\s*\d+\s*个)" +
             @"|\b(?:enqueued|queued as @|published to #|pushed to (?:#|Copilot))",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -63,11 +66,13 @@ namespace VSManager
             @"|\b(?:verified|checked) the (?:task )?list\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+        private static readonly Regex ForgedLog = new Regex(@"〔\s*工具记录|Tool log \(added by VSManager", RegexOptions.CultureInvariant);
+
         private static readonly Regex TaskId = new Regex(@"([@#])(\d{1,6})\b", RegexOptions.CultureInvariant);
 
         /// <summary>承认「不存在 / 没有入队」的句子：其中的编号不算虚报。/ Sentences admitting "does not exist / not queued": their IDs are not false claims.</summary>
         private static readonly Regex Denial = new Regex(
-            @"不存在|没有(?:真正|实际)?(?:入队|成功|发布|加入)|未(?:能)?(?:入队|发布|推送|加入)|并未|没入队|失败|已取消|已删除" +
+            @"不存在|从未|没有(?:真正|实际)?(?:入队|成功|发布|加入|调用)|未(?:能)?(?:入队|发布|推送|加入|调用)|并未|没入队|虚报|失败|已取消|已删除" +
             @"|\b(?:not (?:queued|in the (?:task )?list)|never queued|does not exist|do not exist|failed|cancel(?:l)?ed|deleted)\b",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
@@ -77,10 +82,10 @@ namespace VSManager
         private const int MinHashTaskId = 21;
 
         /// <summary>
-        /// 核查一条回复。nextTaskId 为任务清单下一个将分配的编号（≤0 表示未知，不做编号核查）。
-        /// Checks one reply. nextTaskId is the next ID the task list will assign (≤0 = unknown, skip the ID check).
+        /// 核查一条回复。nextTaskId 为任务清单下一个将分配的编号（≤0 表示未知，不做编号核查）；existingIds 为任务清单中现有的编号（null 表示未知）。
+        /// Checks one reply. nextTaskId is the next ID the task list will assign (≤0 = unknown, skip the ID check); existingIds are the IDs now in the task list (null = unknown).
         /// </summary>
-        public static ClaimCheckResult Check(string reply, ICollection<string> calledTools, int nextTaskId)
+        public static ClaimCheckResult Check(string reply, ICollection<string> calledTools, int nextTaskId, ICollection<int> existingIds = null)
         {
             var result = new ClaimCheckResult { Verdict = ClaimVerdict.Ok };
             reply = reply ?? "";
@@ -89,7 +94,9 @@ namespace VSManager
             var affirmed = SentenceBreak.Split(reply).Where(x => !Denial.IsMatch(x)).ToList();
             bool claimsEnqueue = affirmed.Any(x => EnqueueClaim.IsMatch(x));
             bool claimsVerify = affirmed.Any(x => VerifyClaim.IsMatch(x));
-            if (!claimsEnqueue && !claimsVerify) return result;
+            // 回复里自己写出「工具记录」：只有 VSManager 能生成，模型手写即为伪造 / A "tool log" in the reply text: only VSManager produces it, so the model forged it
+            bool forged = ForgedLog.IsMatch(reply);
+            if (!claimsEnqueue && !claimsVerify && !forged) return result;
 
             // 编号 ≥ 下一个待分配编号 → 从未分配过，必然不存在；承认不存在的句子不计 / ID ≥ next ID → never assigned, cannot exist; admitting sentences do not count
             var ids = new SortedSet<int>();
@@ -104,7 +111,11 @@ namespace VSManager
                     if (denies) denied.Add(id); else ids.Add(id);
                 }
             }
-            var missing = nextTaskId > 0 ? ids.Where(i => i >= nextTaskId && !denied.Contains(i)).ToList() : new List<int>();
+            // 同一编号先承认不存在、后又声称已入队，仍按声称核查 / An ID first admitted missing and then claimed again is still checked
+            int oldest = existingIds != null && existingIds.Count > 0 ? existingIds.Min() : int.MaxValue;
+            var missing = nextTaskId > 0
+                ? ids.Where(i => i >= nextTaskId || (existingIds != null && i > oldest && !existingIds.Contains(i))).ToList()
+                : new List<int>();
             bool enqueued = tools.Any(EnqueueTools.Contains);
             bool readQueue = tools.Any(QueueReadTools.Contains);
             string called = tools.Count == 0 ? "无 / none" : string.Join(", ", tools.Distinct(StringComparer.OrdinalIgnoreCase));
@@ -117,6 +128,13 @@ namespace VSManager
                 string list = string.Join("、", missing.Select(i => "@" + i));
                 result.Step = "⚠ 核查未通过：" + list + " 不在任务清单中（下一个编号为 @" + nextTaskId + "；本轮工具：" + called + "），这些任务并未入队" +
                               " / Check failed: " + string.Join(", ", missing.Select(i => "@" + i)) + " are not in the task list (next ID @" + nextTaskId + "; tools this round: " + called + "); these tasks were never queued";
+                return result;
+            }
+            if (forged && !enqueued)
+            {
+                result.Verdict = ClaimVerdict.Fabricated;
+                result.Step = "⚠ 核查未通过：回复中的「工具记录」是助手自己写的（本轮工具：" + called + "），不是 VSManager 生成的，所述结果不可信" +
+                              " / Check failed: the \"tool log\" in the reply was written by the assistant (tools this round: " + called + "), not by VSManager; its results cannot be trusted";
                 return result;
             }
             if (claimsEnqueue && !enqueued)
@@ -138,37 +156,45 @@ namespace VSManager
         /// <summary>交给模型的更正消息。/ Correction message for the model.</summary>
         public static string Correction(ClaimCheckResult r, int nextTaskId)
         {
+            if (r.MissingIds.Count == 0)
+                return Marker + " 你上一条回复自己写了「工具记录」并声称了工具结果，但本轮实际没有调用任何入队工具，那些结果都不存在。" +
+                       "请先向用户如实更正；如果用户确实要求发布任务，现在调用 send_task 实际发布，只汇报工具返回的编号与推送结果。今后绝不手写工具记录或工具结果。" +
+                       " / Your previous reply wrote its own \"tool log\" and claimed tool results, but no enqueue tool was called, so those results do not exist. " +
+                       "Correct this with the user first; if the user did ask for tasks, call send_task now and report only what it returns. Never write tool logs or tool results yourself.";
             string zh = string.Join("、", r.MissingIds.Select(i => "@" + i));
             string en = string.Join(", ", r.MissingIds.Select(i => "@" + i));
-            return Marker + " 你上一条回复声称 " + zh + " 已入队或已核实，但任务清单下一个待分配的编号是 @" + nextTaskId +
-                   "，这些编号根本不存在，相关任务没有入队。原因是你没有真正调用 send_task（或 list_tasks），而是直接写出了结果。" +
+            return Marker + " 你上一条回复声称 " + zh + " 已入队或已核实，但任务清单中没有这些编号（下一个待分配的编号是 @" + nextTaskId +
+                   "），相关任务没有入队。原因是你没有真正调用 send_task（或 list_tasks），而是直接写出了结果。" +
                    "请先向用户如实更正；如果用户确实要求发布这些任务，现在逐个调用 send_task 实际发布，只汇报工具返回的编号与推送结果。" +
                    "今后没有工具返回就不得声称入队、推送或核实。" +
-                   " / Your previous reply claimed " + en + " were queued or verified, but the next ID the task list will assign is @" + nextTaskId +
-                   ", so these IDs do not exist and the tasks were never queued: you wrote the result without actually calling send_task (or list_tasks). " +
+                   " / Your previous reply claimed " + en + " were queued or verified (next ID to assign: @" + nextTaskId + ")" +
+                   "; the task list has no such IDs and the tasks were never queued: you wrote the result without actually calling send_task (or list_tasks). " +
                    "Correct this with the user first; if the user did ask for these tasks, call send_task for each one now and report only the IDs and push results the tool returns. " +
                    "Never claim a task was queued, pushed or verified without a tool result.";
         }
 
         /// <summary>
-        /// 接续对话时附加到历史回复末尾的工具记录，让模型看到当时是否真的调用过工具，而不是只看到「已入队」文字去模仿。
-        /// Tool log appended to restored replies so the model sees whether tools were really called, instead of imitating bare "queued" text.
+        /// 替换进模型上下文的撤回说明：虚报的原文若留在上下文里，模型会照着格式继续虚报。
+        /// Retraction put into the model context instead of a false reply: left in place, the false text is imitated in later rounds.
         /// </summary>
-        public static string HistoryAnnotation(string text, IList<string> steps)
+        public const string Retraction = "（VSManager 已撤回这条助手回复：它声称了入队 / 推送 / 核实结果，但本轮没有调用对应工具，内容不属实，没有任何任务因此入队。" +
+                                         "/ VSManager retracted this assistant reply: it claimed enqueue / push / verification results without calling the matching tool; it was false and queued nothing.）";
+
+        /// <summary>
+        /// 恢复对话时该条回复是否应以撤回说明代替：被标记过「⚠ 核查」，或声称入队 / 核实却没有任何工具步骤。
+        /// Whether a restored reply should be replaced by the retraction: it was flagged by a check, or it claims enqueue / verification with no tool step.
+        /// </summary>
+        public static bool ShouldRetract(string text, IList<string> steps)
         {
-            var lines = (steps ?? new List<string>())
-                .Where(s => !string.IsNullOrWhiteSpace(s))
-                .Select(s => s.Trim())
-                .Where(s => s.StartsWith("⚙", StringComparison.Ordinal) || s.StartsWith("↳", StringComparison.Ordinal) || s.StartsWith("⚠ 核查", StringComparison.Ordinal))
-                .Select(s => s.Replace('\r', ' ').Replace('\n', ' '))
-                .Select(s => s.Length > 120 ? s.Substring(0, 120) + "…" : s)
-                .ToList();
-            if (lines.Count > 8) lines = lines.Take(4).Concat(new[] { "…" }).Concat(lines.Skip(lines.Count - 4)).ToList();
-            if (lines.Count > 0)
-                return "\n〔工具记录（VSManager 自动附加，不可手写模仿）/ Tool log (added by VSManager, never write it yourself)：" + string.Join("；", lines) + "〕";
-            if (Check(text, new string[0], 0).Verdict != ClaimVerdict.Ok)
-                return "\n〔VSManager 核查：这一轮没有调用任何工具，上面的入队 / 核实说法没有工具依据 / VSManager check: no tool was called in this round; the claims above have no tool backing〕";
-            return "";
+            var list = (steps ?? new List<string>()).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList();
+            if (list.Any(x => x.StartsWith("⚠ 核查", StringComparison.Ordinal))) return true;
+            if (list.Any(x => x.StartsWith("⚙", StringComparison.Ordinal))) return false;
+            // 没有工具步骤时只撤回自己写出「工具记录」的回复；普通转述（如完成汇报）照常保留 / Without tool steps only forged tool logs are retracted; plain recaps stay
+            return ForgedLog.IsMatch(text ?? "");
         }
+
+        /// <summary>去掉回复中伪造的「工具记录」段落（旧版本曾在上下文中附加，模型会模仿）。/ Strips forged "tool log" blocks (an older build added them to the context and the model copied them).</summary>
+        public static string StripForgedLogs(string text) =>
+            string.IsNullOrEmpty(text) ? text ?? "" : Regex.Replace(text, @"\s*〔\s*工具记录[^〕]*〕?", "", RegexOptions.CultureInvariant).TrimEnd();
     }
 }

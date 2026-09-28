@@ -77,8 +77,7 @@ namespace VSManager.Tests
                 Assert.AreEqual("question", history[0].Text);
                 Assert.AreEqual("[任务通知] full body", history[1].Text);
                 Assert.AreEqual(AIRole.Assistant, history[2].Role);
-                StringAssert.StartsWith(history[2].Text, "answer");
-                StringAssert.Contains(history[2].Text, "⚙ 查看任务清单", "恢复的回复附带工具记录 / Restored replies carry the tool log");
+                Assert.AreEqual("answer", history[2].Text);
             }
         }
 

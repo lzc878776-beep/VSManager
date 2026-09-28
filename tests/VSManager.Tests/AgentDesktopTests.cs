@@ -18,11 +18,14 @@ namespace VSManager.Tests
         private AppSettings _settings;
         private VisionClient _vision;
         private AgentService _agent;
+        private string _oldChatPath;
 
         [TestInitialize]
         public void Init()
         {
             _data = new TempDataFolder();
+            _oldChatPath = AgentChatLog.FilePath;
+            AgentChatLog.FilePath = _data.File(AgentChatLog.FileName);
             _host = new DesktopHost();
             _host.Instances.Add(new VsInstance { Pid = 42, SolutionPath = _data.Path, Key = "test" });
             _settings = new AppSettings { AgentEndpoint = "http://localhost:11434/v1", AgentModel = "test-vision", AgentConfirm = false };
@@ -35,6 +38,7 @@ namespace VSManager.Tests
         public void Cleanup()
         {
             _agent.Dispose();
+            AgentChatLog.FilePath = _oldChatPath;
             if (Directory.Exists(_data.File("Project\\.git"))) WorktreeTests.MakeFixtureWritable(_data.Path);
             _data.Dispose();
         }
@@ -986,6 +990,84 @@ namespace VSManager.Tests
                 Assert.IsFalse(agent.Transcript.Messages[1].Parts.Any(p => p.IsStep && p.Text.Contains("核查")));
                 Assert.AreEqual(1, client.Calls);
             }
+        }
+
+        [TestMethod]
+        public async Task FabricatedReply_IsRetractedFromModelContext()
+        {
+            var client = new ScriptedClient("已确认入队：@50 → #1（排队中）");
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                agent.NextTaskIdSource = () => 50;
+                await agent.RunAsync("发布");
+                var last = agent.HistoryForTests.Last(m => m.Role == Microsoft.Extensions.AI.ChatRole.Assistant);
+                Assert.AreEqual(ToolClaimCheck.Retraction, last.Text, "虚报原文不留在上下文 / The false text leaves the context");
+                StringAssert.Contains(agent.Transcript.Messages[1].Parts[0].Text, "@50", "界面仍显示原文 / The UI still shows the original");
+            }
+        }
+
+        [TestMethod]
+        public async Task CorrectionRound_ForcesAToolCall_ThenReturnsToAuto()
+        {
+            var client = new ToolFirstClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                await agent.RunAsync(ToolClaimCheck.Marker + " 更正");
+                Assert.AreEqual(2, client.Modes.Count, "调用工具后回到正常对话，不循环 / Back to normal after the tool call, no loop");
+                Assert.IsInstanceOfType(client.Modes[0], typeof(RequiredChatToolMode));
+                Assert.IsNull(((RequiredChatToolMode)client.Modes[0]).RequiredFunctionName, "更正轮任意工具 / Any tool in a correction");
+                Assert.IsFalse(client.Modes[1] is RequiredChatToolMode);
+            }
+        }
+
+        [TestMethod]
+        public async Task DirectMention_RequiresSendTask()
+        {
+            var client = new ToolFirstClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                string prompt = AgentPanel.MentionPrompt("@#1 修复", new[] { "#1 test" }, true);
+                await agent.RunAsync(prompt, "@#1 修复");
+                Assert.AreEqual("send_task", ((RequiredChatToolMode)client.Modes[0]).RequiredFunctionName);
+                Assert.IsNull(agent.RequiredToolMode(AgentPanel.MentionPrompt("@#1 修复", new[] { "#1 test" }, false), false), "非直发仍为自动 / Non-direct stays auto");
+            }
+        }
+
+        [TestMethod]
+        public async Task RequiredToolModeRejected_FallsBackToAuto()
+        {
+            var client = new ToolFirstClient { RejectRequired = true };
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                await agent.RunAsync(ToolClaimCheck.Marker + " 更正");
+                Assert.IsInstanceOfType(client.Modes[0], typeof(RequiredChatToolMode));
+                Assert.IsFalse(client.Modes[1] is RequiredChatToolMode);
+                Assert.IsFalse(agent.Transcript.Messages[1].Parts.Any(p => p.Text.StartsWith("⚠ ") && p.Text.Contains("required")), "回退后无错误 / No error after fallback");
+            }
+        }
+
+        /// <summary>要求调用工具时先调用 list_tasks，其余回复文字；记录每次请求的工具模式。/ Calls list_tasks when a tool is required, otherwise replies with text; records every request's tool mode.</summary>
+        private sealed class ToolFirstClient : IAiClientFactory, IChatClient
+        {
+            internal readonly List<ChatToolMode> Modes = new List<ChatToolMode>();
+            internal bool RejectRequired;
+            public IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<ChatResponse> GetResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, CancellationToken cancellationToken = default) =>
+                Task.FromResult(new ChatResponse(new AIMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "ok")));
+            public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            {
+                Modes.Add(options?.ToolMode);
+                await Task.Yield();
+                if (options?.ToolMode is RequiredChatToolMode)
+                {
+                    if (RejectRequired) throw new InvalidOperationException("tool_choice required is not supported");
+                    yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, new List<AIContent> { new FunctionCallContent("c" + Modes.Count, "list_tasks") });
+                    yield break;
+                }
+                yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "done");
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
         }
 
         /// <summary>每轮都回复同一段文字、不调用任何工具。/ Replies with the same text every round, never calling tools.</summary>

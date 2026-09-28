@@ -448,6 +448,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// </summary>
         public void Notify(string display, string content)
         {
+            if (_disposed) return;
             _notices.Enqueue(new KeyValuePair<string, string>(display, content));
             if (!Running) ProcessNotices();
         }
@@ -469,7 +470,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             try
             {
                 await Task.Delay(400);
-                while (!Running && _notices.Count > 0)
+                while (!_disposed && !Running && _notices.Count > 0)
                 {
                     var n = _notices.Dequeue();
                     if (Configured && _settings().AgentAutoFollowUp) { await RunAsync(n.Value, n.Key); continue; }
@@ -551,6 +552,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             ClaimCheckResult claim = null;
             // 自动更正的一轮不再触发更正，避免循环 / A correction round never triggers another correction (no loops)
             bool correctionRound = text.StartsWith(ToolClaimCheck.Marker, StringComparison.Ordinal);
+            // @ 指定目标的一轮等同用户发起 / A round with an @ target counts as a user round
+            bool userRound = string.IsNullOrWhiteSpace(display) || text.IndexOf(MentionTag, StringComparison.Ordinal) >= 0;
+            int historyStart = _history.Count;
             string error = null;
             Exception internalError = null;
             bool transientFailure = false;
@@ -558,9 +562,15 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             {
                 var messages = new List<AIMessage> { new AIMessage(AIRole.System, SystemPrompt()) };
                 messages.AddRange(_history);
-                var options = new ChatOptions { Tools = _tools, ToolMode = ChatToolMode.Auto, Temperature = 0.3f };
+                // 必须调用工具的一轮（更正、【直发】）强制首次回复调用工具，不能只写文字 / Rounds that must use a tool (corrections, direct sends) force a tool call first
+                var required = RequiredToolMode(text, correctionRound);
+                var options = new ChatOptions { Tools = _tools, ToolMode = required ?? ChatToolMode.Auto, Temperature = 0.3f };
                 int maxOut = MaxOutputTokens;
                 if (maxOut > 0) options.MaxOutputTokens = maxOut;
+                for (int attempt = 0; ; attempt++)
+                {
+                try
+                {
                 await foreach (var u in client.GetStreamingResponseAsync(messages, options, cts.Token))
                 {
                     // 助手已重建：丢弃旧一轮的输出 / The assistant was rebuilt: drop the stale round's output
@@ -590,6 +600,15 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                         }
                     }
                     Changed?.Invoke();
+                }
+                break;
+                }
+                catch (Exception ex) when (attempt == 0 && required != null && updates.Count == 0 && !(ex is OperationCanceledException))
+                {
+                    // 接口不支持强制调用工具：退回自动模式重试一次 / The endpoint rejects a required tool mode: retry once in auto mode
+                    AppLog.Error(LogFile, "强制工具模式被拒绝，改用自动模式 / Required tool mode rejected; falling back to auto", ex);
+                    options.ToolMode = ChatToolMode.Auto;
+                }
                 }
                 if (gen == _generation) _history.AddMessages(updates);
             }
@@ -622,7 +641,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     AddStep(reply, "⚠ " + error);
                 }
                 StripLeakedToolMarkup(reply);
-                if (error == null) claim = CheckToolClaims(reply, toolNames, string.IsNullOrWhiteSpace(display));
+                if (error == null) claim = CheckToolClaims(reply, toolNames, userRound);
+                if (claim != null && claim.Verdict == ClaimVerdict.Fabricated) RetractFromHistory(historyStart);
                 if (reply.Parts.Count == 0) AddText(reply, "（没有返回内容）");
                 try
                 {
@@ -679,6 +699,44 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// </summary>
         internal Func<int> NextTaskIdSource { get; set; }
 
+        private volatile bool _disposed;
+
+        /// <summary>任务清单中现有的任务编号（由主窗体提供）；null 表示只按下一个编号核查。/ IDs now in the task list (provided by the main form); null = check against the next ID only.</summary>
+        internal Func<ICollection<int>> TaskIdsSource { get; set; }
+
+        /// <summary>@ 指定目标 VS 时附加在消息中的标记。/ Tag added to messages whose target VS was chosen via @.</summary>
+        internal const string MentionTag = "[用户用 @ 指定了目标 VS";
+
+        /// <summary>【直发】标记：这一轮必须调用 send_task。/ Direct-send tag: this round must call send_task.</summary>
+        internal const string DirectSendTag = "【直发】";
+
+        /// <summary>这一轮要求的工具模式：更正轮至少调用一个工具，【直发】必须调用 send_task；其他返回 null（自动）。/ Required tool mode: corrections must call a tool, direct sends must call send_task; null otherwise (auto).</summary>
+        internal ChatToolMode RequiredToolMode(string text, bool correctionRound)
+        {
+            if (Profile == AgentProfile.Notes || _tools == null || _tools.Count == 0) return null;
+            if (correctionRound) return ChatToolMode.RequireAny;
+            if ((text ?? "").IndexOf(DirectSendTag, StringComparison.Ordinal) >= 0 && _tools.OfType<AIFunction>().Any(t => t.Name == "send_task"))
+                return ChatToolMode.RequireSpecific("send_task");
+            return null;
+        }
+
+        /// <summary>把本轮助手回复的文字从模型上下文中撤回（保留工具调用与结果），避免下一轮照着虚报的格式继续虚报。/ Retracts this round's reply text from the model context (tool calls and results stay) so later rounds do not imitate it.</summary>
+        private void RetractFromHistory(int start)
+        {
+            bool replaced = false;
+            for (int i = Math.Max(0, start); i < _history.Count; i++)
+            {
+                var m = _history[i];
+                if (m.Role != AIRole.Assistant) continue;
+                var texts = m.Contents.OfType<TextContent>().ToList();
+                if (texts.Count == 0) continue;
+                foreach (var t in texts) m.Contents.Remove(t);
+                if (!replaced) { m.Contents.Add(new TextContent(ToolClaimCheck.Retraction)); replaced = true; }
+                if (m.Contents.Count == 0) m.Contents.Add(new TextContent(""));
+            }
+            if (!replaced) _history.Add(new AIMessage(AIRole.Assistant, ToolClaimCheck.Retraction));
+        }
+
         /// <summary>核查本轮回复的入队 / 核实说法，未通过时在回复下方加一条核查步骤。/ Checks this round's queued / verified claims and adds a check step when they fail.</summary>
         /// <remarks>「未证实」提醒只用于用户发起的一轮：通知轮常转述已有结果，提醒只会成为噪音。/ "Unconfirmed" warnings apply to user rounds only: notice rounds often recap earlier results.</remarks>
         private ClaimCheckResult CheckToolClaims(ChatMessage reply, IList<string> toolNames, bool userRound)
@@ -687,7 +745,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             int next = 0;
             try { next = NextTaskIdSource?.Invoke() ?? 0; } catch { }
             string text = string.Join("\n", reply.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text));
-            var r = ToolClaimCheck.Check(text, toolNames, next);
+            ICollection<int> ids = null;
+            try { ids = TaskIdsSource?.Invoke(); } catch { }
+            var r = ToolClaimCheck.Check(text, toolNames, next, ids);
             if (r.Verdict == ClaimVerdict.Ok || (r.Verdict == ClaimVerdict.Unconfirmed && !userRound)) return r;
             AddStep(reply, r.Step);
             if (r.Verdict == ClaimVerdict.Fabricated)
@@ -1351,6 +1411,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
 
         public void Dispose()
         {
+            // 丢弃尚未处理的通知：释放后延迟触发的一轮不能再写记录 / Drop pending notices: a delayed round after disposal must not write records
+            _disposed = true;
+            _notices.Clear();
             _cts?.Cancel();
             _client?.Dispose();
             _client = null;

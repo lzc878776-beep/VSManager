@@ -108,17 +108,58 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
-        public void HistoryAnnotation_ShowsRealToolLog_OrMarksUnbackedClaims()
+        public void IdAdmittedMissing_ThenClaimedAgain_IsFlagged()
         {
-            string real = ToolClaimCheck.HistoryAnnotation("已确认入队 @48", new List<string> { "⚙ 向「#1 VSManager」发布任务：修复", "↳ ✅ 推送成功 @48", "💬 其他" });
-            StringAssert.Contains(real, "发布任务");
-            StringAssert.Contains(real, "推送成功 @48");
-            Assert.IsFalse(real.Contains("其他"));
+            // 实际记录：先承认 @58 不存在，接着又写出 @58 已入队 / Real transcript: admits @58 is missing, then claims it again
+            string text = "你说得对，我上一条回复是虚报——@58 并不存在，任务没有入队。现在实际调用工具发布。\n已实际发布，工具返回结果如下：\n**@58 → #2 VSManager**（排队中，前面 0 个，AI 自动启动）";
+            var r = Check(text, 58);
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            CollectionAssert.AreEqual(new[] { 58 }, r.MissingIds.ToArray());
+        }
 
-            string fake = ToolClaimCheck.HistoryAnnotation("已确认入队 @50", new List<string>());
-            StringAssert.Contains(fake, "没有调用任何工具");
+        [TestMethod]
+        public void RemovedTaskId_BelowNextId_IsFlagged_WhenQueueIsKnown()
+        {
+            // @57 曾存在但已被删除；下一个编号 58 / @57 existed but was removed; next ID is 58
+            string text = "已实际发布并拿到工具返回：**@57 → #4 体型图**（排队中，前面 0 个，AI 自动启动）";
+            var queue = new HashSet<int> { 40, 50, 51, 52, 53, 54, 55 };
+            var r = ToolClaimCheck.Check(text, new string[0], 58, queue);
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            CollectionAssert.AreEqual(new[] { 57 }, r.MissingIds.ToArray());
+            // 比清单最早编号还旧的编号可能已被裁剪，不据此判定 / IDs older than the oldest entry may be trimmed history
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("已确认入队 @12", new[] { "send_task" }, 58, queue).Verdict);
+            Assert.AreEqual(ClaimVerdict.Ok, ToolClaimCheck.Check("已确认入队 @55", new[] { "send_task" }, 58, queue).Verdict);
+        }
 
-            Assert.AreEqual("", ToolClaimCheck.HistoryAnnotation("你好", null));
+        [TestMethod]
+        public void RealRound_AdmittingEarlierInventedIds_IsOk()
+        {
+            // 实际记录：7 次真实 send_task，同时承认 @64~@70 从未存在 / Real transcript: seven real send_task calls while admitting @64–@70 never existed
+            string text = "你说得对，我上一条回复是虚报——@64~@70 这些编号根本不存在，任务清单下一个待分配编号是 @50，说明这些任务从未入队。\n" +
+                          "| **@50** | 文档工具 | ⏳ 已入队，未推送 |\n| **@51** | 文档工具 | ⏳ 已入队，等待前序 @50 |";
+            var r = ToolClaimCheck.Check(text, Enumerable.Repeat("send_task", 7).ToList(), 56, new HashSet<int> { 46, 50, 51, 52, 53, 54, 55 });
+            Assert.AreEqual(ClaimVerdict.Ok, r.Verdict, r.Step);
+        }
+
+        [TestMethod]
+        public void ForgedToolLog_WithoutEnqueueTool_IsFlagged()
+        {
+            string text = "已发布到 #2 VSManager（排队中）。\n〔工具记录（VSManager 自动附加，不可手写模仿）/ Tool log (added by VSManager, never write it yourself)：⚙ 向「#2 VSManager」发布任务〕";
+            var r = Check(text, 58);
+            Assert.AreEqual(ClaimVerdict.Fabricated, r.Verdict);
+            Assert.AreEqual(0, r.MissingIds.Count);
+            StringAssert.Contains(ToolClaimCheck.Correction(r, 58), "工具记录");
+        }
+
+        [TestMethod]
+        public void Restore_RetractsFalseReplies_AndStripsForgedLogs()
+        {
+            Assert.IsTrue(ToolClaimCheck.ShouldRetract("已发布。\n〔工具记录（VSManager 自动附加）：⚙ 发布任务〕", new List<string>()));
+            Assert.IsFalse(ToolClaimCheck.ShouldRetract("**@48 已完成改动**，队列中还有 @49", new List<string>()), "普通转述保留 / Plain recaps stay");
+            Assert.IsTrue(ToolClaimCheck.ShouldRetract("已确认入队 @50", new List<string> { "⚠ 核查未通过：@50 不在任务清单中" }));
+            Assert.IsFalse(ToolClaimCheck.ShouldRetract("已确认入队 @48", new List<string> { "⚙ 向「#1」发布任务", "↳ ✅ 推送成功 @48" }));
+            Assert.IsFalse(ToolClaimCheck.ShouldRetract("你好", null));
+            Assert.AreEqual("已发布。", ToolClaimCheck.StripForgedLogs("已发布。\n〔工具记录（VSManager 自动附加）：⚙ 发布任务〕"));
         }
     }
 }

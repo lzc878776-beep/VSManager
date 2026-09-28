@@ -132,6 +132,7 @@ namespace VSManager
 			_tasks = new TaskQueue(_settings);
 			// 用于核查助手回复中的 @编号是否真实存在 / Lets the assistant's replies be checked for @IDs that do not exist
 			_agent.NextTaskIdSource = () => _tasks.NextId;
+			_agent.TaskIdsSource = () => new HashSet<int>(_tasks.Items.Select(t => t.Id));
 			_tasks.ResolveWorktree = key => _solutions.FindByPath(FindVs(key)?.SolutionPath ?? key)?.Worktree;
 			// 异常退出后由看门狗重启：上次正在发送的任务可能已送达 VS，改为失败待手动重新排队，避免重复发布
 			// Restarted by the watchdog after an abnormal exit: tasks that were being sent may already have reached VS, so they

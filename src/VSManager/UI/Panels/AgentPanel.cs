@@ -485,9 +485,9 @@ namespace VSManager
         /// </summary>
         internal static string MentionPrompt(string shown, IList<string> names, bool direct)
         {
-            string head = shown + "\n\n[用户用 @ 指定了目标 VS / Target VS chosen via @：" + string.Join("、", names) + "] ";
+            string head = shown + "\n\n" + AgentService.MentionTag + " / Target VS chosen via @：" + string.Join("、", names) + "] ";
             if (direct)
-                return head + "【直发】请立即用 send_task 把这条内容发布给上述每个 VS（vs 参数填编号，其他参数保持默认）：任务文字只做简单润色，让语句通顺即可，保持原意，不补充任何内容（不加步骤、要求、背景或解释）；"
+                return head + AgentService.DirectSendTag + "请立即用 send_task 把这条内容发布给上述每个 VS（vs 参数填编号，其他参数保持默认）：任务文字只做简单润色，让语句通顺即可，保持原意，不补充任何内容（不加步骤、要求、背景或解释）；"
                     + "不要提问或征求确认，不要先调用其他工具收集信息；有附件时 attachments 填 \"last\"。发布后只用一句话说明结果。"
                     + " / [Direct] Publish this right away with send_task to each VS above (use its number for vs, leave other parameters at defaults). Only lightly polish the wording so it reads smoothly, keep the meaning and add nothing (no steps, requirements, background or explanations). "
                     + "Do not ask questions or seek confirmation and do not call other tools first; pass attachments \"last\" when there are attachments. Afterwards reply with one sentence on the result.";
