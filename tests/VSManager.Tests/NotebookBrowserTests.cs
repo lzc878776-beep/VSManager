@@ -17,6 +17,7 @@ namespace VSManager.Tests
 {
     [TestClass]
     [DoNotParallelize]
+    [TestCategory(TestKind.Ui)]
     public class NotebookBrowserTests
     {
         [TestMethod]

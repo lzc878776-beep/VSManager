@@ -452,6 +452,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Junctions_AreRejectedAtChildRootAndRootAncestor()
         {
             Grant();

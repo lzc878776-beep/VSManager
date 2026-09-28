@@ -206,6 +206,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_CreateAndIntegrate_UsesIndependentBranchAndIsIdempotent()
         {
             InitRepo();
@@ -222,6 +223,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_ConflictStaysInWorktree_ThenResolvedCommitFastForwardsMain()
         {
             InitRepo();
@@ -240,6 +242,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_DirtyMainAndBranchSwitch_RefuseWithoutChangingMain()
         {
             InitRepo();
@@ -258,6 +261,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_DirtyWorktreeIsNeverAutomaticallyCommitted()
         {
             InitRepo();
@@ -271,6 +275,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_TwoWorktreesSerializeIntegration_WithoutLosingEitherChange()
         {
             InitRepo();
@@ -285,6 +290,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public void Git_RejectsUnsafeNamesOutsideGrantsAndExecutableFilters()
         {
             InitRepo();
@@ -298,6 +304,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_IgnoredUserFileIsNotOverwrittenByFastForward()
         {
             InitRepo();
@@ -312,6 +319,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Git_PathsWithSpacesArePassedAsSingleArguments()
         {
             _main = _data.File("Project with spaces");

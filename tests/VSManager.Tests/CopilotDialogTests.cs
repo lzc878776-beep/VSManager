@@ -28,6 +28,7 @@ namespace VSManager.Tests
         [DataRow(true, "The operation completed successfully.", 1)]
         [DataRow(false, "The operation completed successfully.", 0)]
         [DataRow(true, "Overwrite the existing file?", 0)]
+        [TestCategory(TestKind.Ui)]
         public void SafeNotice_InvokesOnlyAllowedButtonOnce(bool enabled, string body, int expectedClicks)
         {
             using (var data = new TempDataFolder())

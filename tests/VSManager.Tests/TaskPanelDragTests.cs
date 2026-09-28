@@ -171,6 +171,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void Tasks_SameGroupReorders_CrossGroupRejected_FlatAllowsBoth()
         {
             Sta(f =>
@@ -222,6 +223,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void ReloadDuringDrag_RevalidatesDeletedSourcesAndChangedGroups()
         {
             Sta(f =>
@@ -250,6 +252,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void ReloadDuringDrag_KeepsValidSourceAndSelectedTopAnchor()
         {
             Sta(f =>
@@ -274,6 +277,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void EdgeScroll_MovesViewport_AndLeaveStopsFeedback()
         {
             Sta(f =>
@@ -300,6 +304,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void HiddenHistoryAndFailedEntries_RetainRanksAcrossReorderRetryAndRemoval()
         {
             Sta(f =>
@@ -333,6 +338,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void SettingsRestart_RestoresTaskGroupAndCollapsedOrdering()
         {
             Sta(f =>
@@ -361,6 +367,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void DragDisplayOrder_DoesNotChangeDispatchIdsOrWorktreeBarrier()
         {
             Sta(f =>
@@ -390,6 +397,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void InsertionLine_RepaintsPersistently_AndModeChangeCancelsPendingDrop()
         {
             Sta(f =>
@@ -419,6 +427,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void ManualChat_DragsWithTasks_AndRetainsOrderAfterRestore()
         {
             Sta(f =>

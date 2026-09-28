@@ -158,6 +158,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void NativePopup_DynamicOpeningWorks_AndCancellationIsRespected()
         {
             RunSta(() =>

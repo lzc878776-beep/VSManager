@@ -484,6 +484,7 @@ namespace VSManager.Tests
         private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void MentionPopup_PeriodicRefreshKeepsUnchangedItems_NoFlicker()
         {
             Sta(() =>
@@ -515,6 +516,7 @@ namespace VSManager.Tests
             });
         }
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void ChatUi_AtArrowsEnterEscapeMouseAndNoMatchKeepDraft()
         {
             Sta(() =>
@@ -573,6 +575,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void ChatUi_ConfirmedMentionRendersAsChip_AndDeletesAsWhole()
         {
             Sta(() =>
@@ -739,6 +742,7 @@ namespace VSManager.Tests
                 }
 
                 [TestMethod]
+                [TestCategory(TestKind.Ui)]
                 public void AgentPopup_EscapeDoesNotStopAndExplicitSendBypassesRunningModel()
                 {
                     Sta(() =>

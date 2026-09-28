@@ -75,6 +75,17 @@ dotnet build VSManager.slnx -c Release
 dotnet test VSManager.slnx
 ```
 
+测试分为三类（见 `tests\VSManager.Tests\TestKind.cs`），`dotnet test` 默认只运行「完全不弹窗」类，不会显示窗口、抢占焦点、使用剪贴板或启动命令行进程，运行期间可以正常在其他窗口输入：
+
+| 范围 `TestScope` | 内容 | 运行方式 |
+|---|---|---|
+| `NoPopup`（默认） | 完全不弹窗的测试（约 960 个），日常修改后运行这一类即可 | `.\tests\run-tests.ps1` 或 `dotnet test VSManager.slnx` |
+| `UI` | 显示窗口 / 抢焦点 / 使用剪贴板的界面测试，运行期间请勿在其他窗口输入 | `.\tests\run-tests.ps1 -Scope UI` |
+| `Console` | 启动 git、cmd、PowerShell 等命令行进程的测试（需要 git 在 PATH 中） | `.\tests\run-tests.ps1 -Scope Console` |
+| `All` | 全部测试（发布前或改动界面 / 命令行相关代码时） | `.\tests\run-tests.ps1 -Scope All` 或 `dotnet test VSManager.slnx -p:TestScope=All` |
+
+脚本还支持 `-Filter`（与分类条件同时生效）与 `-NoBuild`；输出目录默认在测试项目 `bin\run-tests\` 下，避免与正在运行的 VSManager 争用文件。直接使用 `dotnet test --filter` 时以该筛选条件为准，不再附加分类条件。新增测试若会弹窗 / 抢焦点 / 使用剪贴板，请标注 `[TestCategory(TestKind.Ui)]`；若启动命令行进程，请标注 `[TestCategory(TestKind.Console)]`。
+
 若本机 NuGet 配置中有不可用的源导致还原失败，可先执行 `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json`。
 
 ## 目录结构
@@ -617,6 +628,17 @@ Run the unit tests (MSTest; all test data goes to the system temp folder, real d
 ```powershell
 dotnet test VSManager.slnx
 ```
+
+Tests fall into three categories (see `tests\VSManager.Tests\TestKind.cs`). By default `dotnet test` runs only the "no popup" set, which shows no window, takes no focus, does not touch the clipboard and starts no command-line process, so you can keep typing in other windows:
+
+| Scope `TestScope` | Contents | How to run |
+|---|---|---|
+| `NoPopup` (default) | Tests that never pop up (about 960); enough after routine changes | `.\tests\run-tests.ps1` or `dotnet test VSManager.slnx` |
+| `UI` | UI tests that show windows / take focus / use the clipboard; avoid typing elsewhere while they run | `.\tests\run-tests.ps1 -Scope UI` |
+| `Console` | Tests that start command-line processes such as git, cmd or PowerShell (git must be on PATH) | `.\tests\run-tests.ps1 -Scope Console` |
+| `All` | Every test (before a release, or after changing UI / command-line code) | `.\tests\run-tests.ps1 -Scope All` or `dotnet test VSManager.slnx -p:TestScope=All` |
+
+The script also accepts `-Filter` (combined with the category filter) and `-NoBuild`; output goes to the test project's `bin\run-tests\` by default so a running VSManager does not lock files. An explicit `dotnet test --filter` takes precedence and no category filter is added. Tag new tests that show windows, take focus or use the clipboard with `[TestCategory(TestKind.Ui)]`, and tests that start command-line processes with `[TestCategory(TestKind.Console)]`.
 
 If restore fails because the local NuGet configuration lists an unavailable source, run `dotnet restore VSManager.slnx --source https://api.nuget.org/v3/index.json` first.
 

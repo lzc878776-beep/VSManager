@@ -774,6 +774,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task WorktreeTools_CreateRegisterOpenAndQueueToExactIsolatedSolution()
         {
             string main = _data.File("Project");

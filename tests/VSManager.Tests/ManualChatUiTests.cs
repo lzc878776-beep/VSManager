@@ -85,6 +85,7 @@ namespace VSManager.Tests
         [DataRow("，", false, ManualChatObservation.Draft)]
         [DataRow("\u0301", false, ManualChatObservation.Draft)]
         [DataRow("", true, ManualChatObservation.Generating)]
+        [TestCategory(TestKind.Ui)]
         public void SyntheticUi_InputAndStopAreReadOnly(string draft, bool stopVisible, ManualChatObservation expected)
         {
             Exception failure = null;
@@ -153,6 +154,7 @@ namespace VSManager.Tests
         [DataRow("images-replaced", false)]
         [DataRow("images-unreadable", false)]
         [DataRow("text-unreadable", false)]
+        [TestCategory(TestKind.Ui)]
         public void SyntheticUi_QueueSubmitRequiresExactOwnedAttachments(string scenario, bool allowed)
         {
             RunAttachmentUi((window, input, list, target, pane, edit) =>
@@ -226,6 +228,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void SyntheticUi_AddReferenceButtonAndActiveDocumentAreNotDrafts()
         {
             RunAttachmentUi((window, input, list, target, pane, edit) =>

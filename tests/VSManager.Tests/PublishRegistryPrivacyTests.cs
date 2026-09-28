@@ -10,6 +10,7 @@ namespace VSManager.Tests
 {
     [TestClass]
     [DoNotParallelize]
+    [TestCategory(TestKind.Console)]
     public class PublishRegistryPrivacyTests
     {
         private TempDataFolder _data;

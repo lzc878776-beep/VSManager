@@ -56,7 +56,7 @@ git push -u origin feature/xxx
 
 ## 提交前检查清单
 
-- [ ] 构建 0 错误，`dotnet test` 全部通过。
+- [ ] 构建 0 错误，`dotnet test` 全部通过（默认只运行完全不弹窗的测试；改动界面或命令行相关代码时再用 `.\tests\run-tests.ps1 -Scope All` 运行全部，详见 README「测试分类」）。新增测试按 `TestKind` 标注分类。
 - [ ] 未改动的业务行为保持不变；配置项名称与默认值、用户数据文件格式保持兼容。
 - [ ] 新增文案与注释为中英双语。
 - [ ] 已用「🚀 发布 → 仅自检」做敏感信息自检且无命中（规则：盘符绝对路径、用户名 / 机器名、邮箱、Key/Token、本机已配置的密钥、自定义词表 `%APPDATA%\VSManager\publish-scan-terms.txt`）。
@@ -126,7 +126,7 @@ Example: `fix: 修复重启后任务重复发布 / avoid republishing tasks afte
 
 ## Checklist before committing
 
-- [ ] The build has 0 errors and `dotnet test` passes.
+- [ ] The build has 0 errors and `dotnet test` passes (it runs only the no-popup tests by default; after changing UI or command-line code, run everything with `.\tests\run-tests.ps1 -Scope All`, see the README test categories). Tag new tests with a `TestKind` category.
 - [ ] Existing behavior is unchanged; setting names, defaults and user data formats stay compatible.
 - [ ] New UI text and comments are bilingual.
 - [ ] The sensitive-content scan ("🚀 发布 → 仅自检" / Publish → Scan only) reports no hits (rules: absolute drive paths, user / machine name, e-mail addresses, keys/tokens, secrets configured on this machine, the custom term list `%APPDATA%\VSManager\publish-scan-terms.txt`).

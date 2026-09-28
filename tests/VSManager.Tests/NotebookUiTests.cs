@@ -83,6 +83,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void Notebook_PastedScreenshot_IsStoredAndLinked()
         {
             RunUi((form, store) =>

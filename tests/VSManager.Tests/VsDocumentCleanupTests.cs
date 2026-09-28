@@ -321,6 +321,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void RealUia_RejectsSyntheticToolWindowCloseButton()
         {
             Exception failure = null;

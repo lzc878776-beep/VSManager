@@ -242,6 +242,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Ui)]
         public void BrowserVisibility_RendersAndResumesLatestDeltaInIsolatedProfile()
         {
             OnSta(() =>

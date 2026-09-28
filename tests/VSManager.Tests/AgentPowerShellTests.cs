@@ -27,6 +27,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task UnicodeMultilineScript_PreservesTextAndWorkingDirectory()
         {
             var result = await Run("$text = @'\n你好 — café 😀\n'quotes' \"double\" $literal `backtick\n'@\n[Console]::WriteLine($text)\n[Console]::WriteLine((Get-Location).Path)");
@@ -42,6 +43,7 @@ namespace VSManager.Tests
         [DataTestMethod]
         [DataRow("Ready")]
         [DataRow("就绪 — café 😀")]
+        [TestCategory(TestKind.Console)]
         public async Task CustomObject_FormatsPropertyHeadersAndValues(string status)
         {
             var result = await Run("[pscustomobject]@{ Status=" + Quote(status) + "; Count=3 }");
@@ -53,6 +55,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task CurrentProcess_FormatsPropertyHeadersAndActualProcessValues()
         {
             string pidFile = Path.Combine(_directory, "runner-pid.txt");
@@ -71,6 +74,7 @@ namespace VSManager.Tests
         [DataRow("Write-Error 'expected failure'; 'must not succeed'")]
         [DataRow("Write-Error 'expected failure' -ErrorAction Continue; 'after error'")]
         [DataRow("Get-Item -LiteralPath '.nonexistent-agent-item' -ErrorAction SilentlyContinue; 'after error'")]
+        [TestCategory(TestKind.Console)]
         public async Task PowerShellErrors_AreFailures(string script)
         {
             var result = await Run(script);
@@ -79,6 +83,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task TerminatingError_IsCapturedOnStderr()
         {
             var result = await Run("throw 'expected stderr message'");
@@ -89,6 +94,7 @@ namespace VSManager.Tests
         [DataTestMethod]
         [DataRow("& \"$env:SystemRoot\\System32\\cmd.exe\" /d /c exit 7; 'after native failure'")]
         [DataRow("& \"$env:SystemRoot\\System32\\cmd.exe\" /d /c exit 7; & \"$env:SystemRoot\\System32\\cmd.exe\" /d /c exit 0")]
+        [TestCategory(TestKind.Console)]
         public async Task NativeFailure_IsPreserved(string script)
         {
             var result = await Run(script);
@@ -96,6 +102,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task ExplicitExitCode_IsPreserved()
         {
             var result = await Run("[Console]::Error.WriteLine('native-style stderr'); exit 23");
@@ -104,6 +111,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task ConcurrentLargeOutput_IsBoundedAndDrained()
         {
             var result = await Run("$s = 'x' * 2048; 1..100 | ForEach-Object { [Console]::Out.Write($s); [Console]::Error.Write($s) }; 'finished'");
@@ -115,6 +123,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task MaximumLengthUnicodeScript_DoesNotExceedWindowsCommandLineLimit()
         {
             const string prefix = "[Console]::WriteLine('maximum length'); #";
@@ -124,6 +133,7 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        [TestCategory(TestKind.Console)]
         public async Task Timeout_TerminatesSleepingProcess()
         {
             var watch = Stopwatch.StartNew();
@@ -151,6 +161,7 @@ namespace VSManager.Tests
         [DataTestMethod]
         [DataRow(false)]
         [DataRow(true)]
+        [TestCategory(TestKind.Console)]
         public async Task TimeoutOrCancellation_KillsChildTree(bool cancel)
         {
             string ready = Path.Combine(_directory, "child-ready.txt");

@@ -10,6 +10,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 namespace VSManager.Tests
 {
     [TestClass]
+    [TestCategory(TestKind.Ui)]
     public class AgentDesktopUiTests
     {
         [TestMethod]
