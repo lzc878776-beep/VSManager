@@ -179,6 +179,7 @@ VSManager/
 | Copilot 监听与发送 | `MonitorCopilot` / `PollMs` | true / 1500 | 监听 Copilot 状态及轮询间隔（毫秒） |
 | | `WaitForManualChat` / `ManualChatWaitTimeoutSeconds` | true / 300 | 礼让目标手动对话；10–86400 秒，超时只提醒并继续等待 / Yield to target manual chat; 10–86400 seconds, timeout warns and keeps waiting |
 | | `Sound` / `Popup` | true / true | 完成时提示音、托盘气泡 |
+| | `TaskPopups` / `PopupMutedUntil` | true / 无 | 任务与完成弹窗总开关；弹窗上的 🔕 可静音 30 分钟、2 小时、今天，或直接关闭（在「属性 → Copilot 对话」中恢复）；同时最多显示 3 个弹窗 |
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | 识别 Copilot 窗格与「忙碌」按钮 |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | 后台发送、后台同步对话、自动打开对话窗格 |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | 窗格被切走时自动切回、显示对话步骤 |
@@ -757,6 +758,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `TaskListGroupByVs` / `TaskListGroupSort` / `TaskListCollapsedGroups` | true / `activity` / empty | Group the task list by VS, group order (`activity` or `number`), collapsed groups. See [Task list groups](#task-list-groups) |
 | Copilot monitoring & sending | `MonitorCopilot` / `PollMs` | true / 1500 | Monitor Copilot state and polling interval (ms) |
 | | `Sound` / `Popup` | true / true | Sound and tray balloon on completion |
+| | `TaskPopups` / `PopupMutedUntil` | true / none | Master switch for task and completion popups; 🔕 on a popup mutes for 30 minutes, 2 hours, today, or turns them off (restore in Settings → Copilot chat); at most 3 popups at once |
 | | `CopilotPaneKeyword` / `BusyButtonIds` | `Copilot` / `CancelButton` | How the Copilot pane and its "busy" button are recognized |
 | | `BackgroundSend` / `BackgroundSync` / `AutoOpenChat` | true / true / true | Send in the background, sync chats in the background, open the chat pane automatically |
 | | `RestoreCopilotPane` / `ShowChatSteps` | true / true | Switch back to the pane when it is replaced, show chat steps |

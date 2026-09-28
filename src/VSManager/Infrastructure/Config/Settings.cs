@@ -25,6 +25,13 @@ namespace VSManager
         [DataMember] public bool MonitorCopilot;
         [DataMember] public bool Sound;
         [DataMember] public bool Popup;
+        /// <summary>任务与完成的右下角弹窗 / 托盘气泡总开关，默认开启；关闭后状态栏、提示音与语音照常。/ Master switch for bottom-right task and completion popups / tray balloons, on by default; the status bar, sound and voice are unaffected.</summary>
+        [DataMember] public bool TaskPopups;
+        /// <summary>在此时刻之前暂不弹出任务与完成通知（本地时间）。/ Task and completion popups are muted until this moment (local time).</summary>
+        [DataMember(EmitDefaultValue = false)] public DateTime? PopupMutedUntil;
+
+        /// <summary>此刻是否允许弹出任务与完成通知。/ Whether task and completion popups may be shown now.</summary>
+        public bool PopupsAllowed(DateTime now) => TaskPopups && (PopupMutedUntil == null || now >= PopupMutedUntil.Value);
         [DataMember] public bool MinimizeToTray;
         [DataMember] public bool Hotkeys;
         [DataMember] public int PollMs;
@@ -546,6 +553,8 @@ namespace VSManager
             MonitorCopilot = true;
             Sound = true;
             Popup = true;
+            TaskPopups = true;
+            PopupMutedUntil = null;
             MinimizeToTray = true;
             Hotkeys = true;
             PollMs = 1500;

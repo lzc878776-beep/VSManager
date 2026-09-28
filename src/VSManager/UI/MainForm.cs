@@ -2492,10 +2492,7 @@ namespace VSManager
 			if (_settings.Sound) PlaySound();
 			Native.Flash(v.MainHwnd);
 			if (automaticZh != null && !_settings.PendingVsNotify) return;
-			if (_settings.Popup)
-				new ToastForm($"✔ {name}  Copilot 已完成 / Completed", msg, () => ActivateVs(v)).Show();
-			else
-				_tray.ShowBalloonTip(5000, $"{name}  Copilot 已完成 / Completed", msg, ToolTipIcon.Info);
+			ShowTaskPopup($"✔ {name}  Copilot 已完成 / Completed", msg, () => ActivateVs(v));
 			if (_settings.VoiceEnabled && _settings.HasVoiceKey) AnnounceCompletion(v, automaticZh, automaticEn);
 		}
 

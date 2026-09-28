@@ -133,7 +133,10 @@ namespace VSManager
                     "仅控制重发隐藏提示与语音，不影响排队顺序 / Controls resend-hide notifications and speech, not queue order",
                     _s.AutoHideResentFailedNotify, v => _s.AutoHideResentFailedNotify = v),
                 Toggle("完成时播放提示音", null, _s.Sound, v => _s.Sound = v),
-                Toggle("完成时弹出通知", null, _s.Popup, v => _s.Popup = v),
+                Toggle("任务与完成弹窗 / Task and completion popups",
+                    "关闭后右下角不再弹出通知或托盘气泡；状态栏、提示音与语音不受影响。弹窗上的 🔕 可临时静音 / Off: no bottom-right popups or tray balloons; the status bar, sound and voice are unaffected. Use 🔕 on a popup to mute it for a while",
+                    _s.TaskPopups, v => { _s.TaskPopups = v; if (v) _s.PopupMutedUntil = null; }),
+                Toggle("完成时弹出通知", "关闭时改用托盘气泡 / Off uses tray balloons instead", _s.Popup, v => _s.Popup = v),
             });
 
             // ---- 窗口 ----

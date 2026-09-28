@@ -130,11 +130,7 @@ namespace VSManager
         private void NotifyWithVoice(string title, string zh, string en)
         {
             string body = zh + "\n" + en;
-            try
-            {
-                if (_settings.Popup) new ToastForm(title, body, () => { ShowMe(); }).Show();
-                else ShowBalloon(title, body, ToolTipIcon.Info);
-            }
+            try { ShowTaskPopup(title, body, ShowMe); }
             catch { }
             if (_settings.VoiceEnabled && _settings.HasVoiceKey)
             {
@@ -142,6 +138,26 @@ namespace VSManager
                 SetStatus($"[{DateTime.Now:HH:mm:ss}] 🔊 播报 / Announce：{text}");
                 _voice.Speak(text);
             }
+        }
+
+        /// <summary>任务 / 完成通知：受总开关与临时静音控制，弹窗或托盘气泡。/ Task / completion notice honoring the master switch and temporary mute: popup or tray balloon.</summary>
+        private void ShowTaskPopup(string title, string body, Action onClick)
+        {
+            if (!_settings.PopupsAllowed(DateTime.Now)) return;
+            if (_settings.Popup) new ToastForm(title, body, onClick, MutePopups).Show();
+            else ShowBalloon(title, body, ToolTipIcon.Info);
+        }
+
+        /// <summary>弹窗上的静音选项：null 表示关闭弹窗（可在设置中恢复），否则静音到该时刻。/ Mute option from a popup: null turns popups off (restorable in settings), otherwise mutes until that moment.</summary>
+        private void MutePopups(DateTime? until)
+        {
+            if (until == null) _settings.TaskPopups = false;
+            else _settings.PopupMutedUntil = until.Value;
+            _settings.Save();
+            ToastForm.CloseAll();
+            SetStatus(until == null
+                ? "已关闭任务与完成弹窗，可在「属性 → Copilot 对话」中重新开启 / Task and completion popups turned off; re-enable them in Settings → Copilot chat"
+                : $"任务与完成弹窗已静音至 {until.Value:MM-dd HH:mm} / Popups muted until {until.Value:MM-dd HH:mm}");
         }
 
         #endregion

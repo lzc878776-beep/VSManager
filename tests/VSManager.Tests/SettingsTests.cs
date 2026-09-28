@@ -22,6 +22,29 @@ namespace VSManager.Tests
             Assert.AreEqual(_data.File("settings.json"), AppSettings.FilePath);
         }
 
+        /// <summary>任务与完成弹窗：默认开启；临时静音到期恢复；关闭总开关后一直不弹；设置往返保留。/ Task popups: on by default; a mute expires; the master switch keeps them off; survives a round trip.</summary>
+        [TestMethod]
+        public void TaskPopups_DefaultMuteAndRoundTrip()
+        {
+            var now = new DateTime(2026, 9, 28, 22, 0, 0);
+            var s = AppSettings.Load();
+            Assert.IsTrue(s.TaskPopups);
+            Assert.IsNull(s.PopupMutedUntil);
+            Assert.IsTrue(s.PopupsAllowed(now));
+            s.PopupMutedUntil = now.AddMinutes(30);
+            Assert.IsFalse(s.PopupsAllowed(now.AddMinutes(29)));
+            Assert.IsTrue(s.PopupsAllowed(now.AddMinutes(30)));
+            s.Save();
+            var loaded = AppSettings.Load();
+            Assert.AreEqual(now.AddMinutes(30), loaded.PopupMutedUntil);
+            loaded.PopupMutedUntil = null;
+            loaded.TaskPopups = false;
+            loaded.Save();
+            loaded = AppSettings.Load();
+            Assert.IsFalse(loaded.TaskPopups);
+            Assert.IsFalse(loaded.PopupsAllowed(now.AddDays(10)));
+        }
+
         [TestMethod]
         public void Load_WithoutFile_ReturnsDefaults()
         {
