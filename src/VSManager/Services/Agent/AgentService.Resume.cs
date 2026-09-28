@@ -86,6 +86,8 @@ namespace VSManager
             string text = (r.Text ?? "").Trim();
             if (text.Length == 0) return;
             if (!string.IsNullOrWhiteSpace(r.Error)) text += "\n（" + r.Error + "）";
+            // 附上当时的工具记录：只恢复文字会让模型以为「写出已入队」就够了而模仿虚报 / Attach the tool log: bare text teaches the model that writing "queued" is enough
+            text += ToolClaimCheck.HistoryAnnotation(r.Text, r.Steps);
             _history.Add(new AIMessage(AIRole.Assistant, text));
         }
     }

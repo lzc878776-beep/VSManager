@@ -7,6 +7,9 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- 主控 AI 虚报入队核查：每轮回复检查「已入队 / 已发布 / 已核实清单」等说法是否有本轮工具调用支撑；声称的任务编号尚未分配（不可能存在）时，在回复下方标记「⚠ 核查未通过」，并自动把更正交给助手一次（要求如实更正，并真正调用 send_task），更正轮不会再触发，避免循环；用户发起的一轮中声称入队或核实却没调用对应工具时给出「未经工具确认」提醒。接续对话时历史回复附带当时的工具记录，避免模型只看到「已入队」文字而模仿；提示词新增最高优先级的「工具真实性」规则。
+  Check for fabricated enqueues by the main AI: every reply is checked for "queued / published / list verified" claims without a matching tool call in the same round. When claimed task IDs have never been assigned (so cannot exist), the reply is marked "⚠ Check failed" and a correction goes to the assistant once (correct the claim and really call send_task); correction rounds never trigger another, so there is no loop. User rounds that claim enqueueing or verification without the matching tool get an "unconfirmed" warning. Restored conversations now carry the tool log of each reply so the model does not imitate bare "queued" text, and the prompt gains a top-priority "tool truthfulness" rule.
+
 - 测试按是否弹窗分为三类：界面类（显示窗口 / 抢焦点 / 使用剪贴板，`TestCategory=UI`）、命令行类（启动 git / cmd / PowerShell，`TestCategory=Console`）与完全不弹窗类（未标注）。`dotnet test` 默认只运行完全不弹窗类（约 960 个，耗时约为全部测试的四成，运行时不打断其他窗口的输入），可用 `-p:TestScope=UI|Console|All` 或新增的 `tests\run-tests.ps1 -Scope` 参数选择范围。
   Tests are split by whether they pop up: UI (shows windows / takes focus / uses the clipboard, `TestCategory=UI`), Console (starts git / cmd / PowerShell, `TestCategory=Console`) and no-popup (untagged). `dotnet test` now runs only the no-popup set by default (about 960 tests, roughly 40% of the full run time, without interrupting typing in other windows); choose another scope with `-p:TestScope=UI|Console|All` or the new `tests\run-tests.ps1 -Scope` parameter.
 

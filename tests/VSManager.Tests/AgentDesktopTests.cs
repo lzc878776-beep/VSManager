@@ -947,6 +947,61 @@ namespace VSManager.Tests
             public void Dispose() { }
         }
 
+        [TestMethod]
+        public async Task FabricatedEnqueue_IsFlagged_AndCorrectedOnce()
+        {
+            _settings.AgentAutoFollowUp = true;
+            var client = new ScriptedClient("已确认入队 6 个任务：@50、@51（排队中）");
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                agent.NextTaskIdSource = () => 50;
+                await agent.RunAsync("拆分后发送");
+                var steps = agent.Transcript.Messages[1].Parts.Where(p => p.IsStep).Select(p => p.Text).ToList();
+                Assert.IsTrue(steps.Any(t => t.StartsWith("⚠ 核查未通过") && t.Contains("@50")), string.Join("|", steps));
+
+                // 自动跟进：把更正交给模型一次；更正轮再虚报也不会再次触发 / Follow-up: the correction goes to the model once; a repeat in that round does not loop
+                for (int i = 0; i < 50 && (client.Calls < 2 || agent.Running); i++) await Task.Delay(100);
+                await Task.Delay(800);
+                Assert.AreEqual(2, client.Calls);
+                StringAssert.StartsWith(client.LastUser, ToolClaimCheck.Marker);
+                StringAssert.Contains(client.LastUser, "@50");
+            }
+        }
+
+        [TestMethod]
+        public async Task HonestReply_AddsNoCheckStep()
+        {
+            var client = new ScriptedClient("好的，我先确认一下拆分方式再发布。");
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                agent.NextTaskIdSource = () => 50;
+                await agent.RunAsync("帮我拆分");
+                Assert.IsFalse(agent.Transcript.Messages[1].Parts.Any(p => p.IsStep && p.Text.Contains("核查")));
+                Assert.AreEqual(1, client.Calls);
+            }
+        }
+
+        /// <summary>每轮都回复同一段文字、不调用任何工具。/ Replies with the same text every round, never calling tools.</summary>
+        private sealed class ScriptedClient : IAiClientFactory, IChatClient
+        {
+            private readonly string _reply;
+            internal int Calls;
+            internal string LastUser;
+            public ScriptedClient(string reply) { _reply = reply; }
+            public IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<ChatResponse> GetResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, CancellationToken cancellationToken = default) =>
+                Task.FromResult(new ChatResponse(new AIMessage(Microsoft.Extensions.AI.ChatRole.Assistant, _reply)));
+            public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            {
+                Calls++;
+                LastUser = messages.Last(m => m.Role == Microsoft.Extensions.AI.ChatRole.User).Text;
+                await Task.Yield();
+                yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, _reply);
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
+        }
+
         private sealed class StreamingClient : IAiClientFactory, IChatClient
         {
             internal List<AIMessage> Messages;

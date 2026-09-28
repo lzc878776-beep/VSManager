@@ -544,6 +544,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             _history.Add(userMessage);
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
+            var toolNames = new List<string>();
+            ClaimCheckResult claim = null;
+            // 自动更正的一轮不再触发更正，避免循环 / A correction round never triggers another correction (no loops)
+            bool correctionRound = text.StartsWith(ToolClaimCheck.Marker, StringComparison.Ordinal);
             string error = null;
             Exception internalError = null;
             bool transientFailure = false;
@@ -571,6 +575,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                         {
                             string step = DescribeCall(fc);
                             if (!string.IsNullOrEmpty(fc.CallId)) calls[fc.CallId] = step;
+                            if (!string.IsNullOrEmpty(fc.Name)) toolNames.Add(fc.Name);
                             AddStep(reply, "⚙ " + step);
                             Activity = step + "…";
                         }
@@ -614,6 +619,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     AddStep(reply, "⚠ " + error);
                 }
                 StripLeakedToolMarkup(reply);
+                if (error == null) claim = CheckToolClaims(reply, toolNames, string.IsNullOrWhiteSpace(display));
                 if (reply.Parts.Count == 0) AddText(reply, "（没有返回内容）");
                 try
                 {
@@ -634,6 +640,12 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 }
             }
             if (gen != _generation) return;
+            if (claim != null && claim.Verdict == ClaimVerdict.Fabricated && !correctionRound)
+            {
+                int next = NextTaskIdSource?.Invoke() ?? 0;
+                Notify("⚠ 自动核查：" + string.Join("、", claim.MissingIds.Select(i => "@" + i)) + " 不在任务清单中，已要求助手更正 / Auto check: claimed tasks are not in the task list; asked the assistant to correct",
+                    ToolClaimCheck.Correction(claim, next));
+            }
             if (internalError != null)
                 RaiseFault(AgentFaultKind.Exception, internalError.GetType().Name + "：" + OneLine(internalError.Message, 160));
             else if (transientFailure)
@@ -656,6 +668,28 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (Profile == AgentProfile.Notes) return;
             try { Archive.Ai(role, content, detail, steps, error); } catch { }
             try { AgentChatLog.Append(role, content, detail, steps, error, local, reset); } catch { }
+        }
+
+        /// <summary>
+        /// 任务清单下一个待分配的编号（由主窗体提供，用于核查回复中的 @编号）；null 表示不核查编号。
+        /// The next ID the task list will assign (provided by the main form, used to check @IDs in replies); null = skip the ID check.
+        /// </summary>
+        internal Func<int> NextTaskIdSource { get; set; }
+
+        /// <summary>核查本轮回复的入队 / 核实说法，未通过时在回复下方加一条核查步骤。/ Checks this round's queued / verified claims and adds a check step when they fail.</summary>
+        /// <remarks>「未证实」提醒只用于用户发起的一轮：通知轮常转述已有结果，提醒只会成为噪音。/ "Unconfirmed" warnings apply to user rounds only: notice rounds often recap earlier results.</remarks>
+        private ClaimCheckResult CheckToolClaims(ChatMessage reply, IList<string> toolNames, bool userRound)
+        {
+            if (Profile == AgentProfile.Notes) return null;
+            int next = 0;
+            try { next = NextTaskIdSource?.Invoke() ?? 0; } catch { }
+            string text = string.Join("\n", reply.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text));
+            var r = ToolClaimCheck.Check(text, toolNames, next);
+            if (r.Verdict == ClaimVerdict.Ok || (r.Verdict == ClaimVerdict.Unconfirmed && !userRound)) return r;
+            AddStep(reply, r.Step);
+            if (r.Verdict == ClaimVerdict.Fabricated)
+                AppLog.Write(LogFile, "回复声称的任务不存在 / Reply claimed tasks that do not exist：" + string.Join(",", r.MissingIds) + "；tools=" + string.Join(",", toolNames));
+            return r;
         }
 
         private void TrimHistory()
