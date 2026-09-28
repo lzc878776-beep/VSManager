@@ -166,12 +166,21 @@ namespace VSManager
             if (TaskFailureAnalyzer.CheckAiResend(_tasks.Items, e.Path, text) is string refused)
             {
                 AppLog.Write(AppLog.TasksFile, "拒绝 AI 重发 / Refused AI resend: " + TextUtil.Clip(refused, 200));
-                return refused;
+                return NotPushed(refused);
             }
             var q = attachments != null && attachments.Length > 0
                 ? _tasks.Add(e.Path, e.Alias, text, "AI", attachments, parked: true)
                 : _tasks.AddParked(e.Path, e.Alias, text, "AI");
             ApplyTitle(q, title);
+            // 核实暂存任务确实进入清单并已保存 / Verify the parked task is really listed and saved
+            var admission = _dispatcher.CheckPush(q);
+            if (admission.Outcome == PushOutcome.NotAdmitted)
+            {
+                _taskPanel.RefreshItems();
+                string head = admission.Headline(q);
+                SetStatus(head);
+                return head;
+            }
             string hidden = HideResentFailed(q);
             string note = (hidden == null ? "" : "\n" + hidden) + (q.HasAttachments ? "\n" + AttachmentQueuedNote(q) : "");
             SendLog.Event(e.Alias, $"任务清单：任务 #{q.Id} 已暂存，等待打开「{e.Alias}」/ task #{q.Id} parked, waiting for \"{e.Alias}\" to open");
@@ -186,7 +195,8 @@ namespace VSManager
                 SetStatus(TaskDispatcher.WaitingForStart);
             }
             _dispatcher.Pump();
-            return $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch" + note;
+            return _dispatcher.CheckPush(q).Headline(q) + "\n"
+                + $"任务 @{q.Id} 已排队，等待目标「{e.Alias}」打开后按编号调度 / Task @{q.Id} queued, awaiting target and ID-ordered dispatch" + note;
         }
 
         Task<string> IAgentHost.LaunchSolution(string path) => LaunchSolutionAsync(path);

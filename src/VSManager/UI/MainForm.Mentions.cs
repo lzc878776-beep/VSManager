@@ -35,6 +35,13 @@ namespace VSManager
             catch { return false; }
         }
 
+        /// <summary>后台核实提及任务的推送结果并更新状态栏。/ Verifies a mention task's push in the background and updates the status bar.</summary>
+        private async void ReportPush(QueuedTask task, string message)
+        {
+            try { await ConfirmPushAsync(task, message); }
+            catch (Exception ex) { SetStatus("核实推送结果时出错 / Error while verifying the push: " + ex.Message); }
+        }
+
         private MentionSubmission SubmitChatMention(string text)
         {
             try
@@ -75,6 +82,7 @@ namespace VSManager
             SetStatus(message);
             SendLog.Event(task.VsName, message);
             _dispatcher.Pump();
+            ReportPush(task, message);
             return new MentionSubmission(task, message);
         }
     }

@@ -19,10 +19,10 @@ namespace VSManager
         private int _attachmentCleanupRunning;
 
         Task<string> IAgentAttachmentHost.QueueTask(VsInstance v, string text, AttachmentRef[] attachments) =>
-            OnUi(() => EnqueueTextTask(v, text, "AI", attachments));
+            OnUiAsync(() => EnqueueAndConfirmAsync(v, text, "AI", attachments));
 
         Task<string> IAgentTitledTaskHost.QueueTask(VsInstance v, string text, AttachmentRef[] attachments, string title) =>
-            OnUi(() => EnqueueTextTask(v, text, "AI", attachments, title));
+            OnUiAsync(() => EnqueueAndConfirmAsync(v, text, "AI", attachments, title));
 
         Task<string> IAgentTitledTaskHost.ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments, string title) =>
             OnUi(() => ParkTaskCore(e, text, attachments, title));

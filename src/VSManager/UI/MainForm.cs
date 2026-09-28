@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -1283,10 +1283,12 @@ namespace VSManager
 			if (_chat.Images.Count == 0)
 			{
 				if (string.IsNullOrWhiteSpace(text)) { SetStatus("任务内容为空 / Task text is empty"); return; }
-				string queued = EnqueueTextTask(v, text, "用户");
+				string queued = EnqueueTextTask(v, text, "用户", out var admitted);
+				// 未进入清单时保留输入，便于修改后重发 / Keep the input when not admitted so it can be resent
+				if (admitted == null) { SetStatus(queued); return; }
 				_drafts.Remove(v.Pid);
 				_chat.ClearInput();
-				SetStatus(queued);
+				await ConfirmPushAsync(admitted, queued);
 				return;
 			}
 			// 图片仍使用现有附件发送流程，但不得越过清单任务。/ Keep attachment delivery, without bypassing queued tasks.
@@ -1378,7 +1380,7 @@ namespace VSManager
 			return (ChatTranscript)Invoke((Func<ChatTranscript>)(() => _chatCache.TryGetValue(v.Pid, out var t) ? t : null));
 		}
 
-		Task<string> IRemoteHost.SendChat(VsInstance v, string text) => OnUi(() => EnqueueTextTask(v, text, "用户"));
+		Task<string> IRemoteHost.SendChat(VsInstance v, string text) => OnUiAsync(() => EnqueueAndConfirmAsync(v, text, "用户"));
 
 		async Task<string> IRemoteHost.InvokeChatButton(VsInstance v, string automationId, string name)
 		{
@@ -1430,7 +1432,7 @@ namespace VSManager
 			return await OnUi(() => _chatCache.TryGetValue(v.Pid, out var c) ? c : null).ConfigureAwait(false);
 		}
 
-		Task<string> IAgentHost.QueueTask(VsInstance v, string text) => OnUi(() => EnqueueTextTask(v, text, "AI"));
+		Task<string> IAgentHost.QueueTask(VsInstance v, string text) => OnUiAsync(() => EnqueueAndConfirmAsync(v, text, "AI"));
 
 		/// <summary>所有文本任务只入队，由计时调度发布。/ All text tasks enqueue only; the timer-driven dispatcher publishes them.</summary>
 		/// <summary>为新任务记录题目（已有题目的复用任务保持不变）。/ Records the title on a task that has none yet.</summary>
@@ -1441,14 +1443,49 @@ namespace VSManager
 			_tasks.Commit();
 		}
 
-		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null, string title = null)
+		/// <summary>推送后核实送达的最长等待时间。/ Longest wait when verifying delivery after a push.</summary>
+		private static readonly TimeSpan PushConfirmTimeout = TimeSpan.FromSeconds(30);
+
+		private string EnqueueTextTask(VsInstance v, string text, string source, AttachmentRef[] attachments = null, string title = null) =>
+			EnqueueTextTask(v, text, source, out _, attachments, title);
+
+		/// <summary>
+		/// 入队并核实推送结果：只有确认任务在清单中且已送达 Copilot 才报告「推送成功」，否则如实说明失败或尚未推送的原因。
+		/// Enqueues and verifies the push: reports "pushed" only when the task is confirmed in the list and delivered to Copilot;
+		/// otherwise states honestly why it failed or has not been pushed yet.
+		/// </summary>
+		private Task<string> EnqueueAndConfirmAsync(VsInstance v, string text, string source, AttachmentRef[] attachments = null, string title = null)
 		{
-			if (v == null || string.IsNullOrWhiteSpace(text)) return "目标或任务内容无效 / Invalid target or task text";
+			string queued = EnqueueTextTask(v, text, source, out var admitted, attachments, title);
+			return admitted == null ? Task.FromResult(queued) : ConfirmPushAsync(admitted, queued);
+		}
+
+		/// <summary>等待并核实本次推送，结论写入状态栏与发送日志。/ Awaits and verifies this push; the verdict goes to the status bar and send log.</summary>
+		private async Task<string> ConfirmPushAsync(QueuedTask q, string queued)
+		{
+			PushCheck check;
+			try { check = await _dispatcher.ConfirmPushAsync(q, PushConfirmTimeout); }
+			catch (Exception ex) { check = new PushCheck(PushOutcome.Held, "核实推送结果时出错 / Error while verifying the push: " + ex.Message); }
+			string head = check.Headline(q);
+			SetStatus(head);
+			SendLog.Event(q.VsName, head);
+			return head + "\n" + queued;
+		}
+
+		/// <summary>未入队的结果统一以「❌ 未推送」开头。/ Results of a rejected enqueue always start with "❌ 未推送".</summary>
+		private static string NotPushed(string reason) =>
+			PushCheck.IsRejected(reason) ? reason : "❌ 未推送 / Not pushed: " + reason;
+
+		/// <param name="admitted">确认已进入任务清单并保存的任务；被拒绝或未能入队时为 null。/ The task confirmed in the list and saved; null when refused or not admitted.</param>
+		private string EnqueueTextTask(VsInstance v, string text, string source, out QueuedTask admitted, AttachmentRef[] attachments = null, string title = null)
+		{
+			admitted = null;
+			if (v == null || string.IsNullOrWhiteSpace(text)) return NotPushed("目标或任务内容无效 / Invalid target or task text");
 			// AI 重发：拒绝近似原样的重复与超过自主重试上限的需求 / AI resends: refuse near-verbatim repeats and requests over the self-retry limit
 			if (source == "AI" && TaskFailureAnalyzer.CheckAiResend(_tasks.Items, v.Key, text) is string refused)
 			{
 				AppLog.Write(AppLog.TasksFile, "拒绝 AI 重发 / Refused AI resend: " + Clip(refused, 200));
-				return refused;
+				return NotPushed(refused);
 			}
 			string name = NameOf(v);
 			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => !i.HasExplicitTarget && TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
@@ -1461,6 +1498,15 @@ namespace VSManager
 			string startNote = _dispatcher.AcceptQueued(q, source);
 			UpdateTaskTimer();
 			_taskPanel.RefreshItems();
+			// 核实确实进入清单并已保存，不再无条件报告成功 / Verify the task is really listed and saved instead of always reporting success
+			var admission = _dispatcher.CheckPush(q);
+			if (admission.Outcome == PushOutcome.NotAdmitted)
+			{
+				string head = admission.Headline(q);
+				SendLog.Event(name, head);
+				SetStatus(head);
+				return head;
+			}
 			string result = $"已加入任务清单：@{q.Id}「{name}」（{StatusText(q)}，前面 {_tasks.Ahead(q)} 个）；按编号调度 / "
 				+ $"Accepted into task list: @{q.Id}; {_tasks.Ahead(q)} ahead, dispatched in ID order";
 			result += "；" + startNote;
@@ -1471,6 +1517,7 @@ namespace VSManager
 			SendLog.Event(name, result);
 			SetStatus(result);
 			_dispatcher.Pump();
+			admitted = q;
 			return result;
 		}
 

@@ -804,7 +804,7 @@ namespace VSManager.Tests
             StringAssert.Contains(parked, "if (_settings.VoiceEnabled && _settings.HasVoiceKey)");
             StringAssert.Contains(settings, "_s.AutoStartAiTasks, v => _s.AutoStartAiTasks = v");
             StringAssert.Contains(settings, "_s.AutoStartAllTasks, v => _s.AutoStartAllTasks = v");
-            StringAssert.Contains(Read("UI\\MainForm.Attachments.cs"), "EnqueueTextTask(v, text, \"AI\", attachments)");
+            StringAssert.Contains(Read("UI\\MainForm.Attachments.cs"), "EnqueueAndConfirmAsync(v, text, \"AI\", attachments)");
         }
     }
 }
