@@ -499,8 +499,10 @@ namespace VSManager
                 _s.AgentConfirm, v => _s.AgentConfirm = v), Dpi.S(56), true);
             Row(null, Toggle("任务完成自动跟进", "任务清单中的任务完成后，AI 助手自动汇报结果并继续后续步骤",
                 _s.AgentAutoFollowUp, v => _s.AgentAutoFollowUp = v), Dpi.S(56), true);
-            Row(null, Toggle("允许 VS 截图分析 / Allow VS screenshot analysis", "每次预览批准后才发送图片给当前模型；需要视觉模型，不保存截图 / Preview approval required; vision model needed; no image files",
+            Row(null, Toggle("允许 VS 截图分析 / Allow VS screenshot analysis", "AI 可截取目标 VS 交给当前模型分析界面；需要视觉模型，不保存截图 / AI may capture the target VS for the current model to analyze; vision model needed; no image files",
                 _s.AgentScreenshotEnabled, v => _s.AgentScreenshotEnabled = v), Dpi.S(56), true);
+            Row(null, Toggle("截图需逐张预览批准 / Preview every screenshot", "开启后 AI 不能直接读取 VS 截图（read_vs_screenshot），每张都要预览批准；关闭时直接截图分析（仍遵守「操作前确认」）/ When on, AI cannot read VS screenshots directly; when off, screenshots are analyzed directly (still honoring Confirm before acting)",
+                _s.AgentScreenshotRequirePreview, v => _s.AgentScreenshotRequirePreview = v), Dpi.S(56), true);
             Row(null, new Label { Dock = DockStyle.Fill, ForeColor = Theme.TextMuted, Text = "AI PowerShell 入口已停用，防止绕过文件白名单。请使用授权文件工具。\r\nAI PowerShell is disabled to prevent file-allowlist bypass. Use authorized file tools." }, Dpi.S(64), true);
 
             var preset = new DarkCombo { Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = Padding.Empty };

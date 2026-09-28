@@ -527,8 +527,111 @@ namespace VSManager.Tests
             Assert.IsTrue((await Invoke("read_note", new AIFunctionArguments { ["page"] = "..\\x" })).StartsWith("读取笔记失败"));
         }
 
-        private sealed class FileHost : IAgentHost
+        [TestMethod]
+        public async Task CreateNote_CreatesPageUnderParent_AndNotifiesHost()
         {
+            _settings.AgentConfirm = false;
+            var store = UseNotebook();
+            string parent = store.CreatePage("", "计划");
+            string result = await Invoke("create_note", new AIFunctionArguments { ["title"] = "会议记录", ["content"] = "- 结论 A", ["parent"] = parent.ToUpperInvariant() });
+            StringAssert.Contains(result, "计划 / 会议记录");
+            string id = store.FindChild(parent, "会议记录");
+            Assert.IsNotNull(id);
+            Assert.AreEqual("- 结论 A", store.Read(id).Text);
+            CollectionAssert.AreEqual(new[] { id }, _host.NotebookChanges);
+            StringAssert.StartsWith(await Invoke("create_note", new AIFunctionArguments { ["title"] = "会议记录", ["parent"] = parent }), "新建笔记失败");
+            StringAssert.StartsWith(await Invoke("create_note", new AIFunctionArguments { ["title"] = " " }), "请提供页面标题");
+        }
+
+        [TestMethod]
+        public async Task AppendToNote_KeepsExistingBody()
+        {
+            _settings.AgentConfirm = false;
+            var store = UseNotebook();
+            string id = store.CreatePage("", "待办", "# 待办\n\n- [ ] 旧事项\n\n");
+            StringAssert.Contains(await Invoke("append_to_note", new AIFunctionArguments { ["page"] = id, ["content"] = "- [ ] 新事项" }), "Appended");
+            Assert.AreEqual("# 待办\n\n- [ ] 旧事项\n\n- [ ] 新事项\n", store.Read(id).Text);
+            string empty = store.CreatePage("", "空白", "");
+            await Invoke("append_to_note", new AIFunctionArguments { ["page"] = empty, ["content"] = "first" });
+            Assert.AreEqual("first\n", store.Read(empty).Text);
+            StringAssert.StartsWith(await Invoke("append_to_note", new AIFunctionArguments { ["page"] = "..\\x", ["content"] = "x" }), "写入笔记失败");
+            Assert.AreEqual(2, _host.NotebookChanges.Count);
+        }
+
+        [TestMethod]
+        public async Task UpdateNote_ReplacesBody()
+        {
+            _settings.AgentConfirm = false;
+            var store = UseNotebook();
+            string id = store.CreatePage("", "草稿", "old");
+            StringAssert.Contains(await Invoke("update_note", new AIFunctionArguments { ["page"] = id, ["content"] = "# 新版\n\n正文" }), "Rewrote");
+            Assert.AreEqual("# 新版\n\n正文", store.Read(id).Text);
+            StringAssert.Contains(await Invoke("update_note", new AIFunctionArguments { ["page"] = id, ["content"] = new string('x', AgentService.MaxNoteWriteChars + 1) }), "too long");
+        }
+
+        [TestMethod]
+        public async Task NoteWrites_HonorAgentConfirm()
+        {
+            _settings.AgentConfirm = true;
+            var store = UseNotebook();
+            string id = store.CreatePage("", "草稿", "old");
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("update_note", new AIFunctionArguments { ["page"] = id, ["content"] = "new" }), "declined");
+            StringAssert.Contains(await Invoke("append_to_note", new AIFunctionArguments { ["page"] = id, ["content"] = "new" }), "declined");
+            StringAssert.Contains(await Invoke("create_note", new AIFunctionArguments { ["title"] = "另一篇" }), "declined");
+            Assert.AreEqual("old", store.Read(id).Text);
+            Assert.IsNull(store.FindChild("", "另一篇"));
+            Assert.AreEqual(3, _host.Confirmations);
+            Assert.AreEqual(0, _host.NotebookChanges.Count);
+            _host.ConfirmResult = true;
+            await Invoke("update_note", new AIFunctionArguments { ["page"] = id, ["content"] = "new" });
+            Assert.AreEqual("new", store.Read(id).Text);
+        }
+
+        [TestMethod]
+        public void NotebookSkill_IsInSystemPromptInBothLanguages()
+        {
+            foreach (bool en in new[] { false, true })
+            {
+                string prompt = Prompts.AgentSystem(en, DateTime.Now, "", null);
+                StringAssert.Contains(prompt, "create_note");
+                StringAssert.Contains(prompt, "append_to_note");
+                StringAssert.Contains(prompt, "update_note");
+            }
+        }
+
+        [TestMethod]
+        public void TestChecklistLanguage_FollowsPromptLanguage()
+        {
+            StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Now, "", null), "测试清单或未验证项时一律用中文输出");
+            StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Now, "", null), "always write them in English");
+        }
+
+        [TestMethod]
+        public async Task EditTaskResult_HonorsAgentConfirm_AndCallsHost()
+        {
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("edit_task_result", new AIFunctionArguments { ["id"] = 3, ["text"] = "- [ ] 中文" }), "declined");
+            Assert.AreEqual(0, _host.ResultEdits.Count);
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("edit_task_result", new AIFunctionArguments { ["id"] = 3, ["text"] = "- [ ] 中文" }), "edited");
+            CollectionAssert.AreEqual(new[] { "3:- [ ] 中文" }, _host.ResultEdits);
+            StringAssert.Contains(await Invoke("edit_task_result", new AIFunctionArguments { ["id"] = 3, ["text"] = " " }), "empty");
+            StringAssert.Contains(await Invoke("edit_task_result", new AIFunctionArguments { ["id"] = 3, ["text"] = new string('x', TaskQueue.MaxResultChars + 1) }), "too long");
+            Assert.AreEqual(2, _host.Confirmations);
+            foreach (bool en in new[] { false, true })
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "edit_task_result");
+        }
+
+        private sealed class FileHost : IAgentHost, IAgentNotebookHost, IAgentTaskResultHost
+        {
+            internal readonly List<string> ResultEdits = new List<string>();
+            public Task<string> EditTaskResult(int id, string text) { ResultEdits.Add(id + ":" + text); return Task.FromResult("edited"); }
+            internal readonly List<string> NotebookChanges = new List<string>();
+            internal bool? ConfirmResult;
+            internal int Confirmations;
+            public void NotebookChanged(string pageId) => NotebookChanges.Add(pageId);
             public IList<VsInstance> Instances { get; } = new List<VsInstance>();
             public SolutionRegistry Solutions { get; } = new SolutionRegistry();
             public string NameOf(VsInstance v) => "Test VS";
@@ -543,7 +646,12 @@ namespace VSManager.Tests
             public Task<string> InvokeChatButton(VsInstance v, string automationId, string name) => throw new NotSupportedException();
             public Task<string> Activate(VsInstance v) => throw new NotSupportedException();
             public Task<string> ErrorList(VsInstance v, int max) => throw new NotSupportedException();
-            public Task<bool> Confirm(string title, string detail) => throw new NotSupportedException();
+            public Task<bool> Confirm(string title, string detail)
+            {
+                if (!ConfirmResult.HasValue) throw new NotSupportedException();
+                Confirmations++;
+                return Task.FromResult(ConfirmResult.Value);
+            }
             public Task<string> DockPanes() => throw new NotSupportedException();
             public Task<string> ArrangeCopilotPanes(IList<VsInstance> targets, int screen, PaneArrangement arrangement, bool minimize) => throw new NotSupportedException();
             public Task<string> RestoreCopilotLayout() => throw new NotSupportedException();

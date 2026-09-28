@@ -280,6 +280,66 @@ namespace VSManager
             }
         }
 
+        /// <summary>是否为 C# 源文件（仅 .cs，不含 .cshtml / .csproj 等）。/ Whether the path is a C# source file (.cs only, not .cshtml / .csproj etc.).</summary>
+        public static bool IsCsFile(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return false;
+            try { return string.Equals(Path.GetExtension(path), ".cs", StringComparison.OrdinalIgnoreCase); }
+            catch (ArgumentException) { return false; }
+        }
+
+        /// <summary>
+        /// 关闭指定 VS 中所有已打开的 .cs 文件标签页；有未保存修改的文件不关闭、不保存，只在结果中列出文件名。
+        /// Closes every open .cs document tab in the VS; files with unsaved changes are neither closed nor saved, only listed by file name.
+        /// </summary>
+        public static string CloseCsDocuments(VsInstance vs)
+        {
+            if (vs?.Dte == null) return "无法连接到该 VS 的自动化接口 (DTE) / Cannot connect to the VS automation interface (DTE)";
+            try
+            {
+                dynamic dte = vs.Dte;
+                dynamic docs = dte.Documents;
+                int count = Convert.ToInt32(docs.Count);
+                // 先收集再关闭，关闭会改变集合 / Collect first: closing mutates the collection
+                var targets = new List<object>();
+                for (int i = 1; i <= count; i++)
+                {
+                    try
+                    {
+                        dynamic d = docs.Item(i);
+                        if (IsCsFile((string)d.FullName)) targets.Add(d);
+                    }
+                    catch { }
+                }
+                int closed = 0;
+                var dirty = new List<string>();
+                var failed = new List<string>();
+                foreach (dynamic d in targets)
+                {
+                    string name = "";
+                    try { name = Path.GetFileName((string)d.FullName); } catch { }
+                    try
+                    {
+                        if (!(bool)d.Saved) { dirty.Add(name); continue; }
+                        d.Close(2); // vsSaveChanges.vsSaveChangesNo
+                        closed++;
+                    }
+                    catch { failed.Add(name); }
+                }
+                if (targets.Count == 0) return "没有已打开的 .cs 文件标签页 / No open .cs tabs";
+                var sb = new System.Text.StringBuilder($"已关闭 {closed} 个 .cs 文件标签页 / Closed {closed} .cs tab(s)");
+                if (dirty.Count > 0)
+                    sb.Append($"；{dirty.Count} 个有未保存修改，已保留 / {dirty.Count} with unsaved changes kept open：").Append(string.Join(", ", dirty));
+                if (failed.Count > 0)
+                    sb.Append($"；{failed.Count} 个关闭失败 / {failed.Count} failed to close：").Append(string.Join(", ", failed));
+                return sb.ToString();
+            }
+            catch (Exception ex)
+            {
+                return "关闭 .cs 文件标签页失败 / Failed to close .cs tabs：" + ex.Message;
+            }
+        }
+
         #region 启动配置（launchSettings.json）
 
         public class LaunchProfiles

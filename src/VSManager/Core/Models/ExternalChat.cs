@@ -33,6 +33,9 @@ namespace VSManager
 
         public string StatusText => Generating ? "生成中" : Stopped ? "已停止" : Interrupted ? "已中断" : "已完成";
 
+        /// <summary>无效对话：已停止或已中断（不在生成中），可批量移除。/ Invalid chat: stopped or interrupted (not generating); removable in bulk.</summary>
+        public bool IsInvalid => !Generating && (Stopped || Interrupted);
+
         public string CopyText =>
             "【提问】" + Environment.NewLine + (Question ?? "") + Environment.NewLine + Environment.NewLine +
             "【回答】" + Environment.NewLine + (string.IsNullOrWhiteSpace(Answer) ? "（暂无）" : Answer);

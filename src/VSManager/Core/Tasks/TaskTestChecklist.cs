@@ -81,6 +81,23 @@ namespace VSManager
             return t.TestItems;
         }
 
+        /// <summary>
+        /// 用改写后的结果文字更新测试清单：新文字能解析出测试项时替换清单（项数不变时按位置保留勾选，便于翻译）；
+        /// 解析不出时保留原清单。只处理等待测试的任务。
+        /// Updates the checklist from an edited result: when the new text yields test items they replace the list (checks are kept
+        /// by position when the count is unchanged, e.g. after a translation); otherwise the old list is kept. Pending tasks only.
+        /// </summary>
+        public static void Replace(QueuedTask t, string text)
+        {
+            if (!Pending(t)) return;
+            var parsed = Parse(text);
+            if (parsed.Length == 1 && parsed[0].Text == FallbackItem) return;
+            var old = t.TestItems;
+            if (old != null && old.Length == parsed.Length)
+                for (int i = 0; i < parsed.Length; i++) parsed[i].Checked = old[i]?.Checked ?? false;
+            t.TestItems = parsed;
+        }
+
         /// <summary>尚未勾选的项数。/ Number of unchecked items.</summary>
         public static int Remaining(QueuedTask t) => t?.TestItems?.Count(i => i != null && !i.Checked) ?? 0;
 

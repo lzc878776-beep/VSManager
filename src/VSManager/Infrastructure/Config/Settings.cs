@@ -146,6 +146,11 @@ namespace VSManager
         [DataMember] public bool AgentAutoFollowUp;
         /// <summary>允许经预览批准的截图分析；需要视觉模型。/ Allow approved screenshot analysis; requires a vision model.</summary>
         [DataMember] public bool AgentScreenshotEnabled;
+        /// <summary>
+        /// 每张截图都需预览批准：开启后禁用 read_vs_screenshot 直接读图，只保留 capture_vs_screenshot；默认关闭。
+        /// Require a preview for every screenshot: disables direct read_vs_screenshot and keeps only capture_vs_screenshot; off by default.
+        /// </summary>
+        [DataMember] public bool AgentScreenshotRequirePreview;
         /// <summary>保留旧配置字段；严格文件白名单模式下不再允许 AI 执行任意脚本。/ Legacy field retained; strict file allowlisting no longer permits arbitrary AI scripts.</summary>
         [DataMember] public bool AgentPowerShellEnabled;
         /// <summary>将已登记解决方案目录加入文件授权范围，默认开启。/ Include registered solution directories in file authorization; enabled by default.</summary>
@@ -283,6 +288,12 @@ namespace VSManager
         /// </summary>
         [DataMember] public List<HiddenTaskMark> HiddenResentTasks;
         [DataMember] public int AgentHeight;
+        /// <summary>笔记 AI 助手面板的停靠位置：right / left / bottom / float；为空表示 right。/ Dock position of the note AI assistant panel: right / left / bottom / float; empty means right.</summary>
+        [DataMember] public string NoteAgentDock;
+        /// <summary>笔记 AI 助手停靠时所占的百分比（10–90）；0 表示默认 50（各占半屏）。/ Share (10–90 %) of the docked note assistant; 0 means the default 50 (half and half).</summary>
+        [DataMember] public int NoteAgentPercent;
+        /// <summary>笔记 AI 助手浮动窗口的位置与大小（"x,y,w,h"，屏幕坐标）。/ Bounds of the floating note assistant window ("x,y,w,h", screen coordinates).</summary>
+        [DataMember] public string NoteAgentFloatBounds;
         /// <summary>历史记录统一归档（任务流水、AI 助手对话、各 VS 对话、发送日志）。</summary>
         [DataMember] public bool ArchiveEnabled;
         /// <summary>归档根目录（支持 %环境变量%）；默认取环境变量 VSMANAGER_ARCHIVE_ROOT，否则 %APPDATA%\VSManager\archive；不可用时回退到后者。</summary>

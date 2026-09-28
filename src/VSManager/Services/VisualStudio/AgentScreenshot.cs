@@ -10,8 +10,8 @@ using System.Windows.Forms;
 namespace VSManager
 {
     /// <summary>
-    /// Captures visible screen pixels only; overlays may be included. Mandatory approval preview must precede upload.
-    /// 仅截取窗口所在屏幕区域，可能包含覆盖层；上传前必须预览并批准。
+    /// 仅截取窗口所在屏幕区域，可能包含覆盖层；capture_vs_screenshot 上传前需预览批准，read_vs_screenshot 直接上传（可在设置中要求逐张预览）。
+    /// Captures visible screen pixels only; overlays may be included. capture_vs_screenshot requires a preview before upload; read_vs_screenshot uploads directly (a per-image preview can be required in settings).
     /// </summary>
     internal static class AgentScreenshot
     {

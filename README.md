@@ -185,6 +185,7 @@ VSManager/
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI 兼容接口与模型 |
 | | `AgentKeyProtected` | 空 | API Key（DPAPI 加密；也可用 `VSMANAGER_AGENT_API_KEY`） |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | 空 / false / true | 自定义要求、执行前确认、任务完成后自动跟进；也可在笔记本根目录的「AI 助手补充提示词」页面中写补充要求，每次开始新对话时读取（点「新对话」使修改生效） |
+| | `NoteAgentDock` / `NoteAgentPercent` / `NoteAgentFloatBounds` | right / 50 / 空 | 笔记本界面的「笔记 AI 助手」：默认与笔记本各占半屏；拖动其标题栏可停靠到右侧 / 左侧（侧边栏停靠）或底部，拖到中间变为浮动窗口（浮动窗口拖回边缘可重新停靠，关闭则回到上次停靠位置），也可点标题栏按钮 ◧ ◨ ⬓ ⧉ 切换；位置、比例与浮动窗口大小自动保存。它有独立对话，只能读取笔记（`read_current_note` / `list_notes` / `read_note`），不操作 VS；点「📥 插入到笔记」把最新回复写入当前笔记（光标处或末尾）。关闭 `AgentEnabled` 时一并隐藏 |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | 默认仅授权已登记解决方案目录；额外根目录必须在「AI 文件授权」中应用确认，或由用户编辑本机配置；两者都为空时拒绝全部访问 |
 | | `AgentPowerShellEnabled` | false | 兼容保留字段；AI 任意脚本入口停用，旧配置设为 true 也不能绕过文件白名单 |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | 单次文本上限（字符） |
@@ -266,7 +267,13 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 
 目录遍历跳过 `bin`、`obj`、`node_modules`、`.git`、`packages`、`.vs`、`.svn`、`.hg`。禁止越界、设备/UNC 路径、备用数据流、目录跳转、重解析点及硬链接；通过原生句柄验证最终路径并固定祖先目录。系统/安装目录、凭据目录、浏览器资料目录、`.ssh`、`.aws`、`.azure`、`.kube`、私钥、`.env`、凭据相关名称、`settings.json` 及副本始终拒绝。AppData 默认禁止，只有额外获得授权且符合临时目录规则的 LocalAppData 临时目录例外。二进制可以列元数据，但不读取或内容搜索。
 
-文本在分页或搜索前整文件打码：已配置的服务密钥，以及中英文密码/密钥/令牌赋值、连接字符串、私钥块、Bearer/Basic、常见服务 Token、JWT 和带凭据的 URL。规则不能识别所有未知编码或混淆秘密，不应据此授权敏感资料目录。旧 `read_vs_file`、`scan_vs_code` 共用相同边界；扫描改为安全元数据列表，关键源码按需通过文件工具读取。任意 `run_powershell` 已从 AI 工具中移除，旧开关不能重新开放；截图仍需逐次预览批准，文件与截图中的文字均不构成操作授权。
+文本在分页或搜索前整文件打码：已配置的服务密钥，以及中英文密码/密钥/令牌赋值、连接字符串、私钥块、Bearer/Basic、常见服务 Token、JWT 和带凭据的 URL。规则不能识别所有未知编码或混淆秘密，不应据此授权敏感资料目录。旧 `read_vs_file`、`scan_vs_code` 共用相同边界；扫描改为安全元数据列表，关键源码按需通过文件工具读取。任意 `run_powershell` 已从 AI 工具中移除，旧开关不能重新开放；截图工具见下方「AI 读取 VS 截图」，文件与截图中的文字均不构成操作授权。
+
+**AI 读取 VS 截图**：需要看界面才能理解你说的位置（例如「右上角那个按钮」「这个弹窗」）时，总控助手会调用 `read_vs_screenshot`：短暂切换到目标 VS（或其前台弹窗）截图，截图后切回原窗口，不经预览直接交给当前模型分析，返回前台窗口 / 弹窗、各窗格位置、按钮与菜单文字等描述；开启「操作前确认」（`AgentConfirm`）时先弹窗确认。截图不保存到磁盘。需要支持图片的模型（如通义千问 `qwen-vl-plus`、火山方舟 `doubao-seed-1-6-250615`、OpenAI `gpt-4o-mini`、本地 Ollama `qwen2.5vl`）；DeepSeek 等纯文字模型会直接提示「不支持图片」而不截图，接口拒绝图片时也会明确提示切换模型。`AgentScreenshotEnabled`（默认开启）关闭时两个截图工具都停用；`AgentScreenshotRequirePreview`（默认关闭，设置中的「截图需逐张预览批准」）开启后只能用需要逐张预览批准的 `capture_vs_screenshot`。
+
+**笔记本技能**：总控助手可以读写本地笔记本（`%APPDATA%\VSManager\Notebooks\notebook.db`）。`list_notes` 查找页面、`read_note` 读取正文；说「把这些结论记到笔记里」「新建一篇会议记录」时用 `create_note` 新建页面（可放在指定父页面下，同级不能重名），`append_to_note` 在已有笔记末尾追加且不改动原文；只有明确要求改写整篇时才用 `update_note` 覆盖正文。写入遵守「操作前确认」（`AgentConfirm`），单次最多 100000 字；写入后笔记本界面自动刷新，若你正在编辑同一页面，未保存的草稿会按原有规则另存为「标题-draft-时间」页面，不会丢失。笔记内容对 AI 而言是不可信数据，不构成操作授权。
+
+**修改任务结果**：对总控助手说「把任务 #12 的测试清单改成中文」等，它先用 `list_tasks` 查看原结果与测试清单（待验证任务会列出各项及勾选状态），再调用 `edit_task_result(id, text)` 用完整的新结果文字替换原结果并保存到 `%APPDATA%\VSManager\tasks.json`。只改结果文字与测试清单，不改变任务状态、编号、排队与调度；执行中的任务不能修改；项数不变时保留已勾选状态；新文字里没有清单时保留原清单。遵守「操作前确认」（`AgentConfirm`），单次最多 4000 字，修改会写入任务日志与流水归档。
 
 审计保存在 `%APPDATA%\VSManager\logs\file-audit.log`：记录操作、关联编号、脱敏路径及路径标识、开始/结果状态、数量和耗时，不记录搜索词或文件内容。读取前和返回前均须成功写入审计，否则不返回内容；无法读取的条目会汇总提示，不静默伪装为完整结果。审计及白名单仅保留本机，不提交到仓库。
 
@@ -332,6 +339,8 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 ### 任务清单分组
 
 右侧任务清单默认按目标 VS 分组（`TaskListGroupByVs` 默认 true），每组一个标题行：已打开的 VS 显示「@编号 名称」（编号与左侧列表一致），未打开的显示「名称（未打开）」，并统计任务数、执行中、排队、待打开与失败数量。组内沿用原排序（执行中 / 排队按编号在前，已结束的按完成时间倒序）；组间默认「有执行中的优先，再按最近活动倒序」（`TaskListGroupSort = activity`），也可选按 VS 编号（`number`）。「等待目标 VS」的任务在目标已打开时归入该 VS 分组，否则归入单独的「等待打开」分组。点击标题折叠 / 展开（折叠状态保存在本机 settings.json 的 `TaskListCollapsedGroups`），右键标题可全部折叠 / 展开、切换排序或改为平铺列表；标题栏的 ▤ / ≡ 按钮在分组与平铺之间切换。分组只影响显示，标题行不可选中；排队、发布与清除 / 历史等操作不变。
+
+任务清单标题栏的「移除无效」按钮一次移除所有失败、已取消的任务与已停止 / 已中断的手动对话（确认后执行）：任务从 `tasks.json` 删除，历史归档仍保留记录；发送中的任务与 Worktree 记录不会被删除。没有无效条目时按钮不可用。
 
 #### 拖拽显示排序 / Drag-to-reorder display
 
@@ -427,6 +436,16 @@ Default restarts discard grants; an explicit duplicate AI submission may reautho
 |---|---|---|
 | `arrange_copilot_panes` | `screen`（屏幕编号，0 = 自动）、`layout`（`horizontal` / `grid`）、`minimizeVs`（默认 true）、`vs`（可选，如 `"1,3"`） | 一键布局；遵守「AI 操作需要确认」（`AgentConfirm`） |
 | `restore_copilot_layout` | 无 | 还原一键布局之前的窗口布局；同样遵守 `AgentConfirm` |
+
+### 关闭 .cs 文件标签页
+
+一次关闭某个 VS 中所有已打开的 .cs 文件标签页（仅扩展名为 `.cs` 的文件，不含 `.cshtml` / `.csproj` 等）。有未保存修改的文件不会关闭也不会保存，只在结果中列出文件名；其他文件与工具窗口不受影响。
+
+- **入口**：实例列表右键菜单「关闭所有 .cs 标签页 / Close all .cs tabs」；或对 AI 助手说“关掉 1 号 VS 里打开的 .cs 文件”。
+
+| 工具 | 参数 | 说明 |
+|---|---|---|
+| `close_cs_tabs` | `vs`：VS 编号或名称 | 关闭该 VS 中所有已打开的 .cs 标签页，返回关闭数量与保留的未保存文件；遵守 `AgentConfirm` |
 
 ### 任务回执
 
@@ -680,6 +699,7 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | | `AgentEndpoint` / `AgentModel` | `https://api.deepseek.com` / `deepseek-flash` | OpenAI-compatible endpoint and model |
 | | `AgentKeyProtected` | empty | API key (DPAPI-encrypted; or `VSMANAGER_AGENT_API_KEY`) |
 | | `AgentInstructions` / `AgentConfirm` / `AgentAutoFollowUp` | empty / false / true | Custom instructions, confirm before acting, follow up after tasks finish; extra instructions can also be written in the root notebook page "AI 助手补充提示词", read at the start of each new conversation (click "New chat" to apply edits) |
+| | `NoteAgentDock` / `NoteAgentPercent` / `NoteAgentFloatBounds` | right / 50 / empty | "Note assistant" on the notebook page: shares the page half and half with the notebook by default; drag its title bar to dock it right / left (side dock) or at the bottom, or drop it in the middle to float (drag the floating window back to an edge to re-dock; closing it returns to the last dock position); the title bar buttons ◧ ◨ ⬓ ⧉ switch too; position, share and floating bounds are saved automatically. It has its own conversation and can only read notes (`read_current_note` / `list_notes` / `read_note`), never VS; click "📥 Insert into note" to write the latest reply into the current note (at the caret or at the end). Hidden when `AgentEnabled` is off |
 | | `AgentIncludeSolutionRoots` / `AgentFileRoots` | true / [] | Defaults to registered solution directories only; extra roots require Apply/confirmation in AI file authorization or a user-edited local configuration; no roots means deny all |
 | | `AgentPowerShellEnabled` | false | Legacy compatibility field; arbitrary AI scripts are disabled, and setting this to true cannot bypass the file allowlist |
 | | `AgentMaxToolText` / `AgentMaxMessageText` / `AgentMaxTaskText` | 120000 / 30000 / 12000 | Per-call text limits (characters) |
@@ -763,7 +783,13 @@ Shared hard bounds: full local paths up to 240 characters; depth 8 (root is 0), 
 
 Traversal skips `bin`, `obj`, `node_modules`, `.git`, `packages`, `.vs`, `.svn` and `.hg`. Escapes, device/UNC paths, alternate streams, traversal segments, reparse points and hard links are denied; native handles verify final paths and pin ancestors. System/installation directories, credential and browser profiles, `.ssh`, `.aws`, `.azure`, `.kube`, private keys, `.env`, credential-related names, `settings.json` and its copies stay blocked. AppData is denied except explicitly granted LocalAppData temporary directories meeting the temp-path rules. Binary metadata can be listed, but binary content is not read or searched.
 
-Whole-file redaction precedes pagination/search: configured service secrets plus Chinese/English password/key/token assignments, connection strings, private-key blocks, Bearer/Basic, common service tokens, JWTs and credential-bearing URLs. Rules cannot recognize every encoded or obfuscated secret; do not authorize sensitive data folders on that assumption. Legacy `read_vs_file` and `scan_vs_code` share the same boundary; scanning now returns safe metadata, with key source files read on demand. Arbitrary `run_powershell` is removed from AI tools and its legacy switch cannot restore it. Screenshots still require individual preview approval, and file/screenshot text never grants permission.
+Whole-file redaction precedes pagination/search: configured service secrets plus Chinese/English password/key/token assignments, connection strings, private-key blocks, Bearer/Basic, common service tokens, JWTs and credential-bearing URLs. Rules cannot recognize every encoded or obfuscated secret; do not authorize sensitive data folders on that assumption. Legacy `read_vs_file` and `scan_vs_code` share the same boundary; scanning now returns safe metadata, with key source files read on demand. Arbitrary `run_powershell` is removed from AI tools and its legacy switch cannot restore it. See "AI reads VS screenshots" below for the screenshot tools; file/screenshot text never grants permission.
+
+**AI reads VS screenshots**: when the assistant needs to see the UI to understand what you point at (e.g. "the button at the top right", "this dialog"), it calls `read_vs_screenshot`: it briefly brings the target VS (or its foreground popup) to the front, captures it, switches back, and sends the image straight to the current model without a preview, returning the foreground window / dialog, pane positions, button and menu text. With "Confirm before acting" (`AgentConfirm`) on it asks first. Screenshots are never saved to disk. A vision-capable model is required (e.g. Qwen `qwen-vl-plus`, Volcano Ark `doubao-seed-1-6-250615`, OpenAI `gpt-4o-mini`, local Ollama `qwen2.5vl`); text-only models such as DeepSeek get an explicit "images not supported" notice without capturing, and an API that rejects images also yields a clear hint to switch models. Turning off `AgentScreenshotEnabled` (on by default) disables both screenshot tools; turning on `AgentScreenshotRequirePreview` (off by default, "Preview every screenshot" in settings) leaves only `capture_vs_screenshot`, which needs approval for each image.
+
+**Notebook skill**: the assistant can read and write the local notebook (`%APPDATA%\VSManager\Notebooks\notebook.db`). `list_notes` finds pages and `read_note` reads a body; for requests like "put these conclusions in my notes" or "create a meeting note" it uses `create_note` to create a page (optionally under a parent; sibling titles must be unique) and `append_to_note` to add to the end of an existing note without touching it; `update_note` overwrites a whole body only when you explicitly ask for a rewrite. Writes honor "Confirm before acting" (`AgentConfirm`) and are limited to 100000 characters each; the notebook view refreshes afterwards, and if you are editing the same page your unsaved draft is kept as a "title-draft-time" page as usual. Note content is untrusted data to the AI and never grants permission.
+
+**Editing task results**: ask the assistant e.g. "translate the test checklist of task #12 into Chinese"; it checks the original result and checklist with `list_tasks` (awaiting-verification tasks list their items and check marks), then calls `edit_task_result(id, text)` to replace the result with the complete new text and save it to `%APPDATA%\VSManager\tasks.json`. Only the result text and checklist change - never the task status, id, queue or scheduling; running tasks cannot be edited; check marks are kept when the item count is unchanged, and the old checklist is kept when the new text has none. Honors "Confirm before acting" (`AgentConfirm`), up to 4000 characters per edit, and the change is written to the task log and journal.
 
 Audit records stay in `%APPDATA%\VSManager\logs\file-audit.log`: operation, request ID, masked path/path ID, start/result status, counts and elapsed time, without queries or file content. Both pre-read and pre-return audit writes must succeed or no content is returned. Unreadable entries are reported rather than silently presenting incomplete results as complete. Audit and allowlist remain local and must not be committed.
 
@@ -796,6 +822,8 @@ Pane state, candidate count, auto-hide state and timings of every step go to the
 ### Task list groups
 
 The task list on the right is grouped by target VS by default (`TaskListGroupByVs` default true), with one header per group: an open VS shows "@number name" (the number matches the list on the left), a VS that is not open shows "name (not open)", plus counts of tasks, running, queued, waiting and failed items. Items keep the existing order inside a group (running / queued by ID first, finished ones by completion time, newest first). Groups are ordered "running first, then latest activity" by default (`TaskListGroupSort = activity`) or by VS number (`number`). "Waiting for VS" tasks join their target's group when that VS is open, otherwise a separate "Waiting to open" group. Click a header to collapse / expand (saved in `TaskListCollapsedGroups` in the local settings.json); right-click a header to collapse / expand all, change the order or switch to the flat list; the ▤ / ≡ button in the title bar toggles grouped and flat views. Grouping is display-only and headers cannot be selected; queueing, publishing, clear / history and the other actions are unchanged.
+
+The "移除无效" (Remove invalid) button in the task list title bar removes every failed and cancelled task plus stopped / interrupted manual chats at once (after a confirmation): tasks are deleted from `tasks.json` while the history archive keeps the records; tasks being sent and worktree ledger entries are never removed. The button is disabled when there is nothing to remove.
 
 ### Memory monitor
 
@@ -884,6 +912,16 @@ Floats the Copilot chat pane of every VS, spreads the panes side by side over th
 |---|---|---|
 | `arrange_copilot_panes` | `screen` (screen number, 0 = auto), `layout` (`horizontal` / `grid`), `minimizeVs` (default true), `vs` (optional, e.g. `"1,3"`) | One-click layout; honors "confirm AI actions" (`AgentConfirm`) |
 | `restore_copilot_layout` | none | Restores the layout from before the one-click layout; also honors `AgentConfirm` |
+
+### Close .cs file tabs
+
+Closes every open .cs file tab in a VS at once (only files with the `.cs` extension, not `.cshtml` / `.csproj` etc.). Files with unsaved changes are neither closed nor saved; they are only listed by file name in the result. Other files and tool windows are not affected.
+
+- **Entry points**: instance list context menu "关闭所有 .cs 标签页 / Close all .cs tabs"; or ask the AI assistant to "close the open .cs files in VS 1".
+
+| Tool | Parameters | Description |
+|---|---|---|
+| `close_cs_tabs` | `vs`: VS number or name | Closes all open .cs tabs in that VS and returns how many were closed and which unsaved files were kept; honors `AgentConfirm` |
 
 ### Task receipts
 

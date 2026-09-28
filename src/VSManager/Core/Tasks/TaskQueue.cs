@@ -265,6 +265,55 @@ namespace VSManager
             return true;
         }
 
+        /// <summary>结果文字的长度上限（字符）。/ Maximum result text length (characters).</summary>
+        public const int MaxResultChars = 4000;
+
+        /// <summary>
+        /// 修改已结束任务的结果文字（例如把英文测试清单改为中文）并保存；不改动状态、编号、排队与调度。
+        /// 等待测试的任务同时按新文字更新测试清单。失败时返回 false 并给出原因。
+        /// Edits the result text of a finished task (e.g. translating an English test checklist) and saves; status, id, queue order and
+        /// scheduling are untouched. Pending-test tasks also refresh their checklist from the new text. Returns false with a reason on failure.
+        /// </summary>
+        public bool EditResult(int id, string text, out string error)
+        {
+            var t = Find(id);
+            string value = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
+            if (t == null) error = "没有任务 #" + id + " / No task #" + id;
+            else if (QueueStatus.Active(t.Status)) error = $"任务 #{id} 尚未结束，没有可修改的结果 / Task #{id} has not finished; there is no result to edit";
+            else if (value.Length == 0) error = "结果文字不能为空 / The result text is empty";
+            else if (value.Length > MaxResultChars) error = $"结果文字过长（{value.Length} 字，上限 {MaxResultChars}）/ Result text too long ({value.Length}, max {MaxResultChars})";
+            else error = null;
+            if (error != null) return false;
+            if (t.Result == value) return true;
+            t.Result = value;
+            t.FullResult = null;
+            TaskTestChecklist.Replace(t, value);
+            Log($"修改任务 #{id} 的结果文字 / Edited the result text of task #{id}（{value.Length} 字）");
+            Commit();
+            return true;
+        }
+
+        /// <summary>
+        /// 无效任务：失败或已取消，且可以删除（不在发送中、不是 Worktree 记录）。
+        /// Invalid task: failed or cancelled and removable (not being sent, not a worktree ledger entry).
+        /// </summary>
+        public static bool IsInvalid(QueuedTask t) =>
+            t != null && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled) && t.Worktree == null && TaskStateMachine.CanRemove(t);
+
+        /// <summary>
+        /// 批量移除所有无效任务（失败 / 已取消），只提交一次；返回被移除的任务编号。
+        /// Removes every invalid (failed / cancelled) task in one commit; returns the removed task IDs.
+        /// </summary>
+        public IReadOnlyList<int> RemoveInvalid()
+        {
+            var removed = _items.Where(IsInvalid).ToList();
+            if (removed.Count == 0) return new int[0];
+            foreach (var t in removed) _items.Remove(t);
+            Log($"批量移除无效任务 / Removed invalid tasks: {string.Join(", ", removed.Select(t => "#" + t.Id))}");
+            Commit();
+            return removed.Select(t => t.Id).ToArray();
+        }
+
         /// <summary>提交修改：裁剪历史（若配置了上限）、写归档流水、保存并通知界面。/ Commits changes: trims history (if limited), archives, saves and notifies.</summary>
         public void Commit()
         {

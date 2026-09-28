@@ -13,6 +13,12 @@ namespace VSManager
         private readonly Panel _notebookSidebarHost = new Panel { Dock = DockStyle.Fill };
         private bool _notebookMode => _workspaceNavigation?.Current == WorkspacePage.Notebook;
 
+        // 笔记 AI 助手：与笔记本各占半屏，可拖动停靠到侧边 / 底部或浮动。
+        // Note AI assistant: shares the notebook page half and half; drag it to dock at a side / the bottom or to float.
+        private AgentService _noteAgent;
+        private AgentPanel _notePanel;
+        private NoteAgentDock _noteDock;
+
         private void BuildWorkspaceSidebar(Control vsBody, Control refresh)
         {
             _workspaceSidebar = new WorkspaceSidebar(vsBody, _agentCard, _notebookSidebarHost, _sideCount, refresh, () =>
@@ -36,7 +42,7 @@ namespace VSManager
                 _notebook.ContentRequested += OpenNotebooks;
                 _notebook.SidebarRequested += () => _workspaceSidebar.SetNotionCollapsed(false);
                 _notebook.Error += SetStatus;
-                _notebookHost.Controls.Add(_notebook);
+                _notebookHost.Controls.Add(BuildNoteAgent(_notebook));
                 while (_notebookSidebarHost.Controls.Count > 0) _notebookSidebarHost.Controls[0].Dispose();
                 _notebookSidebarHost.Controls.Add(_notebook.DetachSidebar());
                 _notebook.Initialize();
@@ -78,9 +84,46 @@ namespace VSManager
 
         private bool SaveNotebook() => _notebook == null || _notebook.TrySave();
 
+        /// <summary>创建笔记 AI 助手与分屏容器，返回放入笔记本页面的控件。/ Creates the note AI assistant and the split host; returns the control for the notebook page.</summary>
+        private Control BuildNoteAgent(NotebookWorkspace notebook)
+        {
+            _noteAgent = new AgentService(this, () => _settings, null, AgentProfile.Notes) { CurrentNoteSource = CurrentNoteSnapshot };
+            _notePanel = new AgentPanel(true);
+            _notePanel.Bind(_noteAgent);
+            _notePanel.RefreshConfig();
+            _notePanel.SettingsRequested += OpenSettings;
+            _notePanel.InsertRequested += text => SetStatus(_notebook?.InsertIntoCurrent(text) ?? "已插入到当前笔记 / Inserted into the current note");
+            _noteDock = new NoteAgentDock(notebook, _notePanel, "笔记 AI 助手 / Note assistant");
+            _noteDock.Restore(_settings.NoteAgentDock, _settings.NoteAgentPercent, _settings.NoteAgentFloatBounds);
+            _noteDock.AgentVisible = _settings.AgentEnabled;
+            _noteDock.LayoutChanged += () =>
+            {
+                _settings.NoteAgentDock = NoteAgentDock.Format(_noteDock.Position);
+                _settings.NoteAgentPercent = _noteDock.Percent;
+                _settings.NoteAgentFloatBounds = NoteAgentDock.FormatBounds(_noteDock.FloatBounds);
+                _settings.Save();
+            };
+            return _noteDock;
+        }
+
+        private void UpdateNoteAgentVisibility(bool on)
+        {
+            if (_noteDock == null) return;
+            if (!on) _noteAgent.Stop();
+            _noteDock.AgentVisible = on;
+        }
+
+        /// <summary>读取当前笔记（可在后台线程调用，自动切换到界面线程）。/ Reads the current note (callable from background threads; marshals to the UI thread).</summary>
+        private NoteSnapshot CurrentNoteSnapshot()
+        {
+            if (IsDisposed || _notebook == null) return null;
+            if (InvokeRequired) return (NoteSnapshot)Invoke((Func<NoteSnapshot>)CurrentNoteSnapshot);
+            return _notebook.CurrentNote();
+        }
+
         protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
         {
-            if (_notebook != null && (_notebookMode || _notebookSidebarHost.ContainsFocus) &&
+            if (_notebook != null && (_notebookMode || _notebookSidebarHost.ContainsFocus) && _notePanel?.ContainsFocus != true &&
                 _notebook.HandleShortcut(keyData)) return true;
             return base.ProcessCmdKey(ref msg, keyData);
         }

@@ -111,6 +111,98 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task ReadScreenshot_SendsImageWithoutPreview_AndDescribesUi()
+        {
+            _host.Image = new byte[] { 137, 80, 78, 71 };
+            string result = (await InvokeTool("read_vs_screenshot", new AIFunctionArguments { ["vs"] = "1", ["question"] = "Where is the Run button?" }))?.ToString();
+            StringAssert.Contains(result, "observation only");
+            StringAssert.Contains(result, "Test VS");
+            StringAssert.Contains(result, "A dialog has an OK button");
+            Assert.AreEqual(1, _host.DirectCaptures);
+            Assert.AreEqual(0, _host.Captures, "不走预览审批 / no preview approval");
+            var image = _vision.Messages.SelectMany(m => m.Contents).OfType<DataContent>().Single();
+            CollectionAssert.AreEqual(_host.Image, image.Data.ToArray());
+            Assert.IsTrue(_vision.Messages.SelectMany(m => m.Contents).OfType<TextContent>().Any(c => c.Text == "Where is the Run button?"));
+            Assert.IsTrue(_vision.Options.Tools == null || _vision.Options.Tools.Count == 0);
+            Assert.IsTrue(_vision.Disposed);
+        }
+
+        [TestMethod]
+        public async Task ReadScreenshot_EmptyQuestion_SummarizesWholeUi()
+        {
+            _host.Image = new byte[] { 137, 80, 78, 71 };
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", null), "A dialog has an OK button");
+            Assert.IsTrue(_vision.Messages.SelectMany(m => m.Contents).OfType<TextContent>().Any(c => c.Text.Contains("Summarize the UI")));
+        }
+
+        [DataTestMethod]
+        [DataRow("https://api.deepseek.com", "deepseek-flash")]
+        [DataRow("http://localhost:11434/v1", "qwen2.5:7b")]
+        [DataRow("https://api.moonshot.cn/v1", "moonshot-v1-32k")]
+        public async Task ReadScreenshot_KnownTextOnlyModel_TellsUserWithoutCapturing(string endpoint, string model)
+        {
+            _settings.AgentEndpoint = endpoint;
+            _settings.AgentModel = model;
+            string result = await _agent.ReadVsScreenshot("1", "Describe");
+            StringAssert.Contains(result, "不支持图片");
+            StringAssert.Contains(result, model);
+            Assert.AreEqual(0, _host.DirectCaptures);
+            Assert.AreEqual(0, _vision.Created);
+        }
+
+        [DataTestMethod]
+        [DataRow("gpt-4o-mini", false)]
+        [DataRow("qwen-vl-plus", false)]
+        [DataRow("doubao-seed-1-6-250615", false)]
+        [DataRow("qwen2.5vl:7b", false)]
+        [DataRow("my-custom-model", false)]
+        [DataRow("deepseek-v4-pro", true)]
+        [DataRow("qwen-plus", true)]
+        public void KnownTextOnlyModel_Classification(string model, bool textOnly) =>
+            Assert.AreEqual(textOnly, AgentService.IsKnownTextOnlyModel("https://example.invalid/v1", model));
+
+        [TestMethod]
+        public async Task ReadScreenshot_ApiRejectsImages_ReturnsExplicitNotice()
+        {
+            _host.Image = new byte[] { 137, 80, 78, 71 };
+            _vision.Error = new System.ClientModel.ClientResultException("unknown variant `image_url`, expected `text`");
+            string result = await _agent.ReadVsScreenshot("1", "Describe");
+            StringAssert.Contains(result, "不支持图片");
+            StringAssert.Contains(result, "vision support");
+            Assert.AreEqual(1, _vision.Requests);
+        }
+
+        [TestMethod]
+        public async Task ReadScreenshot_RespectsSwitchesAndConfirmation()
+        {
+            _host.Image = new byte[] { 137, 80, 78, 71 };
+            _settings.AgentScreenshotEnabled = false;
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", "Describe"), "disabled");
+            _settings.AgentScreenshotEnabled = true;
+            _settings.AgentScreenshotRequirePreview = true;
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", "Describe"), "capture_vs_screenshot");
+            _settings.AgentScreenshotRequirePreview = false;
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", "Describe"), "declined");
+            Assert.AreEqual(1, _host.Confirmations);
+            Assert.AreEqual(0, _host.DirectCaptures);
+            Assert.AreEqual(0, _vision.Created);
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", "Describe"), "observation only");
+            Assert.AreEqual(1, _host.DirectCaptures);
+            Assert.IsFalse(_agent.AwaitingUser);
+        }
+
+        [TestMethod]
+        public async Task ReadScreenshot_CaptureFailure_IsReported()
+        {
+            _host.DirectError = new InvalidOperationException("截图失败 / Screenshot failed: window must be visible");
+            StringAssert.Contains(await _agent.ReadVsScreenshot("1", "Describe"), "Screenshot failed");
+            Assert.AreEqual(0, _vision.Created);
+        }
+
+        [TestMethod]
         public async Task Screenshot_UnsupportedModel_ReturnsExplicitFailure()
         {
             _host.Image = new byte[] { 137, 80, 78, 71 };
@@ -137,10 +229,48 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task CloseCsTabs_IsRegistered_AndCallsHostForResolvedVs()
+        {
+            _settings.AgentConfirm = false;
+            string result = (await InvokeTool("close_cs_tabs", new AIFunctionArguments { ["vs"] = "1" }))?.ToString();
+            StringAssert.Contains(result, "Closed 2");
+            Assert.AreEqual(1, _host.CsTabsClosed.Count);
+            Assert.AreSame(_host.Instances[0], _host.CsTabsClosed[0]);
+        }
+
+        [TestMethod]
+        public async Task CloseCsTabs_UnknownVsOrDeclined_DoesNotCallHost()
+        {
+            _settings.AgentConfirm = false;
+            Assert.IsFalse(string.IsNullOrWhiteSpace(await _agent.CloseCsTabs("99")));
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await _agent.CloseCsTabs("1"), "declined");
+            Assert.AreEqual(1, _host.Confirmations);
+            Assert.AreEqual(0, _host.CsTabsClosed.Count);
+        }
+
+        [TestMethod]
+        public void IsCsFile_MatchesOnlyCsExtension()
+        {
+            Assert.IsTrue(VsService.IsCsFile(@"src\Program.cs"));
+            Assert.IsTrue(VsService.IsCsFile("Form1.Designer.CS"));
+            foreach (string p in new[] { null, "", "View.cshtml", "App.csproj", "Script.csx", "readme.md", "cs" })
+                Assert.IsFalse(VsService.IsCsFile(p), p ?? "null");
+        }
+
+        [TestMethod]
         public void Prompts_DescribeOpenCopilot()
         {
             foreach (bool english in new[] { false, true })
                 StringAssert.Contains(Prompts.AgentSystem(english, DateTime.Now, "VS", ""), "open_copilot");
+        }
+
+        [TestMethod]
+        public void Prompts_DescribeCloseCsTabs()
+        {
+            foreach (bool english in new[] { false, true })
+                StringAssert.Contains(Prompts.AgentSystem(english, DateTime.Now, "VS", ""), "close_cs_tabs");
         }
 
         [TestMethod]
@@ -724,8 +854,18 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        private sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost
+        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost
         {
+            internal int DirectCaptures;
+            internal Exception DirectError;
+            public Task<byte[]> CaptureScreenshot(VsInstance vs, CancellationToken cancellationToken)
+            {
+                DirectCaptures++;
+                if (DirectError != null) throw DirectError;
+                return Task.FromResult(Image);
+            }
+            internal readonly List<VsInstance> CsTabsClosed = new List<VsInstance>();
+            public Task<string> CloseCsDocuments(VsInstance vs) { CsTabsClosed.Add(vs); return Task.FromResult("已关闭 2 个 .cs 文件标签页 / Closed 2 .cs tab(s)"); }
             public Task<string> QueueTask(VsInstance v, string text, AttachmentRef[] attachments, string title) =>
                 Task.FromResult("Queued @" + Titled(Queue.Add(v.Key, NameOf(v), text, "AI", attachments), title).Id);
             public Task<string> ParkTask(SolutionEntry e, string text, AttachmentRef[] attachments, string title) =>

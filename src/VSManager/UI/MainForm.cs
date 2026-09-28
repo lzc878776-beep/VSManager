@@ -441,6 +441,7 @@ namespace VSManager
 			ctx.Items.Add("启动调试 / 继续 (F5)", null, (s, e) => DoDebug("go"));
 			ctx.Items.Add("停止调试", null, (s, e) => DoDebug("stop"));
 			ctx.Items.Add("生成解决方案", null, (s, e) => DoDebug("build"));
+			ctx.Items.Add("关闭所有 .cs 标签页 / Close all .cs tabs", null, async (s, e) => { if (Check()) await CloseCsTabsAsync(Selected); });
 			ctx.AddGroup("管理与诊断 / Management and diagnostics");
 			ctx.Items.Add("查看发送日志", null, (s, e) => OpenSendLog());
 			ctx.Items.Add("打开配置目录", null, (s, e) =>
@@ -1484,6 +1485,8 @@ namespace VSManager
 			{
 				sb.Append('#').Append(t.Id).Append(" → ").Append(t.VsName).Append(" | ").Append(StatusText(t)).Append(" | ").Append(_dispatcher.StartStateText(t)).Append(" | ").Append(Clip(t.Text, Math.Max(120, taskText / 5)));
 				if (!string.IsNullOrEmpty(t.Result) && QueueStatus.Delivered(t.Status)) sb.Append(" | 结果：").Append(Clip(t.Result, Math.Max(200, taskText / 3)));
+				if (TaskTestChecklist.Pending(t) && t.TestItems != null && t.TestItems.Length > 0)
+					sb.Append(" | 测试清单 / Test checklist: ").Append(string.Join("; ", t.TestItems.Where(i => i != null).Select(i => (i.Checked ? "[x] " : "[ ] ") + i.Text)));
 				if (!string.IsNullOrEmpty(t.Error) && !QueueStatus.Delivered(t.Status)) sb.Append(" | 错误：").Append(t.Error);
 				if (t.Status == QueueStatus.Failed && !string.IsNullOrEmpty(t.FailureKind)) sb.Append(" | 类别：").Append(FailureKind.Label(t.FailureKind));
 				if (t.SupplementCount > 0) sb.Append(" | 已补充 ").Append(t.SupplementCount).Append('/').Append(TaskStateMachine.MaxSupplements).Append(" 次：").Append(Clip(t.Supplement, 200));
@@ -1551,6 +1554,7 @@ namespace VSManager
 			_agentCard.Visible = on;
 			_workspaceSidebar?.SetAgentVisible(on);
 			if (!on) { _agent.Stop(); if (_agentMode) ShowAgent(false); }
+			UpdateNoteAgentVisibility(on);
 		}
 
 		#endregion
@@ -1726,6 +1730,7 @@ namespace VSManager
 			UpdateChatHeader();
 			UpdateAgentVisibility();
 			_agentPanel.RefreshConfig();
+			_notePanel?.RefreshConfig();
 			_dispatcher.ApplyAutomaticStart();
 			if (!_settings.WaitForManualChat) _manualProbes?.Clear();
 			_taskPanel.RefreshItems();
@@ -2068,6 +2073,7 @@ namespace VSManager
 					}
 					if (_tasks.Remove(t.Id) && TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();
 					return;
+				case "remove_invalid": RemoveInvalidTasks(); return;
 				case "retry":
 					if (MessageBox.Show(this, "请先检查目标 Copilot 的历史消息和草稿，确认需要重新发送。本操作只重新排队当前任务，不会覆盖已有草稿。\nVerify prior delivery and the target draft before resending. Only this task is requeued; existing drafts are never overwritten.",
 						"手动重新排队 / Requeue manually", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
@@ -2262,6 +2268,38 @@ namespace VSManager
 				}
 			}
 			if (changed) _taskPanel.RefreshItems();
+		}
+
+		/// <summary>
+		/// 批量移除无效条目：失败 / 已取消的任务与已停止 / 已中断的手动对话；确认后执行，归档保留记录，Worktree 记录不删除。
+		/// Removes invalid entries in bulk: failed / cancelled tasks and stopped / interrupted manual chats; asks first, the archive
+		/// keeps the records, and worktree ledger entries are never removed.
+		/// </summary>
+		private void RemoveInvalidTasks()
+		{
+			int tasks = _tasks.Items.Count(TaskQueue.IsInvalid);
+			var chats = _externals.Where(c => c.IsInvalid).ToList();
+			int kept = _tasks.Items.Count(t => (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled) && t.Worktree != null);
+			if (tasks + chats.Count == 0)
+			{
+				SetStatus("没有可移除的无效任务 / No invalid tasks to remove");
+				return;
+			}
+			if (MessageBox.Show(this, $"将移除 {tasks} 个失败 / 已取消的任务和 {chats.Count} 条已停止 / 已中断的对话。\n历史归档仍保留这些记录。\n\n" +
+					$"Remove {tasks} failed / cancelled task(s) and {chats.Count} stopped / interrupted chat(s)?\nThe history archive keeps these records.",
+					"移除无效任务 / Remove invalid tasks", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
+			bool save = false;
+			foreach (int id in _tasks.RemoveInvalid())
+				save |= TaskHideList.Remove(_settings.HiddenResentTasks, id);
+			if (save) _settings.Save();
+			foreach (var c in chats)
+			{
+				_externals.Remove(c);
+				Archive.ManualChat(c, true);
+			}
+			_taskPanel.RefreshItems();
+			SetStatus($"已移除 {tasks} 个任务、{chats.Count} 条对话 / Removed {tasks} task(s) and {chats.Count} chat(s)" +
+				(kept > 0 ? $"；保留 {kept} 条 Worktree 记录 / kept {kept} worktree entr(ies)" : ""));
 		}
 
 		private async void OnExternalAction(ExternalChat c, string action)
@@ -2615,6 +2653,7 @@ namespace VSManager
 			_web.Dispose();
 			_voice.Dispose();
 			_agent.Dispose();
+			_noteAgent?.Dispose();
 			CleanupVoice();
 			for (int i = 1; i <= 9; i++) Native.UnregisterHotKey(Handle, i);
 			Native.UnregisterHotKey(Handle, ShowHotkeyId);

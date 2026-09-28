@@ -34,6 +34,14 @@ namespace VSManager
             ("🔀 worktree 并入主分支", MergeWorktreesPrompt),
         };
 
+        // 笔记助手的快捷指令 / Quick prompts of the note assistant
+        private static readonly (string Text, string Prompt)[] NotePrompts =
+        {
+            ("📝 总结 / Summarize", "请先读取当前笔记，再用要点总结它的内容（保留关键事实与结论）。/ Read the current note first, then summarize it as bullet points (keep key facts and conclusions)."),
+            ("✅ 待办 / To-dos", "请读取当前笔记，把其中的待办事项整理成 Markdown 任务清单（- [ ] 形式），不要编造新任务。/ Read the current note and list its to-dos as a Markdown checklist (- [ ]); do not invent tasks."),
+            ("✍ 润色 / Polish", "请读取当前笔记，在不改变事实和结构的前提下润色文字，直接给出润色后的完整 Markdown。/ Read the current note and polish the wording without changing facts or structure; reply with the full polished Markdown."),
+        };
+
         private readonly Panel _header = new Panel();
         private readonly Panel _toolbarRow = new Panel();
         private readonly FlowLayoutPanel _toolbar = new FlowLayoutPanel();
@@ -53,6 +61,12 @@ namespace VSManager
         private readonly ToolTip _tips = new ThemedToolTip();
         private AgentService _agent;
         private int _dots;
+        /// <summary>笔记助手模式：隐藏放行滑块与 @ 提及，快捷指令改为笔记操作。/ Note-assistant mode: no release slider or @ mentions; quick prompts work on notes.</summary>
+        private readonly bool _noteMode;
+        private readonly FlatButton _btnInsert;
+
+        /// <summary>笔记模式下点击「插入到笔记」，参数为最新一条回复的正文。/ Raised in note mode by "Insert into note" with the latest reply text.</summary>
+        public event Action<string> InsertRequested;
 
         public event Action SettingsRequested;
         /// <summary>用户拖动顶栏滑块改变放行等级。/ The user changed the release level with the header slider.</summary>
@@ -70,8 +84,13 @@ namespace VSManager
         }
         public void RefreshMentions() { if (_mentions?.IsOpen == true) _mentions.Refresh(); }
 
-        public AgentPanel()
+        public AgentPanel() : this(false) { }
+
+        /// <summary>noteMode 为 true 时作为笔记助手面板。/ Acts as the note-assistant panel when noteMode is true.</summary>
+        public AgentPanel(bool noteMode)
         {
+            _noteMode = noteMode;
+            if (noteMode) _transcript.AssistantLabel = AgentService.NoteAgentTitle;
             BackColor = Theme.Background;
             DoubleBuffered = true;
 
@@ -108,7 +127,7 @@ namespace VSManager
             _toolbar.AutoScroll = false;
             _toolbar.BackColor = Theme.Background;
             _toolbar.Padding = new Padding(0, Dpi.S(6), 0, 0);
-            foreach (var q in QuickPrompts)
+            foreach (var q in noteMode ? NotePrompts : QuickPrompts)
             {
                 var b = new FlatButton { Text = q.Text, Ghost = true, Height = Dpi.S(30), Margin = new Padding(Dpi.S(6), 0, 0, 0) };
                 b.Width = TextRenderer.MeasureText(q.Text, b.Font).Width + Dpi.S(26);
@@ -116,6 +135,15 @@ namespace VSManager
                 b.Click += (s, e) => Send(prompt);
                 _tips.SetToolTip(b, prompt);
                 _toolbar.Controls.Add(b);
+            }
+            if (noteMode)
+            {
+                const string insertText = "📥 插入到笔记 / Insert into note";
+                _btnInsert = new FlatButton { Text = insertText, Height = Dpi.S(30), Margin = new Padding(Dpi.S(12), 0, 0, 0) };
+                _btnInsert.Width = TextRenderer.MeasureText(insertText, _btnInsert.Font).Width + Dpi.S(26);
+                _btnInsert.Click += (s, e) => { string reply = LastReply(); if (reply.Length > 0) InsertRequested?.Invoke(reply); };
+                _tips.SetToolTip(_btnInsert, "把最新一条回复写入当前笔记（编辑过则插入光标处，否则追加到末尾）\nWrite the latest reply into the current note (at the caret if you edited it, otherwise at the end)");
+                _toolbar.Controls.Add(_btnInsert);
             }
             _toolbarRow.Controls.Add(_toolbar);
 
@@ -287,7 +315,7 @@ namespace VSManager
             _releaseSlider.Size = new Size(Dpi.S(216), Dpi.S(48));
             _releaseSlider.Location = new Point(_btnClear.Left - Dpi.S(16) - _releaseSlider.Width, (_header.Height - _releaseSlider.Height) / 2);
             // 窄窗口时为标题让位 / Hide on narrow windows to keep the title readable
-            _releaseSlider.Visible = _releaseSlider.Left > Dpi.S(260);
+            _releaseSlider.Visible = !_noteMode && _releaseSlider.Left > Dpi.S(260);
         }
 
         private void RenderNow()
@@ -295,9 +323,11 @@ namespace VSManager
             if (_agent == null) return;
             if (_agent.Transcript.Messages.Count == 0)
             {
-                _transcript.SetEmpty(_agent.Configured
-                    ? "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案"
-                    : "尚未配置 AI 模型\n\n点击右上角「⚙ 模型设置」，选择 DeepSeek 并填写 API Key 后即可使用\n（在 platform.deepseek.com 创建 Key）");
+                _transcript.SetEmpty(!_agent.Configured
+                    ? "尚未配置 AI 模型\n\n点击右上角「⚙ 模型设置」，选择 DeepSeek 并填写 API Key 后即可使用\n（在 platform.deepseek.com 创建 Key）"
+                    : _noteMode
+                    ? "我是笔记助手，可以阅读并整理你的笔记：\n\n· 总结这篇笔记\n· 找出所有提到发布的笔记\n· 把这篇改写成周报\n\nI am the note assistant: ask me to summarize, search or rewrite notes."
+                    : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案");
                 return;
             }
             _transcript.Render(_agent.Transcript, true);
@@ -308,7 +338,7 @@ namespace VSManager
             text = (text ?? "").Trim();
             bool fromInput = text == _input.Text.Trim();
             var files = fromInput ? _pending.ToArray() : new AttachmentRef[0];
-            if (fromInput && VsMentionSession.HasIntent(text))
+            if (fromInput && !_noteMode && VsMentionSession.HasIntent(text))
             {
                 if (TryRouteMentionToAgent(text, files)) return;
                 MentionSubmission result;
@@ -501,13 +531,15 @@ namespace VSManager
                 || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
             bool placeholder = _input.TextLength == 0 && !_input.Focused;
             if (_placeholder.Visible != placeholder) _placeholder.Visible = placeholder;
-            string hint = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
+            string hint = _agent?.Configured == false ? "尚未配置模型，点击右上角「⚙ 模型设置」…"
+                : _noteMode ? "让笔记助手总结、查找、改写笔记… / Ask about your notes…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
             if (_placeholder.Text != hint) _placeholder.Text = hint;
-            _btnSend.Enabled = (!running || VsMentionSession.HasIntent(_input.Text)) && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
+            _btnSend.Enabled = (!running || (!_noteMode && VsMentionSession.HasIntent(_input.Text))) && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
             _btnStop.Enabled = running;
             if (_btnAttach != null) _btnAttach.Enabled = !running;
             _btnClear.Enabled = _agent != null && (running || _agent.Transcript.Messages.Count > 0);
             foreach (Control c in _toolbar.Controls) c.Enabled = !running;
+            if (_btnInsert != null) _btnInsert.Enabled = !running && LastReply().Length > 0;
             bool stillFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
                 || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
             if (buttonFocused && !stillFocused && Form.ActiveForm != null && Form.ActiveForm == FindForm() && _input.CanFocus) _input.Focus();
@@ -541,6 +573,14 @@ namespace VSManager
             if (_inputStatus.ForeColor != color) _inputStatus.ForeColor = color;
         }
 
+        /// <summary>最新一条助手回复的正文（不含工具步骤）。/ Body of the latest assistant reply (without tool steps).</summary>
+        internal string LastReply()
+        {
+            var last = _agent?.Transcript.Messages.LastOrDefault(m => m.Role == ChatRole.Assistant);
+            if (last == null) return "";
+            return string.Join("\n\n", last.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim())).Trim();
+        }
+
         private void Header_Paint(object sender, PaintEventArgs e)
         {
             var g = e.Graphics;
@@ -557,7 +597,7 @@ namespace VSManager
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
             x += Dpi.S(48);
 
-            const string title = "AI 总控助手";
+            string title = _noteMode ? "笔记 AI 助手" : "AI 总控助手";
             var tsz = TextRenderer.MeasureText(g, title, Theme.Big, Size.Empty, flags);
             TextRenderer.DrawText(g, title, Theme.Big, new Rectangle(x, Dpi.S(10), Math.Min(tsz.Width, Math.Max(0, right - x)), Dpi.S(26)), Theme.Text, flags | TextFormatFlags.VerticalCenter);
             string st; Color fg, bg, dot;
@@ -568,7 +608,7 @@ namespace VSManager
             if (right - px > Dpi.S(40)) Theme.DrawPill(g, px, Dpi.S(12), Math.Min(Dpi.S(160), right - px), st, bg, fg, dot);
 
             string sub = _agent == null ? "" : _agent.Configured
-                ? _agent.ProviderName + " · " + _agent.ModelName + " · 统一管理所有 VS、发布任务"
+                ? _agent.ProviderName + " · " + _agent.ModelName + (_noteMode ? " · 阅读、整理、改写笔记 / Notes" : " · 统一管理所有 VS、发布任务")
                 : "选择服务商并填写 API Key 后即可使用";
             TextRenderer.DrawText(g, sub, Theme.Small, new Rectangle(x, Dpi.S(38), Math.Max(0, right - x), Dpi.S(18)), Theme.TextMuted, flags | TextFormatFlags.VerticalCenter);
         }

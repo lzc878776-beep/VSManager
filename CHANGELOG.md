@@ -44,6 +44,27 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 新增 / Added
 
+- 总控助手新增 `edit_task_result` 工具：修改任务清单中已结束任务的结果文字（例如把英文测试清单翻译成中文）并保存，同步更新测试清单（项数不变时保留勾选），不改变状态、编号与排队；遵守「操作前确认」。`list_tasks` 现在会列出待验证任务的测试清单。
+  New `edit_task_result` assistant tool: edits the result text of a finished task (e.g. translating an English test checklist) and saves it, refreshing the checklist (check marks kept when the item count is unchanged) without changing status, id or queue; honors "Confirm before acting". `list_tasks` now lists the checklists of awaiting-verification tasks.
+
+- 总控助手提示词新增测试清单语言规则：中文版转告「未验证」「待用户验证」的测试清单时一律输出中文（英文清单先翻译），英文版一律输出英文；保持「- [ ] 操作与预期结果」格式，代码标识符与按钮原文不译。
+  Assistant prompt gains a test-checklist language rule: the Chinese prompt relays checklists of unverified / awaiting-verification tasks in Chinese (translating English items), the English prompt in English; the "- [ ] action and expected result" format is kept and code identifiers and button text stay untranslated.
+
+- 笔记本技能（可写）：总控助手新增 `create_note`（新建页面，可指定父页面）、`append_to_note`（末尾追加）与 `update_note`（改写整篇），遵守「操作前确认」，写入后自动刷新笔记本界面；系统提示词加入笔记本技能说明。
+  Writable notebook skill: the assistant gains `create_note` (new page, optional parent), `append_to_note` (append to the end) and `update_note` (rewrite a whole note); they honor "Confirm before acting" and refresh the notebook view; the system prompt now describes the notebook skill.
+
+- AI 直接读取 VS 截图：总控助手新增 `read_vs_screenshot`，截取目标 VS 或其前台弹窗后不经预览直接交给当前模型分析，返回界面布局、窗格位置与按钮描述，截图后切回原窗口；遵守「操作前确认」；纯文字模型（如 DeepSeek）或接口拒绝图片时明确提示用户切换支持图片的模型；新增设置「截图需逐张预览批准」（`AgentScreenshotRequirePreview`）可恢复仅预览模式。
+  AI reads VS screenshots directly: the assistant gains `read_vs_screenshot`, which captures the target VS or its foreground popup and sends it straight to the current model without a preview, returning the layout, pane positions and buttons, then switches back; it honors "Confirm before acting"; text-only models (such as DeepSeek) or APIs that reject images produce an explicit notice to switch to a vision-capable model; the new "Preview every screenshot" setting (`AgentScreenshotRequirePreview`) restores preview-only mode.
+
+- 批量移除无效任务：任务清单标题栏新增「移除无效」按钮，确认后一次移除所有失败、已取消的任务与已停止 / 已中断的手动对话（归档保留，Worktree 记录与发送中的任务不删除）。
+  Remove invalid tasks in bulk: a new "Remove invalid" button in the task list title bar removes all failed and cancelled tasks plus stopped / interrupted manual chats after a confirmation (the archive keeps them; worktree ledger entries and tasks being sent are kept).
+
+- 笔记 AI 助手：笔记本界面与独立的笔记助手各占半屏；助手面板可拖动停靠到侧边（左 / 右）或底部，也可浮动，布局自动保存；助手只读笔记（`read_current_note` / `list_notes` / `read_note`），可一键「插入到笔记」。
+  Note AI assistant: the notebook page is split half and half with a dedicated note assistant; drag the panel to dock it at a side (left / right) or the bottom, or float it; the layout is saved. The assistant only reads notes (`read_current_note` / `list_notes` / `read_note`) and offers one-click "Insert into note".
+
+- 关闭 .cs 文件标签页：一次关闭某个 VS 中所有已打开的 .cs 文件标签页，有未保存修改的文件保留并列出；新增 AI 工具 `close_cs_tabs` 与实例列表右键菜单入口。
+  Close .cs file tabs: closes every open .cs file tab in a VS at once; files with unsaved changes are kept and listed. New AI tool `close_cs_tabs` plus an instance list context menu entry.
+
 - 任务队列放行等级：AI 总控助手顶栏新增三刻度滑块（已完成 / 待验证 / 失败），决定同一 VS 的前序以什么结果结束时自动执行下一项，设置持久化并兼容旧版「跳过失败前序」开关；被暂停时可「补充信息后重试」（每个任务最多 3 次）或「放行后续任务」；新增 AI 工具 `set_release_level`、`retry_task_with_info`、`release_task`，失败通知会提示 AI 在自行补充重试与转交用户之间判断。
   Task queue release level: a three-stop slider in the AI assistant header (Completed / Awaiting verification / Failed) decides which predecessor outcomes let the next task on the same VS run automatically; the setting persists and stays compatible with the legacy "Skip failed predecessors" switch. Paused entries can be retried with supplementary info (at most 3 times per task) or released. New AI tools `set_release_level`, `retry_task_with_info` and `release_task`; failure notices ask the AI to choose between supplementing and retrying by itself or handing over to the user.
 

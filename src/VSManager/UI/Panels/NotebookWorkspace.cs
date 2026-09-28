@@ -37,6 +37,8 @@ namespace VSManager
         private bool _loading, _dirty;
         // 是否正在编辑；平时只显示渲染后的阅读视图，不显示 Markdown 原文。/ Whether editing; otherwise only the rendered view shows, never the Markdown source.
         private bool _editing;
+        // 光标位置是否来自用户在本页的编辑；否则插入内容追加到末尾。/ Whether the caret comes from editing this page; otherwise inserted text is appended.
+        private bool _caretValid;
         private string _treeSignature;
 
         public NotebookWorkspace(NotebookStore store = null)
@@ -281,7 +283,7 @@ namespace VSManager
                 _saveTimer.Stop();
                 _saveTimer.Start();
             };
-            _editor.GotFocus += (s, e) => _editing = true;
+            _editor.GotFocus += (s, e) => { _editing = true; _caretValid = true; };
             _editor.Leave += (s, e) =>
             {
                 _editing = false;
@@ -448,7 +450,7 @@ namespace VSManager
             _loading = true;
             _document = document;
             _dirty = false;
-            if (!samePage) _editing = false;
+            if (!samePage) { _editing = false; _caretValid = false; }
             _editor.Text = document == null ? "" : NotebookStore.NormalizeNewLines(document.Text, "\r\n");
             _editor.Enabled = document != null;
             _loading = false;
@@ -461,6 +463,46 @@ namespace VSManager
                 : "已读取 · 双击内容即可编辑 / Loaded · Double-click the content to edit");
             UpdateLayout();
             RenderPreview(!samePage);
+        }
+
+        /// <summary>当前打开页面的快照（含未保存的编辑），没有打开页面时返回 null。/ Snapshot of the open page (including unsaved edits); null when none is open.</summary>
+        internal NoteSnapshot CurrentNote()
+        {
+            if (_document == null) return null;
+            return new NoteSnapshot
+            {
+                Id = _document.Path,
+                TitlePath = string.Join(" / ", SafeTitlePath(_document.Path)),
+                Text = NotebookStore.NormalizeNewLines(_editor.Text, "\n")
+            };
+        }
+
+        /// <summary>
+        /// 把文字写入当前笔记并保存：编辑过本页时插入到光标处，否则追加到末尾。返回错误信息，null 表示成功。
+        /// Writes text into the current note and saves: at the caret if this page was edited, otherwise appended at the end. Returns the error, null on success.
+        /// </summary>
+        internal string InsertIntoCurrent(string text)
+        {
+            if (_document == null) return "请先在笔记本中打开一篇笔记 / Open a note first";
+            text = NotebookStore.NormalizeNewLines((text ?? "").Trim(), "\r\n");
+            if (text.Length == 0) return "没有可插入的内容 / Nothing to insert";
+            if (_editor.TextLength + text.Length + 4 > _editor.MaxLength) return "笔记已达长度上限 / The note is at its size limit";
+            if (_caretValid)
+            {
+                int at = Math.Min(_editor.SelectionStart, _editor.TextLength);
+                string before = at > 0 && _editor.Text[at - 1] != '\n' ? "\r\n\r\n" : "";
+                _editor.Select(at, _editor.SelectionLength);
+                _editor.SelectedText = before + text + "\r\n";
+            }
+            else
+            {
+                string sep = _editor.TextLength == 0 ? "" : _editor.Text.EndsWith("\r\n\r\n", StringComparison.Ordinal) ? "" : _editor.Text.EndsWith("\r\n", StringComparison.Ordinal) ? "\r\n" : "\r\n\r\n";
+                _editor.AppendText(sep + text + "\r\n");
+                _caretValid = true;
+            }
+            if (!TrySave()) return "已插入，但保存失败，请查看笔记本底部的提示 / Inserted, but saving failed; see the notebook status";
+            RenderPreview(false);
+            return null;
         }
 
         internal bool TrySave()

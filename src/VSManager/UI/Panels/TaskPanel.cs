@@ -12,6 +12,7 @@ namespace VSManager
         private readonly Panel _top = new Panel();
         private readonly TaskDragListBox _list = new TaskDragListBox();
         private readonly FlatButton _btnClear = new FlatButton { Text = "清除已完成", Ghost = true };
+        private readonly FlatButton _btnRemoveInvalid = new FlatButton { Text = "移除无效", Ghost = true };
         private readonly FlatButton _btnHistory = new FlatButton { Text = "历史", Ghost = true };
         private readonly FlatButton _btnStart = new FlatButton { Text = "▶ 开始流程 / Start" };
         private bool _workflowStarted;
@@ -48,7 +49,7 @@ namespace VSManager
         private bool _loadWarningSeen;
         private string _tip;
 
-        /// <summary>请求对任务执行操作：start / dispatch / cancel / retry / remove / clear / unclear / unhide / open。/ Requests a task action.</summary>
+        /// <summary>请求对任务执行操作：start / dispatch / cancel / retry / remove / remove_invalid / clear / unclear / unhide / open。/ Requests a task action.</summary>
         public event Action<QueuedTask, string> ActionRequested;
         public event Action<bool> CollapsedChanged;
 
@@ -73,6 +74,11 @@ namespace VSManager
             _btnClear.Click += (s, e) => ActionRequested?.Invoke(null, "clear");
             _tips.SetToolTip(_btnClear, "从界面隐藏已完成的任务与对话（失败 / 已取消的保留）\r\n历史记录仍保存在 tasks.json 与归档中，可点「历史」查看");
             _btnHistory.Font = Theme.Small;
+            _btnRemoveInvalid.Font = Theme.Small;
+            _btnRemoveInvalid.Size = new Size(Dpi.S(72), Dpi.S(28));
+            _btnRemoveInvalid.Click += (s, e) => ActionRequested?.Invoke(null, "remove_invalid");
+            _tips.SetToolTip(_btnRemoveInvalid, "批量移除失败、已取消的任务与已停止 / 已中断的对话（从 tasks.json 删除，归档保留）\r\nRemove failed and cancelled tasks plus stopped / interrupted chats in bulk (deleted from tasks.json; the archive keeps them)");
+            _top.Controls.Add(_btnRemoveInvalid);
             _btnHistory.Size = new Size(Dpi.S(48), Dpi.S(28));
             _btnHistory.Visible = false;
             _btnHistory.Click += (s, e) => { _showHistory = !_showHistory; Reload(); };
@@ -352,6 +358,7 @@ namespace VSManager
             Width = collapsed ? Dpi.S(44) : ExpandedWidth;
             _list.Visible = !collapsed;
             _btnClear.Visible = !collapsed;
+            _btnRemoveInvalid.Visible = !collapsed;
             _btnView.Visible = !collapsed;
             _btnStart.Visible = !collapsed;
             _btnHistory.Visible = !collapsed && (_hiddenCount > 0 || _showHistory);
@@ -381,6 +388,8 @@ namespace VSManager
             if (_collapsed) { _btnCollapse.Location = new Point((_top.Width - _btnCollapse.Width) / 2, y); return; }
             _btnCollapse.Location = new Point(_top.Width - _btnCollapse.Width - Dpi.S(10), y);
             _btnView.Location = new Point(_btnCollapse.Left - _btnView.Width - Dpi.S(4), y);
+            // 放在标题行，避免挤压「开始流程」按钮 / Sits in the title row so it does not squeeze the Start button
+            _btnRemoveInvalid.Location = new Point(_btnView.Left - _btnRemoveInvalid.Width - Dpi.S(4), y);
             _btnClear.Location = new Point(_top.Width - _btnClear.Width - Dpi.S(10), Dpi.S(52));
             _btnHistory.Location = new Point(_btnClear.Left - _btnHistory.Width - Dpi.S(4), Dpi.S(52));
             _btnStart.SetBounds(Dpi.S(10), Dpi.S(52), Math.Max(0, _btnHistory.Left - Dpi.S(14)), Dpi.S(28));
@@ -448,6 +457,7 @@ namespace VSManager
             _list.EndUpdate();
             _btnClear.Enabled = items.Any(x => x is QueuedTask t ? t.Status == QueueStatus.Done && !IsCleared(t, cleared)
                 : x is ExternalChat c && !c.Generating && !c.Stopped && !c.Interrupted && !IsCleared(c, cleared));
+            _btnRemoveInvalid.Enabled = _queue.Items.Any(TaskQueue.IsInvalid) || ext.Any(c => c.IsInvalid);
             _top.Invalidate();
         }
 

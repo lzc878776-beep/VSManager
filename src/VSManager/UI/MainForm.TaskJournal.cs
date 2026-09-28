@@ -3,8 +3,15 @@ using System.IO;
 
 namespace VSManager
 {
-    public partial class MainForm
+    public partial class MainForm : IAgentNotebookHost
     {
+        /// <summary>AI 写入笔记后刷新笔记本（有未保存编辑时不打断）。/ Refreshes the notebook after the AI writes a note (never interrupts unsaved edits).</summary>
+        void IAgentNotebookHost.NotebookChanged(string pageId) => SafeInvoke(() =>
+        {
+            _notebook?.ReloadIfClean();
+            SetStatus("📝 AI 助手已写入笔记 / The AI assistant wrote a note");
+        });
+
         /// <summary>把成功完成的任务写入笔记本当天的「任务记录」；失败只记录日志，不影响任务。/ Records a completed task in today's notebook folder; failures are logged only.</summary>
         private void RecordTaskInNotebook(QueuedTask t)
         {

@@ -16,6 +16,8 @@ namespace VSManager
         List<VsInstance> Enumerate(Dictionary<int, VsInstance> existing);
         string DebugAction(VsInstance vs, string action);
         string ReadErrorList(VsInstance vs, int max);
+        /// <summary>关闭所有已打开的 .cs 文件标签页（保留未保存的）。/ Closes all open .cs tabs (keeps unsaved ones).</summary>
+        string CloseCsDocuments(VsInstance vs);
         VsService.LaunchProfiles GetLaunchProfiles(VsInstance vs);
         string SetLaunchProfile(VsInstance vs, string name);
         bool OpenCopilotChat(VsInstance vs);
@@ -31,6 +33,7 @@ namespace VSManager
         public List<VsInstance> Enumerate(Dictionary<int, VsInstance> existing) => VsService.Enumerate(existing);
         public string DebugAction(VsInstance vs, string action) => VsService.DebugAction(vs, action);
         public string ReadErrorList(VsInstance vs, int max) => VsService.ReadErrorList(vs, max);
+        public string CloseCsDocuments(VsInstance vs) => VsService.CloseCsDocuments(vs);
         public VsService.LaunchProfiles GetLaunchProfiles(VsInstance vs) => VsService.GetLaunchProfiles(vs);
         public string SetLaunchProfile(VsInstance vs, string name) => VsService.SetLaunchProfile(vs, name);
         public bool OpenCopilotChat(VsInstance vs) => VsService.OpenCopilotChat(vs);

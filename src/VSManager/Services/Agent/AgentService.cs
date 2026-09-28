@@ -252,12 +252,22 @@ namespace VSManager
         public AgentService(IAgentHost host, Func<AppSettings> settings) : this(host, settings, null) { }
 
         /// <summary>可替换 AI 客户端工厂的构造函数（用于测试）。/ Constructor with a replaceable AI client factory (for tests).</summary>
-        public AgentService(IAgentHost host, Func<AppSettings> settings, IAiClientFactory clientFactory)
+        public AgentService(IAgentHost host, Func<AppSettings> settings, IAiClientFactory clientFactory) : this(host, settings, clientFactory, AgentProfile.Manager) { }
+
+        /// <summary>指定助手类型的构造函数：总控助手或笔记助手。/ Constructor choosing the assistant profile: manager or note assistant.</summary>
+        public AgentService(IAgentHost host, Func<AppSettings> settings, IAiClientFactory clientFactory, AgentProfile profile)
         {
             System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
             _host = host;
             _settings = settings;
             _clientFactory = clientFactory ?? OpenAiClientFactory.Instance;
+            Profile = profile;
+            if (profile == AgentProfile.Notes)
+            {
+                Transcript.Title = NoteAgentTitle;
+                _tools = NoteTools();
+                return;
+            }
             _tools = new List<AITool>
             {
                 AIFunctionFactory.Create((Func<string>)ListVs, "list_vs"),
@@ -266,6 +276,7 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)WaitForVs, "wait_for_vs"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)DebugVs, "debug_vs"),
                 AIFunctionFactory.Create((Func<string, int, Task<string>>)GetErrors, "get_errors"),
+                AIFunctionFactory.Create((Func<string, Task<string>>)CloseCsTabs, "close_cs_tabs"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)StopCopilot, "stop_copilot"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)NewCopilotThread, "new_copilot_thread"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)ActivateVs, "activate_vs"),
@@ -279,6 +290,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
+                AIFunctionFactory.Create((Func<int, string, Task<string>>)EditTaskResult, "edit_task_result"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
@@ -288,12 +300,16 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)OpenSolution, "open_solution"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)CloseVs, "close_vs"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)CaptureVsScreenshot, "capture_vs_screenshot"),
+                AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ReadVsScreenshot, "read_vs_screenshot"),
                 AIFunctionFactory.Create((Func<string, string, bool, int, int, CancellationToken, Task<string>>)FindFiles, "find_files"),
                 AIFunctionFactory.Create((Func<string, string, string, bool, int, int, int, CancellationToken, Task<string>>)SearchFileContents, "search_file_contents"),
                 AIFunctionFactory.Create((Func<string, int, int, CancellationToken, Task<string>>)ReadFile, "read_file"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)ListDirectory, "list_directory"),
                 AIFunctionFactory.Create((Func<string, string>)ListNotes, "list_notes"),
                 AIFunctionFactory.Create((Func<string, string>)ReadNote, "read_note"),
+                AIFunctionFactory.Create((Func<string, string, string, Task<string>>)CreateNote, "create_note"),
+                AIFunctionFactory.Create((Func<string, string, Task<string>>)AppendToNote, "append_to_note"),
+                AIFunctionFactory.Create((Func<string, string, Task<string>>)UpdateNote, "update_note"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)PreviewNotionPlan, "preview_notion_plan"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)DispatchNotionPlan, "dispatch_notion_plan"),
             };
@@ -612,9 +628,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// <summary>
         /// 同时写入归档（chat\ai-*.jsonl，可关闭）与本机对话记录（agent-chat.jsonl，供「对话记录」窗口查看）。
         /// Writes to both the archive (chat\ai-*.jsonl, optional) and the local chat history (agent-chat.jsonl, shown in the history window).
+        /// 笔记助手的对话只保留在内存中，不写入总控助手的记录。/ Note-assistant conversations stay in memory and never go into the manager's records.
         /// </summary>
-        private static void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null)
+        private void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null)
         {
+            if (Profile == AgentProfile.Notes) return;
             try { Archive.Ai(role, content, detail, steps, error); } catch { }
             try { AgentChatLog.Append(role, content, detail, steps, error); } catch { }
         }
@@ -672,6 +690,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "wait_for_vs": return "等待" + target + "的 Copilot 完成";
                 case "debug_vs": return target + "执行 " + ActionName(Arg("action"));
                 case "get_errors": return "读取" + target + "的错误列表";
+                case "close_cs_tabs": return "关闭" + target + "的 .cs 文件标签页 / Close .cs tabs";
                 case "stop_copilot": return "停止" + target + "的 Copilot";
                 case "new_copilot_thread": return target + "新建 Copilot 线程";
                 case "activate_vs": return "切换到" + target;
@@ -697,6 +716,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 }
                 case "release_task": return "放行任务 #" + Arg("id") + "，后续继续执行 / Release task";
                 case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + "：" + OneLine(Arg("info"), 50);
+                case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
                 case "read_vs_file":
                 case "read_file": return "读取并脱敏授权文件 / Read and redact granted file";
@@ -708,6 +728,13 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "open_solution": return "打开解决方案「" + OneLine(Arg("solution"), 60) + "」/ Open solution";
                 case "close_vs": return "关闭 VS「" + OneLine(Arg("target"), 60) + "」/ Close VS";
                 case "capture_vs_screenshot": return "截图分析" + target + "（需预览批准）/ Screenshot analysis (approval required)";
+                case "read_vs_screenshot": return "读取" + target + "的截图" + (Arg("question").Length > 0 ? "：" + OneLine(Arg("question"), 40) : "") + " / Read the VS screenshot";
+                case "list_notes": return "查找笔记 / Search notes" + (Arg("query").Length > 0 ? "：" + OneLine(Arg("query"), 40) : "");
+                case "read_note": return "读取笔记 / Read note";
+                case "create_note": return "新建笔记「" + OneLine(Arg("title"), 40) + "」/ Create note";
+                case "append_to_note": return "追加到笔记 / Append to note";
+                case "update_note": return "改写笔记 / Rewrite note";
+                case "read_current_note": return "读取当前笔记 / Read the current note";
                 default: return fc.Name;
             }
         }
@@ -739,6 +766,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         private string SystemPrompt()
         {
             var s = _settings();
+            if (Profile == AgentProfile.Notes) return Prompts.NoteAgentSystem(s.IsEnglishVoice, DateTime.Now, DescribeCurrentNote());
             return Prompts.AgentSystem(s.IsEnglishVoice, DateTime.Now, ListVs(), s.AgentInstructions, _host.Solutions.Count > 0 ? ListSolutions() : null, (_host as IAgentReleaseHost)?.ReleaseLevel ?? s.ReleaseLevel, _notebookPrompt);
         }
 

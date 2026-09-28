@@ -138,6 +138,34 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void EditResult_ReplacesTextAndChecklist_KeepsStatusAndChecks()
+        {
+            var t = T(1, QueueStatus.Unverified);
+            t.Result = "Done.\n- [ ] Open the list\n- [ ] Click Start";
+            t.TestItems = new[] { new TaskTestItem { Text = "Open the list", Checked = true }, new TaskTestItem { Text = "Click Start" } };
+            _store.Initial.Add(t);
+            _store.Initial.Add(T(2, QueueStatus.Running));
+            var q = NewQueue();
+            int saves = _store.SaveCount;
+            Assert.IsTrue(q.EditResult(1, "已完成。\r\n- [ ] 打开清单\r\n- [ ] 点击开始", out string error), error);
+            var edited = q.Find(1);
+            Assert.AreEqual("已完成。\n- [ ] 打开清单\n- [ ] 点击开始", edited.Result);
+            Assert.AreEqual(QueueStatus.Unverified, edited.Status);
+            CollectionAssert.AreEqual(new[] { "打开清单", "点击开始" }, edited.TestItems.Select(i => i.Text).ToArray());
+            CollectionAssert.AreEqual(new[] { true, false }, edited.TestItems.Select(i => i.Checked).ToArray());
+            Assert.AreEqual(saves + 1, _store.SaveCount);
+
+            Assert.IsTrue(q.EditResult(1, "只改说明，没有列表", out error));
+            Assert.AreEqual(2, edited.TestItems.Length, "新文字没有清单时保留原清单 / keeps the list when the new text has none");
+            Assert.IsFalse(q.EditResult(2, "x", out error));
+            StringAssert.Contains(error, "尚未结束");
+            Assert.IsFalse(q.EditResult(99, "x", out error));
+            Assert.IsFalse(q.EditResult(1, "  ", out error));
+            Assert.IsFalse(q.EditResult(1, new string('x', TaskQueue.MaxResultChars + 1), out error));
+            Assert.AreEqual(QueueStatus.Running, q.Find(2).Status);
+        }
+
+        [TestMethod]
         public void Remove_RefusesSendingTask()
         {
             var q = NewQueue();
@@ -148,6 +176,38 @@ namespace VSManager.Tests
             Assert.IsTrue(q.Remove(a.Id));
             Assert.AreEqual(0, q.Items.Count);
             Assert.IsFalse(q.Remove(999));
+        }
+
+        [TestMethod]
+        public void RemoveInvalid_RemovesFailedAndCancelled_KeepsOthersAndWorktrees()
+        {
+            _store.Initial.Add(T(1, QueueStatus.Failed));
+            _store.Initial.Add(T(2, QueueStatus.Cancelled));
+            _store.Initial.Add(T(3, QueueStatus.Done));
+            _store.Initial.Add(T(4, QueueStatus.Unverified));
+            _store.Initial.Add(T(5, QueueStatus.Waiting));
+            _store.Initial.Add(T(6, QueueStatus.Running));
+            var lane = T(7, QueueStatus.Failed);
+            lane.Worktree = new WorktreeInfo { SolutionPath = "lane.sln", Root = _data.File("lane"), MainRoot = _data.File("main") };
+            _store.Initial.Add(lane);
+            var q = NewQueue();
+
+            CollectionAssert.AreEquivalent(new[] { 1, 2 }, q.RemoveInvalid().ToArray());
+            CollectionAssert.AreEquivalent(new[] { 3, 4, 5, 6, 7 }, q.Items.Select(t => t.Id).ToArray());
+            CollectionAssert.AreEquivalent(new[] { 3, 4, 5, 6, 7 }, _store.Saved.Select(t => t.Id).ToArray(), "已保存 / saved");
+            CollectionAssert.IsSubsetOf(new[] { "#1:removed", "#2:removed" }, _archive.Events.ToArray());
+
+            Assert.AreEqual(0, q.RemoveInvalid().Count);
+            Assert.IsFalse(TaskQueue.IsInvalid(null));
+        }
+
+        [TestMethod]
+        public void ExternalChat_IsInvalid_OnlyWhenStoppedOrInterrupted()
+        {
+            Assert.IsTrue(new ExternalChat { Stopped = true }.IsInvalid);
+            Assert.IsTrue(new ExternalChat { Interrupted = true }.IsInvalid);
+            Assert.IsFalse(new ExternalChat().IsInvalid);
+            Assert.IsFalse(new ExternalChat { Generating = true, Interrupted = true }.IsInvalid);
         }
 
         [TestMethod]

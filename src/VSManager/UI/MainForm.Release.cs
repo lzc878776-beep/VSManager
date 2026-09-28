@@ -8,7 +8,7 @@ namespace VSManager
     /// 任务队列放行等级：顶栏滑块、任务菜单与 AI 工具共用的宿主实现。
     /// Task queue release level: host implementation shared by the header slider, the task menu and the AI tools.
     /// </summary>
-    public partial class MainForm : IAgentReleaseHost
+    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost
     {
         /// <summary>切换放行等级：保存设置、同步滑块、刷新任务清单并重新调度。/ Switches the level: saves, syncs the slider, refreshes the list and re-pumps.</summary>
         private string ApplyReleaseLevel(ReleaseLevel level, string by)
@@ -50,6 +50,17 @@ namespace VSManager
             if (!RetryWithInfo(t, info, out string error)) return $"任务 #{id} 当前{StatusText(t)}：{error}";
             return $"已为任务 #{id} 插入补充信息并重新排队（第 {t.SupplementCount}/{TaskStateMachine.MaxSupplements} 次），完成后会再通知你 / "
                 + $"Task #{id} requeued with info ({t.SupplementCount}/{TaskStateMachine.MaxSupplements}); you will be notified";
+        });
+
+        Task<string> IAgentTaskResultHost.EditTaskResult(int id, string text) => OnUi(() =>
+        {
+            if (!_tasks.EditResult(id, text, out string error)) return error;
+            _taskPanel.RefreshItems();
+            var t = _tasks.Find(id);
+            SetStatus($"AI 助手已修改任务 #{id} 的结果文字 / The assistant edited the result of task #{id}");
+            string checklist = t?.TestItems != null && TaskTestChecklist.Pending(t)
+                ? $"；测试清单 {t.TestItems.Length} 项，剩 {TaskTestChecklist.Remaining(t)} 项未勾选 / checklist {t.TestItems.Length} items, {TaskTestChecklist.Remaining(t)} unchecked" : "";
+            return $"已修改任务 #{id} 的结果文字并保存，状态与排队不变{checklist} / Result of task #{id} edited and saved; status and queue unchanged";
         });
 
         private bool RetryWithInfo(QueuedTask t, string info, out string error)
