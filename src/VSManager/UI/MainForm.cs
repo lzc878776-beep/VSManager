@@ -9,7 +9,7 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost, ITaskRoundHost, IAgentTaskReplyHost
+	public partial class MainForm : Form, IRemoteHost, IAgentHost, ITaskDispatchHost, ITaskInstanceHost, ITaskRoundHost, IAgentTaskReplyHost
 	{
 		private readonly AppSettings _settings = AppSettings.Load();
 		private volatile List<VsInstance> _instances = new List<VsInstance>();
@@ -1491,10 +1491,10 @@ namespace VSManager
 				return NotPushed(refused);
 			}
 			string name = NameOf(v);
-			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => !i.HasExplicitTarget && TaskQueue.SameAttachments(i.Attachments, attachments)), v.Key, text);
-			var q = duplicate ?? (attachments != null && attachments.Length > 0
-				? _tasks.Add(v.Key, name, text.Trim(), source, attachments)
-				: _tasks.Add(v.Key, name, text.Trim(), source));
+			// 记录所选实例：同一解决方案多开时，任务只发往这个 VS 的 Copilot 对话 / Record the chosen instance: with one solution open twice the task only goes to this VS's Copilot conversation
+			var duplicate = TaskStateMachine.FindActiveDuplicate(_tasks.Items.Where(i => !i.HasExplicitTarget && TaskQueue.SameAttachments(i.Attachments, attachments)
+				&& TaskTarget.MayShareInstance(i, v.InstanceKey)), v.Key, text);
+			var q = duplicate ?? _tasks.AddFor(v.InstanceKey, v.Key, name, text.Trim(), source, attachments);
 			ApplyTitle(q, title);
 			string hidden = duplicate == null ? HideResentFailed(q) : null;
 			if (_taskPanel.Collapsed) { _taskPanel.SetCollapsed(false); _testPanel.SetSuppressed(false); _settings.TaskPanelCollapsed = false; _settings.Save(); }
@@ -2039,6 +2039,13 @@ namespace VSManager
 
 		private VsInstance FindVs(string key) => _instances.FirstOrDefault(i => i.Key == key);
 
+		/// <summary>任务的目标实例（同一解决方案多开时按任务记录的实例区分）。/ The task's target instance (distinguished by the recorded instance when one solution is open twice).</summary>
+		private VsInstance FindTaskVs(QueuedTask t) => t.HasExplicitTarget ? ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t) : FindTaskVs(t, t.VsKey);
+
+		private VsInstance FindTaskVs(QueuedTask t, string key) => TaskTarget.Pick(_instances.Where(i => i.Key == key), t, NameOf);
+
+		VsInstance ITaskInstanceHost.FindTaskVs(QueuedTask task, string vsKey) => FindTaskVs(task, vsKey);
+
 		private static string Clip(string s, int max) => TextUtil.Clip(s, max);
 
 		private string StatusText(QueuedTask t) => TaskStateMachine.StatusText(t, DateTime.Now, _tasks.Items, _settings.ReleaseLevel);
@@ -2114,7 +2121,7 @@ namespace VSManager
 					return;
 				case "open":
 					var v = t.HasExplicitTarget ? ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t)
-						: t.Worktree == null ? FindVs(t.VsKey) : ((ITaskDispatchHost)this).FindTargetVs(t);
+						: t.Worktree == null ? FindTaskVs(t) : ((ITaskDispatchHost)this).FindTargetVs(t);
 					if (v == null && t.Worktree != null && !t.HasExplicitTarget)
 					{
 						var lane = _solutions.FindByPath(t.Worktree.SolutionPath);
@@ -2235,7 +2242,7 @@ namespace VSManager
 		private bool SentByUs(int pid, string key)
 		{
 			if (_tasks.Items.Any(t => t.Status == QueueStatus.Sending
-				&& (t.HasExplicitTarget ? ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t) : FindVs(t.VsKey))?.Pid == pid
+				&& FindTaskVs(t)?.Pid == pid
 				&& !string.IsNullOrEmpty(t.CompletionToken) && key.Contains("[VSManager:" + t.CompletionToken + ":"))) return true;
 			foreach (var s in _recentSends)
 			{
@@ -2427,7 +2434,7 @@ namespace VSManager
 		{
 			SettleExternals(v);
 			var queued = _tasks.Items.FirstOrDefault(x => x.Status == QueueStatus.Running
-				&& (x.HasExplicitTarget ? x.MatchesExplicitTarget(v) : x.VsKey == v.Key));
+				&& (x.HasExplicitTarget ? x.MatchesExplicitTarget(v) : x.VsKey == v.Key && FindTaskVs(x) == v));
 			if (queued != null)
 			{
 				bool automatic = _dispatcher.IsAutomatic(queued) || _dispatcher.HasYieldedToManualChat(queued);

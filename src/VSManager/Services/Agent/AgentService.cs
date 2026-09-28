@@ -975,12 +975,14 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             if (attachmentError != null) return attachmentError;
             SolutionEntry parkFor = null;
             VsInstance v;
+            bool byAlias = false;
             string query = (vs ?? "").Trim();
             string selector = query.TrimStart('#').Trim();
             if (selector.EndsWith("号")) selector = selector.Substring(0, selector.Length - 1);
             var entry = int.TryParse(selector, out _) ? null : _host.Solutions.Items.FirstOrDefault(e => string.Equals(e.Alias, query, StringComparison.OrdinalIgnoreCase));
             if (entry != null)
             {
+                byAlias = true;
                 v = _host.Instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, entry.Path));
                 if (v == null) parkFor = entry;
             }
@@ -990,9 +992,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 // Not a running VS: resolve it as a registry alias; use the VS if open, otherwise park the task
                 var hit = LookupSolution(vs, out string lookupError);
                 if (hit == null) return _host.Solutions.Count > 0 ? err + "\n" + lookupError : err;
+                byAlias = true;
                 v = _host.FindOpenSolution(hit);
                 if (v == null) parkFor = hit;
             }
+            if (byAlias && parkFor == null && AmbiguousSolution(query, v) is string ambiguous) return ambiguous;
             task = (task ?? "").Trim();
             if (task.Length == 0) return "任务内容为空";
             int maxTask = MaxTaskText;
@@ -1340,6 +1344,22 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         #region 辅助
 
         private int Index(VsInstance v) => _host.Instances.ToList().IndexOf(v);
+
+        /// <summary>
+        /// 按解决方案别名选中的 VS 若与其他 VS 打开的是同一解决方案（各自是不同的 Copilot 对话），拒绝猜测并要求改用编号。
+        /// When a VS picked by solution alias shares its solution with other open VS instances (each a different Copilot
+        /// conversation), refuse to guess and ask for the VS number instead.
+        /// </summary>
+        private string AmbiguousSolution(string query, VsInstance v)
+        {
+            if (v == null) return null;
+            var list = _host.Instances.ToList();
+            var same = list.Select((x, i) => (Vs: x, No: i + 1)).Where(x => x.Vs.Key == v.Key).ToList();
+            if (same.Count < 2) return null;
+            string options = string.Join("、", same.Select(x => "#" + x.No + " " + _host.NameOf(x.Vs)));
+            return $"❌ 未推送 / Not pushed: 「{query}」对应的解决方案同时在多个 VS 中打开（{options}），它们是不同的 Copilot 对话；请用 VS 编号指定目标后重新调用 send_task。"
+                + $" / The solution for \"{query}\" is open in several VS instances ({options}), each a different Copilot conversation; call send_task again with the VS number.";
+        }
 
         private bool Resolve(string vs, out VsInstance v, out string error)
         {

@@ -417,6 +417,23 @@ namespace VSManager.Tests
             Assert.AreEqual(lane.Worktree.Branch, isolated.Worktree.Branch);
         }
 
+        [TestMethod]
+        public async Task SendTaskTool_AliasOpenInTwoInstances_AsksForTheVsNumber()
+        {
+            // 同一解决方案被两个 VS 打开时，别名不能区分对话，不得猜第一个 / One solution open in two VS: the alias cannot tell the conversations apart, so never guess the first
+            var shared = RegisterSolution("Shared", "Shared.slnx");
+            _host.Instances[0].SolutionPath = shared.Path; _host.Instances[0].Key = shared.Path;
+            _host.Instances.Add(new VsInstance { Pid = 43, SolutionPath = shared.Path, Key = shared.Path });
+            string result = (await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = "Shared", ["task"] = "Ambiguous target" })).ToString();
+            StringAssert.StartsWith(result, "❌");
+            StringAssert.Contains(result, "#1");
+            StringAssert.Contains(result, "#2");
+            Assert.AreEqual(0, _host.Queue.Items.Count);
+
+            await InvokeTool("send_task", new AIFunctionArguments { ["vs"] = "2", ["task"] = "Numbered target" });
+            Assert.AreEqual(1, _host.Queue.Items.Count, "编号能精确指定实例 / A number names the instance exactly");
+        }
+
         [DataTestMethod]
         [DataRow("1")]
         [DataRow("#1")]

@@ -196,6 +196,14 @@ namespace VSManager
             Add(vsKey, vsName, text, source, QueueStatus.Waiting, null);
 
         /// <summary>
+        /// 添加发往指定实例的任务（<paramref name="instanceKey"/> 为 <see cref="VsInstance.InstanceKey"/>）；同一解决方案多开时不会发到其他实例。
+        /// Adds a task for a specific instance (<paramref name="instanceKey"/> is <see cref="VsInstance.InstanceKey"/>); with one
+        /// solution open in several instances it is never sent to another instance.
+        /// </summary>
+        public QueuedTask AddFor(string instanceKey, string vsKey, string vsName, string text, string source, AttachmentRef[] attachments = null) =>
+            Add(vsKey, vsName, text, source, QueueStatus.Waiting, null, attachments, instanceKey);
+
+        /// <summary>
         /// 暂存任务：目标解决方案未打开，状态为「等待目标 VS」，<paramref name="vsKey"/> 为解决方案完整路径。
         /// Parks a task whose target solution is not open: status "waiting for target VS", <paramref name="vsKey"/> is the full solution path.
         /// </summary>
@@ -218,15 +226,16 @@ namespace VSManager
             return Key(a) == Key(b);
         }
 
-        private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target, AttachmentRef[] attachments = null)
+        private QueuedTask Add(string vsKey, string vsName, string text, string source, string status, string target, AttachmentRef[] attachments = null, string instanceKey = null)
         {
             if (attachments != null && attachments.Length == 0) attachments = null;
-            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(i => !i.HasExplicitTarget && SameAttachments(i.Attachments, attachments)), vsKey, text);
+            var duplicate = TaskStateMachine.FindActiveDuplicate(_items.Where(i => !i.HasExplicitTarget && SameAttachments(i.Attachments, attachments)
+                && TaskTarget.MayShareInstance(i, instanceKey)), vsKey, text);
             if (duplicate != null) return duplicate;
             var t = new QueuedTask
             {
                 Id = _nextId++, VsKey = vsKey, VsName = vsName, Text = text, Source = source,
-                Status = status, Created = _clock(), Target = target, Attachments = attachments,
+                Status = status, Created = _clock(), Target = target, Attachments = attachments, TargetInstanceKey = instanceKey,
                 Worktree = ResolveWorktree?.Invoke(vsKey)?.Clone()
                     ?? _items.LastOrDefault(x => string.Equals(x.VsKey, vsKey, StringComparison.OrdinalIgnoreCase) && x.Worktree != null)?.Worktree.Clone()
             };

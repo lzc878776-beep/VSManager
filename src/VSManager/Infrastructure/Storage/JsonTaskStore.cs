@@ -127,6 +127,7 @@ namespace VSManager
             {
                 Id = I("Id"), VsKey = S("VsKey"), VsName = S("VsName"), Text = S("Text"), Title = S("Title"), Source = S("Source"),
                 ExplicitInstanceKey = S("ExplicitInstanceKey"), ExplicitSolutionPath = S("ExplicitSolutionPath"),
+                TargetInstanceKey = S("TargetInstanceKey"),
                 Status = S("Status"), Started = ParseDate(S("Started")), Finished = ParseDate(S("Finished")),
                 Result = S("Result"), Error = S("Error"), Attempts = Math.Max(0, I("Attempts")), Target = S("Target"),
                 QueueOrder = Math.Max(0, I("QueueOrder")), CompletionToken = S("CompletionToken"),

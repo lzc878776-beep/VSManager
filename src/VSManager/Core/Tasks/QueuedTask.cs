@@ -65,6 +65,12 @@ namespace VSManager
         [DataMember(EmitDefaultValue = false)] public string ExplicitInstanceKey;
         [DataMember(EmitDefaultValue = false)] public string ExplicitSolutionPath;
         public bool HasExplicitTarget => ExplicitInstanceKey != null || ExplicitSolutionPath != null;
+        /// <summary>
+        /// 普通任务入队 / 发送时所选的 VS 实例（见 <see cref="TaskTarget"/>）：同一解决方案多开时据此回到原实例，不改投其他实例。
+        /// The VS instance chosen when an ordinary task was queued / sent (see <see cref="TaskTarget"/>): with one solution open in
+        /// several instances the task returns to that instance and is never redirected to another one.
+        /// </summary>
+        [DataMember(EmitDefaultValue = false)] public string TargetInstanceKey;
         public bool MatchesExplicitTarget(VsInstance v) => v != null && !string.IsNullOrEmpty(ExplicitInstanceKey)
             && v.InstanceKey == ExplicitInstanceKey && ExplicitSolutionPath != null
             && string.Equals(v.SolutionPath ?? "", ExplicitSolutionPath, StringComparison.OrdinalIgnoreCase);
@@ -180,7 +186,7 @@ namespace VSManager
         public QueuedTask Clone() => new QueuedTask
         {
             Id = Id, VsKey = VsKey, VsName = VsName, Text = Text, Title = Title, Source = Source, Status = Status, Created = Created,
-            ExplicitInstanceKey = ExplicitInstanceKey, ExplicitSolutionPath = ExplicitSolutionPath,
+            ExplicitInstanceKey = ExplicitInstanceKey, ExplicitSolutionPath = ExplicitSolutionPath, TargetInstanceKey = TargetInstanceKey,
             Started = Started, Finished = Finished, Result = Result, Error = Error, Attempts = Attempts, Target = Target,
             QueueOrder = QueueOrder, Replaces = Replaces == null ? null : (int[])Replaces.Clone(),
             CompletionToken = CompletionToken, Worktree = Worktree?.Clone(), IsWorktreeMerge = IsWorktreeMerge,

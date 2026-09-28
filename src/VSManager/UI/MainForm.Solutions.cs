@@ -96,9 +96,11 @@ namespace VSManager
         {
             if (t.HasExplicitTarget) return ((IExplicitTaskDispatchHost)this).FindExplicitTarget(t);
             if (t.Worktree != null)
-                return _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath));
-            var v = FindVs(t.VsKey) ?? _instances.FirstOrDefault(i => SolutionMatcher.SamePath(i.SolutionPath, t.VsKey));
-            if (v != null) return v;
+                return TaskTarget.Pick(_instances.Where(i => SolutionMatcher.SamePath(i.SolutionPath, t.Worktree.SolutionPath)), t, NameOf);
+            // 已打开的同解决方案实例中按记录的实例选择；无法确定时不回退到别名查找（那样会随便挑一个）
+            // Choose among open instances of the solution by the recorded instance; when undetermined, do not fall back to the alias lookup (it would pick any)
+            var open = _instances.Where(i => i.Key == t.VsKey || SolutionMatcher.SamePath(i.SolutionPath, t.VsKey)).ToList();
+            if (open.Count > 0) return TaskTarget.Pick(open, t, NameOf);
             var e = _solutions.FindByPath(t.VsKey) ??
                     (string.IsNullOrEmpty(t.Target) ? null : _solutions.Items.FirstOrDefault(x => string.Equals(x.Alias, t.Target, StringComparison.OrdinalIgnoreCase)));
             return FindOpenSolution(e);

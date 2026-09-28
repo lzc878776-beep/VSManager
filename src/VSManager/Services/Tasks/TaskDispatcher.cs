@@ -67,6 +67,16 @@ namespace VSManager
         Task<string> SendTaskAsync(VsInstance v, QueuedTask t);
     }
 
+    /// <summary>
+    /// 可选宿主能力：按任务记录的实例查找目标 VS（同一解决方案多开时区分实例，见 <see cref="TaskTarget"/>）；未实现时按解决方案查找。
+    /// Optional host capability: finds the target VS by the instance recorded on the task (distinguishing instances of the same
+    /// solution, see <see cref="TaskTarget"/>); without it the lookup is by solution.
+    /// </summary>
+    public interface ITaskInstanceHost
+    {
+        VsInstance FindTaskVs(QueuedTask task, string vsKey);
+    }
+
     /// <summary>可选宿主能力：AI 任务完成后、发布下一个任务前安全关闭目标 VS 已保存的 .cs 标签页。/ Optional host capability: safely closes saved .cs tabs in the target VS after AI completion, before publishing the next task.</summary>
     public interface ITaskCompletionHost
     {
@@ -87,7 +97,11 @@ namespace VSManager
         private readonly IWorktreeTaskService _worktrees;
         private VsInstance ResolveTarget(QueuedTask task, bool useWorktree = false)
         {
-            if (!task.HasExplicitTarget) return !useWorktree || task.Worktree == null ? _host.FindVs(task.VsKey) : _host.FindTargetVs(task);
+            if (!task.HasExplicitTarget)
+            {
+                if (useWorktree && task.Worktree != null) return _host.FindTargetVs(task);
+                return _host is ITaskInstanceHost instances ? instances.FindTaskVs(task, task.VsKey) : _host.FindVs(task.VsKey);
+            }
             var target = (_host as IExplicitTaskDispatchHost)?.FindExplicitTarget(task);
             return task.MatchesExplicitTarget(target) ? target : null;
         }
@@ -231,6 +245,7 @@ namespace VSManager
                     var skipped = _tasks.Items.Where(x => x.Id < t.Id && x.Status == QueueStatus.Failed
                         && TaskStateMachine.SharesDispatchTarget(x, t)).OrderBy(x => x.Id).Select(x => x.Id).ToArray();
                     TaskStateMachine.BeginSend(t, t.HasExplicitTarget ? t.VsName : _host.NameOf(v));
+                    TaskTarget.Pin(t, v);
                     if (t.Worktree != null) t.VsKey = v.Key;
                     _tasks.Commit();
                     _host.LogEvent(t.VsName, $"任务清单：发布任务 #{t.Id}（第 {t.Attempts} 次）");
@@ -318,6 +333,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
                 string target = t.Target ?? t.VsName;
                 var delay = _host.TargetSettleDelay;
                 if (!TaskStateMachine.TargetOpened(t, v.Key, _host.NameOf(v), now + delay)) continue;
+                TaskTarget.Pin(t, v);
                 _tasks.Commit();
                 int secs = (int)Math.Max(0, delay.TotalSeconds);
                 _host.LogEvent(t.VsName, $"任务清单：目标「{target}」已打开，暂存任务 #{t.Id} 转为排队，{secs} 秒后自动推送 / target opened, parked task #{t.Id} queued, pushed in {secs} s");

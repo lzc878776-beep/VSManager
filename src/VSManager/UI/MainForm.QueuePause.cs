@@ -73,7 +73,7 @@ namespace VSManager
             var stopped = new HashSet<VsInstance>();
             foreach (var t in _tasks.Items.Where(x => x.Status == QueueStatus.Running).ToList())
             {
-                var v = FindVs(t.VsKey);
+                var v = FindTaskVs(t);
                 if (!_dispatcher.Interrupt(t)) { sb.Append($"#{t.Id} 正在收尾，未中断 / is finishing, not interrupted；"); continue; }
                 string stop = "";
                 if (v != null && v.Copilot == CopilotState.Busy && stopped.Add(v))
