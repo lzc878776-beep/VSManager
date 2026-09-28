@@ -7,6 +7,14 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- AI 总控助手支持多模态输入：当前模型支持看图时，输入框附带的图片（png / jpg / gif / webp，每条最多 4 张）直接发给模型查看，不再只能转发给 VS；只保留最近一条带图消息的图片；已知纯文字模型不发图，接口拒绝图片时本会话自动改为纯文字。
+  The AI assistant accepts multimodal input: with a vision-capable model, images attached in the input (png / jpg / gif / webp, up to 4 per message) are sent to the model to view instead of only being forwarded to a VS; only the latest image-bearing message keeps its images; known text-only models get no images, and if the API rejects images the session falls back to text only.
+- 截图分析支持 DeepSeek `deepseek-flash`（及 `deepseek-v4-flash*` 旧名）：不再把 DeepSeek 全系当作纯文字模型，仅 `deepseek-v4-pro`、`deepseek-chat` 等仍提示不支持图片；DeepSeek 截图分析放宽输出上限，避免思考模式占满后返回空结果。
+  Screenshot analysis now supports DeepSeek `deepseek-flash` (and legacy `deepseek-v4-flash*` names): DeepSeek is no longer treated as text-only across the board, only `deepseek-v4-pro`, `deepseek-chat` and similar still report no image support; DeepSeek screenshot analysis gets a larger output cap so thinking mode cannot leave the answer empty.
+- AI 总控输入栏的发送按钮旁新增「⚡ 直发 / Direct」（Ctrl+Enter）：按 @ 指定的目标直接发布任务，AI 只做简单润色，不补充内容、不提问。
+  The AI assistant input gains a "⚡ 直发 / Direct" button beside Send (Ctrl+Enter): it publishes straight to the @ target while the AI only smooths the wording, adding nothing and asking no questions.
+- AI 总控助手新增 `start_task_workflow` 工具，可将任务流程切换为已启动（等同点击「开始流程 / Start」，遵守「操作前确认」）；任务流程启动时统一触发事件，按钮无论由用户还是 AI 启动都会同步为「✓ 已启动 / Started」。
+  The AI assistant gains a `start_task_workflow` tool that switches the task workflow to started (same as clicking Start, honouring "Confirm before acting"); starting the workflow now raises a single event so the button syncs to "Started" whether the user or the AI started it.
 - 任务清单的悬停提示改为在同一条目上停留约 1.2 秒后才出现，移到其他条目重新计时；内容以任务本身为主：未执行时显示任务内容（及等待原因），已完成时显示完成情况，未验证 / 待验证时分别列出已完成的内容与未验证的项目（☑ / ☐），失败时先显示失败原因；回执标记不再出现在提示中。
   Task list hover tips now appear only after the pointer rests on the same entry for about 1.2 s, restarting when it moves to another entry. They focus on the task itself: the task text (and why it waits) before it runs, the outcome once done, what was done plus the unverified items (☑ / ☐) for unverified / awaiting-verification tasks, and the failure reason first for failed tasks; receipt markers no longer appear in the tip.
 - 笔记本目录中的「AI 助手补充提示词」页面改为与「笔记本 / Notebooks」同级的顶级节点显示，不再混在普通笔记里；该节点使用独立的玫红色（左侧色条、文字与选中底色），一眼可与普通笔记区分。
@@ -43,6 +51,12 @@ All notable changes to VSManager are documented here. The format is based on [Ke
   Removed the notebook toolbar buttons in favor of automatic behavior: only the rendered view shows by default (no Markdown source); double-click the content to edit, and leave the editor or press Esc to return to reading; notes autosave after typing stops (Ctrl+S still works) and refresh after external writes; if the page changed or was deleted elsewhere, the draft is saved automatically as a sibling "title-draft-time" page; paste a screenshot / image files or drop images into the editor to insert them; the AI assistant reads notes through its notebook skill, so "Copy for AI" is no longer needed.
 
 ### 新增 / Added
+
+- 笔记卡片样式：卡片新增可选的 `style` 字段——`compact` 紧凑型、`numbered` 编号左列型、`noted` 带附注型、`accent` 左色条型（默认 `standard`，已有卡片不变）；`format_note_card` 与 `add_note_card` 新增 `style` 参数，总控助手新增 `add_note_card_styles` 技能，把同一内容按多种样式写入笔记，便于对比后选定（遵守「操作前确认」）。
+  Note card styles: cards gain an optional `style` field — `compact`, `numbered` (meta as a left-column number), `noted` (full note as a callout) and `accent` (status-colored left bar); the default `standard` leaves existing cards unchanged. `format_note_card` and `add_note_card` take a `style` parameter, and the assistant gains the `add_note_card_styles` skill, which writes the same content in several styles into a note for comparison (honors "Confirm before acting").
+
+- 笔记卡片：笔记中的 ```card 代码块在阅读视图中渲染为与任务清单一致的卡片（状态胶囊、编号、时间、标题、正文、附注）；总控助手新增 `add_note_card`（追加卡片，遵守「操作前确认」），总控助手与笔记助手共用 `format_note_card`（生成卡片 Markdown，用于修改已有卡片或「插入到笔记」）。
+  Note cards: a ```card block in a note renders in the reading view as a card like the task list (status pill, meta, time, title, text, note). The assistant gains `add_note_card` (appends a card; honors "Confirm before acting"), and both the assistant and the note assistant share `format_note_card` (builds card Markdown for editing existing cards or "Insert into note").
 
 - 总控助手新增 `edit_task_result` 工具：修改任务清单中已结束任务的结果文字（例如把英文测试清单翻译成中文）并保存，同步更新测试清单（项数不变时保留勾选），不改变状态、编号与排队；遵守「操作前确认」。`list_tasks` 现在会列出待验证任务的测试清单。
   New `edit_task_result` assistant tool: edits the result text of a finished task (e.g. translating an English test checklist) and saves it, refreshing the checklist (check marks kept when the item count is unchanged) without changing status, id or queue; honors "Confirm before acting". `list_tasks` now lists the checklists of awaiting-verification tasks.

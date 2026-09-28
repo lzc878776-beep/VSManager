@@ -90,12 +90,16 @@ namespace VSManager
         public const string WaitingForStart = "等待手动授权：点击「开始流程 / Start」或右键当前任务重新检查 / Waiting for manual start or task authorization: click Start or recheck this task from its context menu";
         public bool IsStarted { get; private set; }
 
-        /// <summary>仅本次会话有效；只能由用户开始，不持久化。/ User opt-in for this session only; never persisted.</summary>
+        /// <summary>流程切换为已启动后触发（用户点击或 AI 启动均会触发），用于同步界面按钮。/ Raised after the workflow switches to started (by the user or the AI) to sync the UI button.</summary>
+        public event Action StartedChanged;
+
+        /// <summary>仅本次会话有效；由用户点击 Start 或 AI 调用 start_task_workflow 启动，不持久化。/ Session only; started by the user's Start click or the AI's start_task_workflow, never persisted.</summary>
         public void Start()
         {
             if (IsStarted) return;
             IsStarted = true;
             _host.SetStatus("任务流程已启动 / Task workflow started");
+            StartedChanged?.Invoke();
             _host.QueueActivityChanged(_tasks.Items.Any(x => QueueStatus.Active(x.Status)));
             Pump();
         }

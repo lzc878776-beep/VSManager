@@ -589,6 +589,65 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public async Task AddNoteCard_AppendsCardBlock_AndHonorsConfirm()
+        {
+            _settings.AgentConfirm = true;
+            var store = UseNotebook();
+            string id = store.CreatePage("", "任务记录", "# 任务记录\n");
+            var args = new AIFunctionArguments { ["page"] = id, ["title"] = "→ Demo", ["text"] = "实现导出", ["status"] = "done", ["duration"] = "16m57s", ["meta"] = "#108 · AI", ["time"] = "09:48" };
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("add_note_card", args), "declined");
+            Assert.AreEqual("# 任务记录\n", store.Read(id).Text);
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("add_note_card", args), "Added card");
+            string body = store.Read(id).Text;
+            StringAssert.StartsWith(body, "# 任务记录\n\n```card\nstatus: done\n");
+            var card = NoteCard.Parse(body.Substring(body.IndexOf("status:", StringComparison.Ordinal)).Replace("```", ""));
+            Assert.AreEqual("→ Demo", card.Title);
+            Assert.AreEqual("✓ 已完成 · 16m57s", card.PillText);
+            CollectionAssert.AreEqual(new[] { id }, _host.NotebookChanges);
+            StringAssert.Contains(await Invoke("add_note_card", new AIFunctionArguments { ["page"] = id, ["title"] = " " }), "Provide a title");
+        }
+
+        [TestMethod]
+        public async Task AddNoteCardStyles_AppendsComparison_AndHonorsConfirm()
+        {
+            _settings.AgentConfirm = true;
+            var store = UseNotebook();
+            string id = store.CreatePage("", "样式", "# 样式\n");
+            var args = new AIFunctionArguments { ["page"] = id, ["title"] = "镇墩稳定计算", ["status"] = "waiting", ["meta"] = "01", ["styles"] = "compact, numbered" };
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("add_note_card_styles", args), "declined");
+            Assert.AreEqual("# 样式\n", store.Read(id).Text);
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("add_note_card_styles", args), "compact, numbered");
+            string body = store.Read(id).Text;
+            StringAssert.StartsWith(body, "# 样式\n\n### 卡片样式对比\n\n**紧凑型**");
+            StringAssert.Contains(body, "style: compact\n");
+            StringAssert.Contains(body, "style: numbered\n");
+            string card = await Invoke("add_note_card", new AIFunctionArguments { ["page"] = id, ["title"] = "x", ["style"] = "带附注型" });
+            StringAssert.Contains(card, "Added card");
+            StringAssert.Contains(store.Read(id).Text, "status: info\nstyle: noted\ntitle: x");
+            StringAssert.Contains(await Invoke("format_note_card", new AIFunctionArguments { ["title"] = "x", ["style"] = "accent" }), "style: accent");
+            foreach (bool en in new[] { false, true })
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "add_note_card_styles");
+        }
+
+        [TestMethod]
+        public async Task FormatNoteCard_ReturnsMarkdownWithoutWriting()
+        {
+            var store = UseNotebook();
+            string md = await Invoke("format_note_card", new AIFunctionArguments { ["title"] = "→ Demo", ["status"] = "失败", ["note"] = "编译失败" });
+            StringAssert.StartsWith(md, "```card\nstatus: failed\n");
+            Assert.AreEqual(0, _host.NotebookChanges.Count);
+            foreach (bool en in new[] { false, true })
+            {
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "add_note_card");
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "format_note_card");
+            }
+        }
+
+        [TestMethod]
         public void NotebookSkill_IsInSystemPromptInBothLanguages()
         {
             foreach (bool en in new[] { false, true })
@@ -598,6 +657,15 @@ namespace VSManager.Tests
                 StringAssert.Contains(prompt, "append_to_note");
                 StringAssert.Contains(prompt, "update_note");
             }
+        }
+
+        [TestMethod]
+        public void Prompts_WriteSupplementaryPromptPageWithNoteTools_NotSendTask()
+        {
+            StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Now, "", null), "根目录的「" + NotebookAgentPrompt.PageTitle + "」是笔记本页面");
+            StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Now, "", null), "绝不要为此用 send_task 发布任务");
+            StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Now, "", null), "The root page \"" + NotebookAgentPrompt.PageTitle + "\" is a notebook page");
+            StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Now, "", null), "never use send_task or code changes for this");
         }
 
         [TestMethod]
@@ -624,8 +692,28 @@ namespace VSManager.Tests
                 StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "edit_task_result");
         }
 
-        private sealed class FileHost : IAgentHost, IAgentNotebookHost, IAgentTaskResultHost
+        [TestMethod]
+        public async Task StartTaskWorkflow_HonorsAgentConfirm_AndSkipsWhenStarted()
         {
+            _settings.AgentConfirm = true;
+            _host.ConfirmResult = false;
+            StringAssert.Contains(await Invoke("start_task_workflow", new AIFunctionArguments()), "declined");
+            Assert.AreEqual(0, _host.WorkflowStarts);
+            _host.ConfirmResult = true;
+            StringAssert.Contains(await Invoke("start_task_workflow", new AIFunctionArguments()), "started-by-host");
+            Assert.AreEqual(1, _host.WorkflowStarts);
+            StringAssert.Contains(await Invoke("start_task_workflow", new AIFunctionArguments()), "already started");
+            Assert.AreEqual(1, _host.WorkflowStarts);
+            Assert.AreEqual(2, _host.Confirmations);
+            foreach (bool en in new[] { false, true })
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), "start_task_workflow");
+        }
+
+        private sealed class FileHost : IAgentHost, IAgentNotebookHost, IAgentTaskResultHost, IAgentWorkflowHost
+        {
+            internal int WorkflowStarts;
+            public bool WorkflowStarted { get; private set; }
+            public Task<string> StartWorkflow() { WorkflowStarts++; WorkflowStarted = true; return Task.FromResult("started-by-host"); }
             internal readonly List<string> ResultEdits = new List<string>();
             public Task<string> EditTaskResult(int id, string text) { ResultEdits.Add(id + ":" + text); return Task.FromResult("edited"); }
             internal readonly List<string> NotebookChanges = new List<string>();

@@ -8,8 +8,18 @@ namespace VSManager
     /// 任务队列放行等级：顶栏滑块、任务菜单与 AI 工具共用的宿主实现。
     /// Task queue release level: host implementation shared by the header slider, the task menu and the AI tools.
     /// </summary>
-    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost
+    public partial class MainForm : IAgentReleaseHost, IAgentTaskResultHost, IAgentWorkflowHost
     {
+        bool IAgentWorkflowHost.WorkflowStarted => _dispatcher.IsStarted;
+
+        Task<string> IAgentWorkflowHost.StartWorkflow() => OnUi(() =>
+        {
+            if (_dispatcher.IsStarted) return "任务流程已启动 / The task workflow is already started.";
+            _dispatcher.Start();
+            AppLog.Write(AppLog.TasksFile, "AI 启动任务流程 / The AI started the task workflow");
+            int waiting = _tasks.Items.Count(x => QueueStatus.Active(x.Status));
+            return $"已启动任务流程，按钮已同步为「已启动」；{waiting} 个活动任务将按编号调度 / Task workflow started and the button now shows Started; {waiting} active tasks dispatch in ID order";
+        });
         /// <summary>切换放行等级：保存设置、同步滑块、刷新任务清单并重新调度。/ Switches the level: saves, syncs the slider, refreshes the list and re-pumps.</summary>
         private string ApplyReleaseLevel(ReleaseLevel level, string by)
         {

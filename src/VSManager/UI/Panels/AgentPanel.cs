@@ -54,7 +54,7 @@ namespace VSManager
         private readonly FlowLayoutPanel _chips = new FlowLayoutPanel();
         private readonly List<AttachmentRef> _pending = new List<AttachmentRef>();
         private readonly Label _placeholder = new Label();
-        private readonly FlatButton _btnSend, _btnStop, _btnClear, _btnSettings, _btnAttach;
+        private readonly FlatButton _btnSend, _btnDirect, _btnStop, _btnClear, _btnSettings, _btnAttach;
         private readonly ReleaseLevelSlider _releaseSlider = new ReleaseLevelSlider();
         private readonly Timer _renderTimer = new Timer { Interval = 60 };
         private readonly Timer _pulse = new Timer { Interval = 400 };
@@ -206,21 +206,29 @@ namespace VSManager
             var actions = new Panel { Dock = DockStyle.Bottom, Height = Dpi.S(38), BackColor = InputBg, Padding = new Padding(0, Dpi.S(4), 0, 0) };
             _btnSend = new FlatButton { Text = "发送  ➤", Primary = true, Dock = DockStyle.Right, Width = Dpi.S(92) };
             _btnSend.Click += (s, e) => Send(_input.Text);
+            // 直发：按 @ 目标直接发布，AI 只润色语句、不补充、不提问 / Direct: publish to the @ targets right away; the AI only smooths the wording, adds nothing and asks nothing
+            _btnDirect = new FlatButton { Text = "⚡ 直发 / Direct", Dock = DockStyle.Right, Width = Dpi.S(112), Visible = !noteMode };
+            _btnDirect.Click += (s, e) => Send(_input.Text, true);
+            _tips.SetToolTip(_btnDirect, "按 @ 指定的目标直接发布任务：AI 只做简单润色让语句通顺，不补充内容、不提问（Ctrl+Enter）\n"
+                + "Publish straight to the @ targets: the AI only smooths the wording, adds nothing and asks no questions (Ctrl+Enter)");
             _btnStop = new FlatButton { Text = "■  停止", Tint = Theme.Danger, Dock = DockStyle.Right, Width = Dpi.S(80) };
             _btnStop.Click += (s, e) => _agent?.Stop();
             var gap = new Panel { Dock = DockStyle.Right, Width = Dpi.S(8), BackColor = InputBg };
+            var directGap = new Panel { Dock = DockStyle.Right, Width = Dpi.S(8), BackColor = InputBg, Visible = !noteMode };
             _btnAttach = new FlatButton { Text = "＋ 附件 / Attach", Ghost = true, Dock = DockStyle.Left, Width = Dpi.S(118) };
             _btnAttach.Click += (s, e) => ChooseFiles();
             _tips.SetToolTip(_btnAttach, "添加图片或文件（也可粘贴截图或拖入文件）\n附件保存在 %APPDATA%\\VSManager\\attachments\\，只在本机\nAdd images or files (you can also paste a screenshot or drop files)\nStored in %APPDATA%\\VSManager\\attachments\\ on this computer only");
             var hint = new Label
             {
-                Dock = DockStyle.Fill, Text = "Enter 发送 · Shift+Enter 换行 · Esc 停止 · 可粘贴截图 / 拖入文件", ForeColor = Theme.TextMuted, BackColor = InputBg,
+                Dock = DockStyle.Fill, Text = (noteMode ? "Enter 发送" : "Enter 发送 · Ctrl+Enter 直发") + " · Shift+Enter 换行 · Esc 停止 · 可粘贴截图 / 拖入文件", ForeColor = Theme.TextMuted, BackColor = InputBg,
                 Font = Theme.Small, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true, UseMnemonic = false
             };
             actions.Controls.Add(hint);
             actions.Controls.Add(_btnAttach);
             actions.Controls.Add(_btnStop);
             actions.Controls.Add(gap);
+            actions.Controls.Add(_btnDirect);
+            actions.Controls.Add(directGap);
             actions.Controls.Add(_btnSend);
 
             _inputBox.Controls.Add(_placeholder);
@@ -333,14 +341,20 @@ namespace VSManager
             _transcript.Render(_agent.Transcript, true);
         }
 
-        private void Send(string text)
+        private void Send(string text, bool direct = false)
         {
             text = (text ?? "").Trim();
             bool fromInput = text == _input.Text.Trim();
             var files = fromInput ? _pending.ToArray() : new AttachmentRef[0];
+            if (direct && (!fromInput || _noteMode || !VsMentionSession.HasIntent(text)))
+            {
+                _mentionStatus = DirectNeedsMention;
+                _inputStatus.Text = _mentionStatus;
+                return;
+            }
             if (fromInput && !_noteMode && VsMentionSession.HasIntent(text))
             {
-                if (TryRouteMentionToAgent(text, files)) return;
+                if (TryRouteMentionToAgent(text, files, direct)) return;
                 MentionSubmission result;
                 try { result = MentionRequested?.Invoke(text, files) ?? new MentionSubmission(null, VsMentionSession.ChooseError); }
                 catch (Exception ex) { result = new MentionSubmission(null, "提及任务未接纳；草稿已保留 / Mention task not accepted; draft retained: " + ex.Message); }
@@ -361,7 +375,7 @@ namespace VSManager
         /// 模型可用时，@ 只告诉 AI 目标 VS，由 AI 整理并用 send_task 发布；模型不可用时才直接入队。
         /// When the model is available, @ only tells the AI the target VS and the AI publishes via send_task; enqueue directly only without a model.
         /// </summary>
-        private bool TryRouteMentionToAgent(string text, AttachmentRef[] files)
+        private bool TryRouteMentionToAgent(string text, AttachmentRef[] files, bool direct)
         {
             if (_agent == null || !_agent.Configured || _agent.Running || _mentionSession == null) return false;
             var chips = _mentionSession.Chips(text).ToArray();
@@ -380,15 +394,32 @@ namespace VSManager
                 if (!names.Contains(label)) names.Insert(0, label);
             }
             string shown = display.ToString().Trim();
-            string prompt = shown + "\n\n[用户用 @ 指定了目标 VS / Target VS chosen via @：" + string.Join("、", names) + "] "
-                + "请把这条需求用 send_task 发布给该 VS（vs 参数填编号），任务文字按规则只做语言梳理；需要附件时 attachments 填 \"last\"。如果只是咨询或意图不完整，先向用户确认。"
-                + " / Publish this request to that VS with send_task (use its number for vs), language cleanup only; pass attachments \"last\" when needed. If it is only a question or incomplete, confirm with the user first.";
+            string prompt = MentionPrompt(shown, names, direct);
             _input.Clear(); _pending.Clear(); RefreshChips();
-            _mentionStatus = "已交给 AI 发布到 " + string.Join("、", names) + " / Handed to the AI to publish";
+            _mentionStatus = (direct ? "已交给 AI 润色后直发到 " : "已交给 AI 发布到 ") + string.Join("、", names)
+                + (direct ? " / Handed to the AI to polish and send directly" : " / Handed to the AI to publish");
             _inputStatus.Text = _mentionStatus;
             _ = _agent.RunAsync(prompt, shown, files);
             FocusInput();
             return true;
+        }
+
+        internal const string DirectNeedsMention = "直发需要先用 @ 指定目标 VS / Direct send needs an @ target first";
+
+        /// <summary>
+        /// 生成 @ 转交 AI 的提示：direct 为 true 时要求只润色语句、不补充、不提问并立即发布。
+        /// Builds the prompt that hands an @ mention to the AI; when direct is true it only smooths the wording, adds nothing, asks nothing and publishes at once.
+        /// </summary>
+        internal static string MentionPrompt(string shown, IList<string> names, bool direct)
+        {
+            string head = shown + "\n\n[用户用 @ 指定了目标 VS / Target VS chosen via @：" + string.Join("、", names) + "] ";
+            if (direct)
+                return head + "【直发】请立即用 send_task 把这条内容发布给上述每个 VS（vs 参数填编号，其他参数保持默认）：任务文字只做简单润色，让语句通顺即可，保持原意，不补充任何内容（不加步骤、要求、背景或解释）；"
+                    + "不要提问或征求确认，不要先调用其他工具收集信息；有附件时 attachments 填 \"last\"。发布后只用一句话说明结果。"
+                    + " / [Direct] Publish this right away with send_task to each VS above (use its number for vs, leave other parameters at defaults). Only lightly polish the wording so it reads smoothly, keep the meaning and add nothing (no steps, requirements, background or explanations). "
+                    + "Do not ask questions or seek confirmation and do not call other tools first; pass attachments \"last\" when there are attachments. Afterwards reply with one sentence on the result.";
+            return head + "请把这条需求用 send_task 发布给该 VS（vs 参数填编号），任务文字按规则只做语言梳理；需要附件时 attachments 填 \"last\"。如果只是咨询或意图不完整，先向用户确认。"
+                + " / Publish this request to that VS with send_task (use its number for vs), language cleanup only; pass attachments \"last\" when needed. If it is only a question or incomplete, confirm with the user first.";
         }
 
         private int MaxCount => AttachmentPolicy.ClampMaxCount(_agent?.CurrentSettings?.AttachmentMaxCount ?? 0);
@@ -513,6 +544,12 @@ namespace VSManager
                 e.Handled = true;
                 Send(_input.Text);
             }
+            else if (e.KeyCode == Keys.Enter && e.Control && !e.Shift && !e.Alt && !_noteMode)
+            {
+                e.SuppressKeyPress = true;
+                e.Handled = true;
+                if (_btnDirect.Enabled) Send(_input.Text, true);
+            }
             else if (e.KeyCode == Keys.Escape && _agent?.Running == true)
             {
                 e.SuppressKeyPress = true;
@@ -527,7 +564,7 @@ namespace VSManager
             bool running = _agent?.Running == true;
             // 禁用有焦点的按钮会把焦点推给下一个控件；记下来并把焦点留在输入框。
             // Disabling a focused button pushes focus to the next control; remember it and keep focus in the input instead.
-            bool buttonFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+            bool buttonFocused = _btnSend.Focused || _btnDirect.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
                 || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
             bool placeholder = _input.TextLength == 0 && !_input.Focused;
             if (_placeholder.Visible != placeholder) _placeholder.Visible = placeholder;
@@ -535,12 +572,13 @@ namespace VSManager
                 : _noteMode ? "让笔记助手总结、查找、改写笔记… / Ask about your notes…" : "让 AI 查看所有 VS 状态、发布任务、调试与生成…";
             if (_placeholder.Text != hint) _placeholder.Text = hint;
             _btnSend.Enabled = (!running || (!_noteMode && VsMentionSession.HasIntent(_input.Text))) && (_input.Text.Trim().Length > 0 || _pending.Count > 0);
+            _btnDirect.Enabled = !_noteMode && VsMentionSession.HasIntent(_input.Text);
             _btnStop.Enabled = running;
             if (_btnAttach != null) _btnAttach.Enabled = !running;
             _btnClear.Enabled = _agent != null && (running || _agent.Transcript.Messages.Count > 0);
             foreach (Control c in _toolbar.Controls) c.Enabled = !running;
             if (_btnInsert != null) _btnInsert.Enabled = !running && LastReply().Length > 0;
-            bool stillFocused = _btnSend.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
+            bool stillFocused = _btnSend.Focused || _btnDirect.Focused || (_btnAttach?.Focused ?? false) || _btnClear.Focused
                 || _toolbar.Controls.Cast<Control>().Any(c => c.Focused);
             if (buttonFocused && !stillFocused && Form.ActiveForm != null && Form.ActiveForm == FindForm() && _input.CanFocus) _input.Focus();
             if (running && !_pulse.Enabled) { _dots = 0; _pulse.Start(); }

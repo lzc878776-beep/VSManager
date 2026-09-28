@@ -287,6 +287,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetVsNote, "set_vs_note"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListTasks, "list_tasks"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)CancelTask, "cancel_task"),
+                AIFunctionFactory.Create((Func<Task<string>>)StartTaskWorkflow, "start_task_workflow"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)SetReleaseLevel, "set_release_level"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)ReleaseTask, "release_task"),
                 AIFunctionFactory.Create((Func<int, string, Task<string>>)RetryTaskWithInfo, "retry_task_with_info"),
@@ -311,6 +312,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)CreateNote, "create_note"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)AppendToNote, "append_to_note"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)UpdateNote, "update_note"),
+                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string>)FormatNoteCard, "format_note_card"),
+                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCard, "add_note_card"),
+                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCardStyleSamples, "add_note_card_styles"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)PreviewNotionPlan, "preview_notion_plan"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)DispatchNotionPlan, "dispatch_notion_plan"),
             };
@@ -525,7 +529,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             Changed?.Invoke();
 
             LoadNotebookPromptForConversation();
-            _history.Add(new AIMessage(AIRole.User, files.Length > 0 ? ModelMessage(text, files) : text));
+            var userMessage = UserModelMessage(text, files, files.Any(a => a.IsImage) && ModelAcceptsImages());
+            bool sentImages = userMessage.Contents.OfType<DataContent>().Any();
+            _history.Add(userMessage);
             var updates = new List<ChatResponseUpdate>();
             var calls = new Dictionary<string, string>();
             string error = null;
@@ -573,6 +579,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             catch (Exception ex)
             {
                 error = Friendly(ex);
+                string visionNotice = HandleVisionRejected(ex, sentImages);
+                if (visionNotice != null) error = visionNotice + "（" + error + "）";
                 transientFailure = IsTransientRequestFailure(ex);
                 // 请求失败之外的异常视为助手内部故障 / Anything other than a request failure is an internal fault
                 if (!transientFailure && !(ex is System.ClientModel.ClientResultException) && !(ex.InnerException is System.ClientModel.ClientResultException)) internalError = ex;
@@ -609,6 +617,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 if (_cts == cts) _cts = null;
                 cts.Dispose();
                 TrimHistory();
+                PruneHistoryImages(_history, true);
                 ConsecutiveFailures = error == null ? 0 : transientFailure ? ConsecutiveFailures + 1 : ConsecutiveFailures;
                 Changed?.Invoke();
                 if (_notices.Count > 0) ProcessNotices();
@@ -710,6 +719,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "request_vsmanager_improvement": return "请 VSManager 完善助手能力：" + OneLine(Arg("capability"), 50);
                 case "list_tasks": return "查看任务清单";
                 case "cancel_task": return "取消任务 #" + Arg("id");
+                case "start_task_workflow": return "启动任务流程 / Start task workflow";
                 case "set_release_level":
                 {
                     var level = ReleaseLevels.TryParse(Arg("level"));
@@ -736,6 +746,9 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "create_note": return "新建笔记「" + OneLine(Arg("title"), 40) + "」/ Create note";
                 case "append_to_note": return "追加到笔记 / Append to note";
                 case "update_note": return "改写笔记 / Rewrite note";
+                case "format_note_card": return "生成笔记卡片「" + OneLine(Arg("title"), 40) + "」/ Format note card";
+                case "add_note_card": return "添加笔记卡片「" + OneLine(Arg("title"), 40) + "」/ Add note card";
+                case "add_note_card_styles": return "添加卡片样式对比「" + OneLine(Arg("title"), 40) + "」/ Add card style samples";
                 case "read_current_note": return "读取当前笔记 / Read the current note";
                 default: return fc.Name;
             }

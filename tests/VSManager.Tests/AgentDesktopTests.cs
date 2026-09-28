@@ -136,7 +136,8 @@ namespace VSManager.Tests
         }
 
         [DataTestMethod]
-        [DataRow("https://api.deepseek.com", "deepseek-flash")]
+        [DataRow("https://api.deepseek.com", "deepseek-v4-pro")]
+        [DataRow("https://api.deepseek.com", "deepseek-chat")]
         [DataRow("http://localhost:11434/v1", "qwen2.5:7b")]
         [DataRow("https://api.moonshot.cn/v1", "moonshot-v1-32k")]
         public async Task ReadScreenshot_KnownTextOnlyModel_TellsUserWithoutCapturing(string endpoint, string model)
@@ -157,9 +158,23 @@ namespace VSManager.Tests
         [DataRow("qwen2.5vl:7b", false)]
         [DataRow("my-custom-model", false)]
         [DataRow("deepseek-v4-pro", true)]
+        [DataRow("deepseek-chat", true)]
+        [DataRow("deepseek-flash", false)]
+        [DataRow("deepseek-v4-flash", false)]
+        [DataRow("deepseek-v4-flash-vision-exp", false)]
         [DataRow("qwen-plus", true)]
         public void KnownTextOnlyModel_Classification(string model, bool textOnly) =>
             Assert.AreEqual(textOnly, AgentService.IsKnownTextOnlyModel("https://example.invalid/v1", model));
+
+        [TestMethod]
+        public void DeepSeekFlash_OnDeepSeekEndpoint_IsVisionCapable_WithRoomForThinking()
+        {
+            Assert.IsFalse(AgentService.IsKnownTextOnlyModel("https://api.deepseek.com", "deepseek-flash"));
+            Assert.IsTrue(AgentService.IsKnownTextOnlyModel("https://api.deepseek.com", "deepseek-v4-pro"));
+            Assert.AreEqual(8192, AgentService.ScreenshotMaxOutputTokens(new Uri("https://api.deepseek.com")));
+            Assert.AreEqual(1500, AgentService.ScreenshotMaxOutputTokens(new Uri("https://api.openai.com/v1")));
+            StringAssert.Contains(AgentService.VisionModelExamples, "deepseek-flash");
+        }
 
         [TestMethod]
         public async Task ReadScreenshot_ApiRejectsImages_ReturnsExplicitNotice()
@@ -555,6 +570,26 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void DirectMentionPrompt_PolishesOnly_NoQuestions_BothLanguages()
+        {
+            var names = new[] { "#2 Orders", "#3 Pipe" };
+            string direct = AgentPanel.MentionPrompt("修一下 bug", names, true);
+            StringAssert.StartsWith(direct, "修一下 bug");
+            StringAssert.Contains(direct, "#2 Orders、#3 Pipe");
+            StringAssert.Contains(direct, "立即用 send_task");
+            StringAssert.Contains(direct, "让语句通顺即可");
+            StringAssert.Contains(direct, "不补充任何内容");
+            StringAssert.Contains(direct, "不要提问");
+            StringAssert.Contains(direct, "Do not ask questions");
+            StringAssert.Contains(direct, "add nothing");
+            Assert.IsFalse(direct.Contains("先向用户确认"));
+            Assert.IsFalse(direct.Contains("confirm with the user first"));
+            string normal = AgentPanel.MentionPrompt("修一下 bug", names, false);
+            StringAssert.Contains(normal, "先向用户确认");
+            Assert.IsFalse(normal.Contains("【直发】"));
+        }
+
+        [TestMethod]
         public async Task SolutionTools_ListRegisteredAliasesPathsAndOpenNumbers()
         {
             var entry = RegisterSolution("订单项目", "Orders.slnx", "下单");
@@ -817,9 +852,98 @@ namespace VSManager.Tests
             {
                 agent.NotebookPromptSource = () => throw new IOException("locked");
                 await agent.RunAsync("你好");
-                Assert.IsFalse(client.Messages[0].Text.Contains(NotebookAgentPrompt.PageTitle));
+                Assert.IsFalse(client.Messages[0].Text.Contains("「" + NotebookAgentPrompt.PageTitle + "」页写的补充提示词"));
+                Assert.IsFalse(client.Messages[0].Text.Contains("Supplementary prompt from the user's notebook page"));
                 Assert.IsNull(agent.NotebookPrompt);
             }
+        }
+
+        private static AttachmentRef Img(string id, string ext) =>
+            new AttachmentRef { Id = id, Name = "shot" + ext, Ext = ext, Kind = AttachmentKind.Image, Size = 10, Sha256 = "abcdef1234567890" };
+
+        [TestMethod]
+        public void UserModelMessage_VisionAttachesSupportedImagesOnly()
+        {
+            var png = Img("20260101-000000000-aaaaaa", ".png");
+            var bmp = Img("20260101-000000000-bbbbbb", ".bmp");
+            var big = Img("20260101-000000000-cccccc", ".jpg");
+            var msg = AgentService.UserModelMessage("看图", new[] { png, bmp, big }, true,
+                a => a == big ? new byte[ChatImage.MaxBytes + 1] : new byte[] { 1, 2, 3 }, (a, n) => null);
+            var images = msg.Contents.OfType<DataContent>().ToList();
+            Assert.AreEqual(1, images.Count);
+            Assert.AreEqual("image/png", images[0].MediaType);
+            StringAssert.Contains(msg.Text, "已随本消息附上");
+            StringAssert.Contains(msg.Text, "Other image content is not shown to you");
+
+            var textOnly = AgentService.UserModelMessage("看图", new[] { png }, false, a => new byte[] { 1 }, (a, n) => null);
+            Assert.IsFalse(textOnly.Contents.OfType<DataContent>().Any());
+            StringAssert.Contains(textOnly.Text, "Image content is not shown to you");
+
+            var many = Enumerable.Range(0, AgentService.MaxModelImages + 2).Select(i => Img("20260101-000000000-" + i.ToString("x6"), ".webp")).ToArray();
+            var capped = AgentService.UserModelMessage("", many, true, a => new byte[] { 1 }, (a, n) => null);
+            Assert.AreEqual(AgentService.MaxModelImages, capped.Contents.OfType<DataContent>().Count());
+        }
+
+        [TestMethod]
+        public void PruneHistoryImages_KeepsLatestImageMessageOnly()
+        {
+            AIMessage WithImage(string t) => new AIMessage(Microsoft.Extensions.AI.ChatRole.User, new AIContent[] { new TextContent(t), new DataContent(new byte[] { 1 }, "image/png") });
+            var history = new List<AIMessage> { WithImage("old"), new AIMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "seen"), WithImage("new") };
+            AgentService.PruneHistoryImages(history, true);
+            Assert.IsFalse(history[0].Contents.OfType<DataContent>().Any());
+            StringAssert.Contains(history[0].Text, "old");
+            StringAssert.Contains(history[0].Text, "not resent");
+            Assert.AreEqual(1, history[2].Contents.OfType<DataContent>().Count());
+            AgentService.PruneHistoryImages(history, false);
+            Assert.IsFalse(history.Any(m => m.Contents.OfType<DataContent>().Any()));
+        }
+
+        [TestMethod]
+        public async Task RunAsync_SendsImagesToVisionModel_FallsBackToTextAfterRejection()
+        {
+            var shot = AttachmentStore.SaveBytes(new byte[] { 0x89, 0x50, 0x4E, 0x47, 1, 2 }, "shot.png", 0, 5, 10);
+            var client = new ImageAwareClient();
+            using (var agent = new AgentService(_host, () => _settings, client))
+            {
+                await agent.RunAsync("图里是什么", null, new[] { shot });
+                Assert.AreEqual(1, client.LastImages);
+                await agent.RunAsync("继续");
+                Assert.AreEqual(1, client.LastImages, "最近一条带图消息保留 / The latest image message is kept");
+
+                client.RejectImages = true;
+                await agent.RunAsync("再看一张", null, new[] { shot });
+                StringAssert.Contains(agent.Transcript.Messages.Last().Parts.Last().Text, "改为只发送文字");
+                await agent.RunAsync("重发", null, new[] { shot });
+                Assert.AreEqual(0, client.LastImages, "被拒后本会话只发文字 / Text only after rejection");
+            }
+
+            _settings.AgentEndpoint = "https://api.deepseek.com";
+            _settings.AgentModel = "deepseek-v4-pro";
+            _settings.AgentApiKey = "k";
+            var textOnly = new ImageAwareClient();
+            using (var agent = new AgentService(_host, () => _settings, textOnly))
+            {
+                await agent.RunAsync("图里是什么", null, new[] { shot });
+                Assert.AreEqual(0, textOnly.LastImages, "已知纯文字模型不发图 / No images for known text-only models");
+            }
+        }
+
+        private sealed class ImageAwareClient : IAiClientFactory, IChatClient
+        {
+            internal int LastImages;
+            internal bool RejectImages;
+            public IChatClient Create(Uri endpoint, string model, string apiKey) => this;
+            public Task<ChatResponse> GetResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, CancellationToken cancellationToken = default) =>
+                Task.FromResult(new ChatResponse(new AIMessage(Microsoft.Extensions.AI.ChatRole.Assistant, "ok")));
+            public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<AIMessage> messages, ChatOptions options = null, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+            {
+                LastImages = messages.SelectMany(m => m.Contents).OfType<DataContent>().Count();
+                await Task.Yield();
+                if (RejectImages && LastImages > 0) throw new System.Net.Http.HttpRequestException("400: image_url is not supported by this model");
+                yield return new ChatResponseUpdate(Microsoft.Extensions.AI.ChatRole.Assistant, "ok");
+            }
+            public object GetService(Type serviceType, object serviceKey = null) => null;
+            public void Dispose() { }
         }
 
         private sealed class StreamingClient : IAiClientFactory, IChatClient
