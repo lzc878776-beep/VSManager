@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -782,12 +783,22 @@ namespace VSManager.Tests
             }
         }
 
+        // 输出目录在仓库外（如 -p:OutDir=%TEMP%\...）时，退回用本测试源文件的编译期路径定位仓库。
+        // When the output folder is outside the repository (e.g. -p:OutDir=%TEMP%\...), fall back to this test file's compile-time path.
+        private static string ThisSourceFile([CallerFilePath] string path = "") => path;
+
+        private static DirectoryInfo FindRepoRoot(string start)
+        {
+            var root = string.IsNullOrEmpty(start) ? null : new DirectoryInfo(start);
+            while (root != null && !Directory.Exists(Path.Combine(root.FullName, "src", "VSManager"))) root = root.Parent;
+            return root;
+        }
+
         [TestMethod]
         public void ProductionWiring_UsesPolicyForBothEntrypointsTimersUiAndVoiceSettings()
         {
-            var root = new DirectoryInfo(AppDomain.CurrentDomain.BaseDirectory);
-            while (root != null && !Directory.Exists(Path.Combine(root.FullName, "src", "VSManager"))) root = root.Parent;
-            Assert.IsNotNull(root);
+            var root = FindRepoRoot(AppDomain.CurrentDomain.BaseDirectory) ?? FindRepoRoot(Path.GetDirectoryName(ThisSourceFile()));
+            Assert.IsNotNull(root, "找不到 src\\VSManager / Cannot locate src\\VSManager");
             string Read(string file) => File.ReadAllText(Path.Combine(root.FullName, "src", "VSManager", file));
             string main = Read("UI\\MainForm.cs"), parked = Read("UI\\MainForm.Solutions.cs"), settings = Read("UI\\Forms\\SettingsForm.cs");
             StringAssert.Contains(main, "startSettings: () => _settings");
