@@ -29,6 +29,28 @@ namespace VSManager.Tests
             Assert.AreEqual(3, calls);
         }
 
+        /// <summary>
+        /// 输入框不可见（窗格被遮挡或未渲染）不再让任务一直礼让：与空闲一样连续两次确认后放行，写入前仍重新检查草稿。
+        /// A hidden input (pane covered or not rendered) no longer makes the task yield forever: like idle it passes after two
+        /// consecutive samples, and drafts are still re-checked before writing.
+        /// </summary>
+        [TestMethod]
+        public void Cache_HiddenInput_PassesAfterTwoSamples_AndDoesNotBlock()
+        {
+            var clock = new FakeClock(); var target = new VsInstance { Pid = 7, StartTicks = 1, SolutionPath = "one.sln" };
+            var cache = new ManualChatProbeCache(_ => Task.FromResult(ManualChatObservation.InputHidden), clock.Func);
+            var alive = new[] { target };
+            Assert.AreEqual(ManualChatObservation.Unknown, cache.Read(target, alive));
+            Assert.AreEqual(ManualChatObservation.Unknown, cache.Read(target, alive));
+            clock.Advance(TimeSpan.FromSeconds(2));
+            cache.Read(target, alive);
+            var settled = cache.Read(target, alive);
+            Assert.AreEqual(ManualChatObservation.InputHidden, settled);
+            Assert.IsFalse(ManualChatProtection.Blocks(settled));
+            Assert.IsTrue(ManualChatProtection.Blocks(ManualChatObservation.Draft));
+            Assert.IsTrue(ManualChatProtection.Blocks(ManualChatObservation.Unknown));
+        }
+
         [TestMethod]
         public void Cache_SlowProbeDoesNotBlockOtherTargetsOrSpawnDuplicates()
         {

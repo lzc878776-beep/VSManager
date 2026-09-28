@@ -104,6 +104,46 @@ namespace VSManager.Tests
             }
         }
 
+        [TestMethod]
+        public async Task Dispatcher_SameSolutionDifferentInstances_RunInParallel_ButNotInOneCopilot()
+        {
+            // 复现：两个 VS 打开同一解决方案，各自的任务应并行；同一实例的第二个任务仍须等待
+            // Repro: two VS instances with one solution run their tasks in parallel; a second task for the same instance still waits
+            using (new TempDataFolder())
+            {
+                var clock = new FakeClock { Now = Queued };
+                var queue = new TaskQueue(new AppSettings(), new MemoryTaskStore(), new RecordingArchive(), clock.Func);
+                var host = new TwoInstanceHost();
+                var docs = host.Add(Vs(1, Queued.AddHours(-2)), "Docs");
+                var sap = host.Add(Vs(2, Queued.AddHours(-1)), "Sap");
+                var first = queue.AddFor(docs.InstanceKey, Sln, "Docs", "文档任务 / Docs task", "AI");
+                var second = queue.AddFor(docs.InstanceKey, Sln, "Docs", "文档任务二 / Docs task 2", "AI");
+                var other = queue.AddFor(sap.InstanceKey, Sln, "Sap", "结构任务 / Sap task", "AI");
+                var dispatcher = new TaskDispatcher(queue, host, clock.Func);
+                dispatcher.Start();
+                for (int i = 0; i < 3; i++) { clock.Advance(TimeSpan.FromSeconds(5)); await dispatcher.PumpAsync(); }
+                Assert.AreEqual(QueueStatus.Running, first.Status);
+                Assert.AreEqual(QueueStatus.Running, other.Status, "另一实例不被阻塞 / The other instance is not blocked");
+                Assert.AreEqual(QueueStatus.Waiting, second.Status, "同一 Copilot 不并行 / No parallel runs in one Copilot");
+                CollectionAssert.AreEquivalent(new[] { docs, sap }, host.Sent);
+            }
+        }
+
+        [TestMethod]
+        public void BlockingTask_FailureOnAnotherInstance_DoesNotPause_UnpinnedStaysConservative()
+        {
+            var failed = new QueuedTask { Id = 1, VsKey = Sln, Status = QueueStatus.Failed, TargetInstanceKey = "inst:1:1" };
+            var otherInstance = new QueuedTask { Id = 2, VsKey = Sln, Status = QueueStatus.Waiting, TargetInstanceKey = "inst:2:2" };
+            var sameInstance = new QueuedTask { Id = 3, VsKey = Sln, Status = QueueStatus.Waiting, TargetInstanceKey = "inst:1:1" };
+            var unpinned = new QueuedTask { Id = 4, VsKey = Sln, Status = QueueStatus.Waiting };
+            var items = new[] { failed, otherInstance, sameInstance, unpinned };
+            Assert.IsNull(TaskStateMachine.BlockingTask(items, otherInstance, ReleaseLevel.Failed));
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(items, sameInstance, ReleaseLevel.Failed));
+            Assert.AreSame(failed, TaskStateMachine.BlockingTask(items, unpinned, ReleaseLevel.Failed), "未记录实例时保守阻塞 / Unpinned blocks conservatively");
+            var explicitOther = new QueuedTask { Id = 5, VsKey = Sln, Status = QueueStatus.Waiting, ExplicitInstanceKey = "inst:2:2", ExplicitSolutionPath = Sln };
+            Assert.IsNull(TaskStateMachine.BlockingTask(new[] { failed, explicitOther }, explicitOther, ReleaseLevel.Failed), "显式提及另一实例 / Explicit mention of another instance");
+        }
+
         private sealed class TwoInstanceHost : ITaskDispatchHost, ITaskInstanceHost, IManualChatDispatchHost
         {
             public Task<ManualChatObservation> ObserveManualChatAsync(VsInstance target) => Task.FromResult(ManualChatObservation.Idle);

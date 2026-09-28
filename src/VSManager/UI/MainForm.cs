@@ -1298,7 +1298,7 @@ namespace VSManager
 			}
 			// 图片仍使用现有附件发送流程，但不得越过清单任务。/ Keep attachment delivery, without bypassing queued tasks.
 			if (_sending || !CanDispatch(v) || TaskStateMachine.BlockingTask(_tasks.Items,
-				new QueuedTask { Id = int.MaxValue, VsKey = v.Key }, _settings.ReleaseLevel) != null)
+				new QueuedTask { Id = int.MaxValue, VsKey = v.Key, TargetInstanceKey = v.InstanceKey }, _settings.ReleaseLevel) != null)
 			{
 				SetStatus("请等待该目标任务结束后发送图片；附件草稿已保留 / Wait for target tasks to finish before sending images; draft retained");
 				return;

@@ -61,7 +61,8 @@ namespace VSManager
                         if (!button.Current.IsOffscreen) return InputDiagnostic(target, ManualChatObservation.Generating, "停止按钮可见 / Stop button visible");
                 }
                 edit = edit ?? LocateEdit(pane, target.Pid).Edit;
-                if (edit == null || edit.Current.ProcessId != target.Pid) return InputDiagnostic(target, ManualChatObservation.Unknown, "输入不可定位 / Input unavailable");
+                if (edit == null) return InputDiagnostic(target, ManualChatObservation.InputHidden, "输入不可定位 / Input unavailable");
+                if (edit.Current.ProcessId != target.Pid) return InputDiagnostic(target, ManualChatObservation.Unknown, "输入身份不符 / Input identity mismatch");
                 string text = GetEditText(edit);
                 bool focused = HasFocus(edit);
                 bool? composing = focused ? InputComposition(target) : false;
@@ -138,13 +139,15 @@ namespace VSManager
             return null;
         }
 
-        private string GuardQueueInput(VsInstance target, AutomationElement pane, AutomationElement edit, bool writing = false)
+        /// <param name="early">发送前的预检：输入框暂不可见时放行，由切回窗格后的写入前检查把关。/ Pre-check before sending: a hidden input passes; the check before writing, after the pane is restored, decides.</param>
+        private string GuardQueueInput(VsInstance target, AutomationElement pane, AutomationElement edit, bool writing = false, bool early = false)
         {
             if (_queueGuard == null) return null;
             if (!_queueGuard()) return ManualChatProtection.WaitPrefix + "目标或任务已变化 / Target or task changed";
             if (_queueTouched) return ManualChatProtection.UncertainPrefix + "输入已写入，请核实 / Input already written; verify before retry";
             // 即使关闭提前让行，写入边界仍不能覆盖真实草稿。/ Disabling advance yielding never permits overwriting drafts at the write boundary.
             var observation = ObserveManualInput(target, pane, edit);
+            if (early && edit == null && observation == ManualChatObservation.InputHidden) return null;
             if (observation != ManualChatObservation.Idle) return ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(observation);
             if (writing) _queueTouched = true;
             return null;

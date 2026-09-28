@@ -362,7 +362,7 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
         /// <summary>当前等级下该任务结果是否正在暂停同一目标的后续任务。/ Whether this outcome currently pauses successors on the same target.</summary>
         private bool HoldsSuccessors(QueuedTask t) =>
             ReleaseLevels.Blocks(_tasks.ReleaseLevel, t) && !t.Released
-            && _tasks.Items.Any(x => x.Id > t.Id && QueueStatus.Active(x.Status) && ResentTaskMatcher.SameTarget(x, t));
+            && _tasks.Items.Any(x => x.Id > t.Id && QueueStatus.Active(x.Status) && TaskStateMachine.SharesDispatchTarget(x, t));
 
         private void AnnounceDelivery(QueuedTask t, int[] skipped)
         {
@@ -695,7 +695,8 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             var target = ResolveTarget(t);
             if (target == null && t.HasExplicitTarget) { Fail(t, VsMentionSession.MissingError); return; }
             if (target == null) _host.SetStatus($"「{t.VsName}」当前未打开，任务会在它打开并空闲后发布");
-            else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x.VsKey == t.VsKey && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)))
+            else if (!_host.CanDispatch(target) || _tasks.Items.Any(x => x != t && (x.Status == QueueStatus.Running || x.Status == QueueStatus.Sending)
+                && ReferenceEquals(ResolveTarget(x, true), target)))
                 _host.SetStatus($"「{t.VsName}」仍在忙，任务 #{t.Id} 会在空闲后自动发布");
             else if (DispatchBlocker(t) is QueuedTask blocker)
                 _host.SetStatus($"任务 #{t.Id} 等待前序 #{blocker.Id}（{TaskStateMachine.StatusText(blocker, _clock())}）/ Task #{t.Id} is blocked by predecessor #{blocker.Id}");

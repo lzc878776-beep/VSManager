@@ -83,6 +83,16 @@ namespace VSManager
         {
             var finishing = _finishing.FirstOrDefault(t => TaskStateMachine.SharesDispatchTarget(t, task));
             if (finishing != null) return finishing;
+            // 同一 Copilot 不并行：实际解析到同一 VS 实例的发送 / 执行中任务始终阻塞（例如 VS 重启后旧记录改投新实例）。
+            // No parallel runs in one Copilot: a sending / running task resolved to the same live VS instance always blocks
+            // (for example an old record redirected to the new instance after VS restarted).
+            var target = ResolveTarget(task, true);
+            if (target != null)
+            {
+                var sameCopilot = _tasks.Items.FirstOrDefault(t => t != task
+                    && (t.Status == QueueStatus.Sending || t.Status == QueueStatus.Running) && ReferenceEquals(ResolveTarget(t, true), target));
+                if (sameCopilot != null) return sameCopilot;
+            }
             var blocker = _tasks.BlockingTask(task);
             if (blocker != null || !_tasks.Items.Any(t => t.Status == QueueStatus.WaitingVs)) return blocker;
             var mapped = _tasks.Items.Select(t =>

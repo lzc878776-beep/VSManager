@@ -50,7 +50,7 @@ namespace VSManager
             {
                 entry.Observed = true;
                 entry.At = _clock();
-                entry.IdlePasses = entry.Work.Status == TaskStatus.RanToCompletion && entry.Work.Result == ManualChatObservation.Idle ? entry.IdlePasses + 1 : 0;
+                entry.IdlePasses = entry.Work.Status == TaskStatus.RanToCompletion && Settled(entry.Work.Result) ? entry.IdlePasses + 1 : 0;
             }
             if (entry != null && !entry.Work.IsCompleted) return ManualChatObservation.Unknown;
             if (!same || _clock() - entry.At >= TimeSpan.FromSeconds(2))
@@ -64,7 +64,10 @@ namespace VSManager
                 return ManualChatObservation.Unknown;
             }
             var result = entry.Work.Status == TaskStatus.RanToCompletion ? entry.Work.Result : ManualChatObservation.Unknown;
-            return result == ManualChatObservation.Idle && entry.IdlePasses < 2 ? ManualChatObservation.Unknown : result;
+            return Settled(result) && entry.IdlePasses < 2 ? ManualChatObservation.Unknown : result;
         }
+
+        // 输入框不可见与空闲一样需连续两次确认。/ A hidden input needs two consecutive passes, like idle.
+        private static bool Settled(ManualChatObservation value) => value == ManualChatObservation.Idle || value == ManualChatObservation.InputHidden;
     }
 }

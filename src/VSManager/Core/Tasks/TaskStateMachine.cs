@@ -546,13 +546,30 @@ namespace VSManager
         internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, bool skipFailedPredecessors) =>
             BlockingTasks(items, task, ReleaseLevels.FromSkipFailed(skipFailedPredecessors));
 
-        /// <summary>普通任务按解决方案保守阻塞提及任务；两个显式任务按实例区分。/ Legacy solution tasks conservatively block mentions; two explicit tasks distinguish instances.</summary>
+        /// <summary>
+        /// 普通任务按解决方案保守阻塞提及任务；两个显式任务按实例区分。同一解决方案被多个 VS 打开时各实例的 Copilot 相互独立，
+        /// 已记录不同实例的任务互不阻塞，可以并行。
+        /// Legacy solution tasks conservatively block mentions; two explicit tasks distinguish instances. With one solution open
+        /// in several VS instances each instance has its own Copilot, so tasks recorded for different instances never block each other and run in parallel.
+        /// </summary>
         internal static bool SharesDispatchTarget(QueuedTask a, QueuedTask b)
         {
+            if (DifferentInstances(a, b)) return false;
             if (a.HasExplicitTarget == b.HasExplicitTarget) return ResentTaskMatcher.SameTarget(a, b);
             return !string.IsNullOrEmpty(a.VsKey) && string.Equals(a.VsKey, b.VsKey, StringComparison.OrdinalIgnoreCase)
                 || a.HasExplicitTarget && SolutionMatcher.SamePath(a.ExplicitSolutionPath, b.VsKey)
                 || b.HasExplicitTarget && SolutionMatcher.SamePath(b.ExplicitSolutionPath, a.VsKey);
+        }
+
+        /// <summary>任务记录的目标实例（显式提及优先）；未记录时为 null。/ The task's recorded target instance (explicit mention first); null when none.</summary>
+        internal static string InstanceOf(QueuedTask t) =>
+            !string.IsNullOrEmpty(t?.ExplicitInstanceKey) ? t.ExplicitInstanceKey : string.IsNullOrEmpty(t?.TargetInstanceKey) ? null : t.TargetInstanceKey;
+
+        /// <summary>两个任务都记录了实例且不同。任一方未记录时保守视为可能相同。/ Both tasks record an instance and they differ. A side without one conservatively counts as possibly the same.</summary>
+        internal static bool DifferentInstances(QueuedTask a, QueuedTask b)
+        {
+            string x = InstanceOf(a), y = InstanceOf(b);
+            return x != null && y != null && !string.Equals(x, y, StringComparison.Ordinal);
         }
 
         internal static IEnumerable<QueuedTask> BlockingTasks(IEnumerable<QueuedTask> items, QueuedTask task, ReleaseLevel level)

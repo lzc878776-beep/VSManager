@@ -3,8 +3,13 @@ using System.Threading.Tasks;
 
 namespace VSManager
 {
-    /// <summary>只保存活动类别，不保存草稿或输入内容。/ Stores activity categories, never drafts or input content.</summary>
-    public enum ManualChatObservation { Idle, Generating, Draft, Unknown, PaneMissing }
+    /// <summary>
+    /// 只保存活动类别，不保存草稿或输入内容。InputHidden：找到窗格但定位不到输入框（窗格被隐藏、遮挡或未渲染），用户无法在其中输入，
+    /// 发送时先切回窗格再在写入前重新检查草稿。
+    /// Stores activity categories, never drafts or input content. InputHidden: the pane exists but its input cannot be located
+    /// (hidden, covered or not rendered), so the user cannot be typing there; sending first restores the pane and re-checks drafts before writing.
+    /// </summary>
+    public enum ManualChatObservation { Idle, Generating, Draft, Unknown, PaneMissing, InputHidden }
 
     public static class ManualChatProtection
     {
@@ -19,12 +24,14 @@ namespace VSManager
             touched && !SendRetryPolicy.IsDelivered(result) && result?.StartsWith(UncertainPrefix, StringComparison.Ordinal) != true
                 ? UncertainPrefix + result : result;
         public static int ClampTimeout(int seconds) => seconds <= 0 ? DefaultTimeoutSeconds : Math.Max(10, Math.Min(86400, seconds));
-        public static bool Blocks(ManualChatObservation value) => value != ManualChatObservation.Idle && value != ManualChatObservation.PaneMissing;
+        public static bool Blocks(ManualChatObservation value) => value != ManualChatObservation.Idle && value != ManualChatObservation.PaneMissing
+            && value != ManualChatObservation.InputHidden;
         public static ManualChatObservation Classify(bool generating, bool readable, bool nonempty, bool focused) =>
             generating ? ManualChatObservation.Generating : !readable ? ManualChatObservation.Unknown : nonempty ? ManualChatObservation.Draft : ManualChatObservation.Idle;
         public static string Reason(ManualChatObservation value) => value == ManualChatObservation.Generating
             ? "目标仍在忙，正在生成回复 / Target is busy generating a reply"
             : value == ManualChatObservation.Draft ? "目标输入框有未发送草稿或附件 / Target has an unsent draft or attachment"
+            : value == ManualChatObservation.InputHidden ? "目标输入框暂不可见，切回窗格后再确认 / Target input hidden; confirming after restoring the pane"
             : "无法确认目标输入安全，继续等待 / Cannot confirm safe target input; continuing to wait";
         public static bool IsWait(string result) => result?.StartsWith(WaitPrefix, StringComparison.Ordinal) == true;
     }

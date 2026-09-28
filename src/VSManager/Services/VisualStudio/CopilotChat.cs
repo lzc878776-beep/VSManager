@@ -760,6 +760,19 @@ namespace VSManager
 
         private string SendCore(VsInstance vs, string text, IntPtr returnTo, bool background, IReadOnlyList<ChatImage> images)
         {
+            if (vs == null || !Native.IsWindow(vs.MainHwnd)) return "该 VS 已关闭";
+            // 在任何 DTE 命令（可能把 VS 带到前台）之前记录 / Record before any DTE command (which may bring VS to the front)
+            bool fgBefore = ForegroundIs(vs);
+            // 发送后切回用户原本所在的窗口（不一定是本工具）/ Afterwards return to the window the user was actually using (not necessarily this tool)
+            IntPtr back = RestoreTarget(vs, returnTo);
+            // 任何提前返回（等待、失败）也要切回：打开窗格或激活定位都可能已把 VS 带到前台。
+            // Every early return (wait, failure) also switches back: opening the pane or activating to locate may have brought VS forward.
+            try { return SendCoreInner(vs, text, back, returnTo, fgBefore, background, images); }
+            finally { if (!fgBefore) ReturnFocus(vs, back, returnTo); }
+        }
+
+        private string SendCoreInner(VsInstance vs, string text, IntPtr returnTo, IntPtr app, bool fgBefore, bool background, IReadOnlyList<ChatImage> images)
+        {
             if (images != null && (images.Count > ChatImage.MaxCount || images.Any(image => image == null))) return "图片附件无效";
             bool hasImages = images != null && images.Count > 0;
             if (string.IsNullOrWhiteSpace(text) && !hasImages) return "消息为空";
@@ -767,10 +780,6 @@ namespace VSManager
             string blocked = BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
-            // 在任何 DTE 命令（可能把 VS 带到前台）之前记录 / Record before any DTE command (which may bring VS to the front)
-            bool fgBefore = ForegroundIs(vs);
-            // 发送后切回用户原本所在的窗口（不一定是本工具）/ Afterwards return to the window the user was actually using (not necessarily this tool)
-            returnTo = RestoreTarget(vs, returnTo);
 
             var pane = FindPane(vs);
             if (_queueGuard != null)
@@ -778,7 +787,7 @@ namespace VSManager
                 if (!_queueGuard()) return ManualChatProtection.WaitPrefix + "任务或目标已变化 / Task or target changed";
                 if (pane != null)
                 {
-                    blocked = GuardQueueInput(vs, pane, null);
+                    blocked = GuardQueueInput(vs, pane, null, early: true);
                     if (blocked != null) return blocked;
                 }
             }
@@ -809,6 +818,29 @@ namespace VSManager
             blocked = loc.Blocked ?? BlockingDialogMessage(vs);
             if (blocked != null) return blocked;
             var edit = loc.Edit;
+            if (edit == null && !ForegroundIs(vs) && Native.IsWindowEnabled(vs.MainHwnd))
+            {
+                // 窗格被其他窗口遮挡或未渲染时 UI 自动化找不到输入框：用户空闲时短暂激活 VS 再定位一次，避免任务一直等待。
+                // UI Automation cannot find the input while the pane is covered or not rendered: when the user is idle, briefly
+                // activate VS and locate once more so the task does not wait forever.
+                string busy = WaitUserIdle(vs);
+                if (busy != null) return busy;
+                T("输入框不可定位，短暂激活 VS 后重新定位 / input not locatable; briefly activating VS and locating again");
+                Native.Activate(vs.MainHwnd);
+                Thread.Sleep(400);
+                ForgetPane(vs);
+                pane = FindPane(vs) ?? pane;
+                if (pane != null && SafeOffscreen(pane)) pane = OpenPane(vs, 4000) ?? pane;
+                if (pane != null)
+                {
+                    loc = LocateEdit(pane, vs.Pid);
+                    foreach (var line in loc.Log) T("  " + line);
+                }
+                blocked = loc.Blocked ?? BlockingDialogMessage(vs);
+                if (blocked != null) return blocked;
+                edit = loc.Edit;
+                T(edit != null ? "激活后已定位输入框 / input located after activation" : "激活后仍无法定位输入框 / input still not locatable after activation");
+            }
             if (edit == null) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Unknown) : InputLocator.FailureMessage(loc.Outcome, locateAttempts);
             blocked = GuardQueueInput(vs, pane, edit);
             if (blocked != null) return blocked;
@@ -835,11 +867,7 @@ namespace VSManager
                 if (r == null) r = WaitUserIdle(vs) ?? SendForeground(vs, pane, edit, text, returnTo);
             }
             // 打开窗格等 DTE 命令可能把 VS 带到前台：发送后切回本工具，保持用户当前界面
-            if (!fgBefore && returnTo != IntPtr.Zero && Native.IsWindow(returnTo) && ForegroundIs(vs))
-            {
-                T("发送后 VS 处于前台，切回本工具");
-                Native.Activate(returnTo);
-            }
+            if (!fgBefore) ReturnFocus(vs, returnTo, app);
             if (r.StartsWith("已发送") && !ConfirmDelivered(vs, pane, itemsBefore, hasImages && string.IsNullOrWhiteSpace(text) ? "" : text, 5000))
                 r = "输入框已清空，但未在对话中确认到新消息，可能未送达，请在 VS 中查看（详见发送日志）";
             Poke();
@@ -1102,9 +1130,38 @@ namespace VSManager
         {
             var fg = Native.GetForegroundWindow();
             if (fg == IntPtr.Zero || !Native.IsWindow(fg)) return fallback;
+            // 提示框、菜单等弹出窗口换成其顶层所有者 / Popups such as tooltips and menus resolve to their top-level owner
+            var root = GetAncestor(fg, GA_ROOTOWNER);
+            if (root != IntPtr.Zero) fg = root;
             Native.GetWindowThreadProcessId(fg, out uint pid);
-            return pid == (uint)vs.Pid ? fallback : fg;
+            if (pid == (uint)vs.Pid) return fallback;
+            // 不可见的窗口无法切回，改回本工具 / An invisible window cannot be returned to; use this tool instead
+            return Native.IsWindowVisible(fg) ? fg : fallback;
         }
+
+        [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
+        private const uint GA_ROOTOWNER = 3;
+
+        /// <summary>
+        /// VS 仍在前台时切回：先回用户原窗口，未成功（窗口已失效、被前台锁拒绝或 VS 又抢回前台）则改回本工具主窗口，最多三次。
+        /// While VS is still in front, switch back: first to the user's window, then (if it is gone, refused by the foreground lock
+        /// or VS took the foreground again) to this tool's main window, at most three times.
+        /// </summary>
+        private static void ReturnFocus(VsInstance vs, IntPtr returnTo, IntPtr app)
+        {
+            if (!ForegroundIs(vs)) return;
+            for (int attempt = 0; attempt < 3 && ForegroundIs(vs); attempt++)
+            {
+                IntPtr target = attempt == 0 && Usable(returnTo) ? returnTo : Usable(app) ? app : returnTo;
+                if (!Usable(target)) break;
+                T(attempt == 0 ? "发送后 VS 处于前台，切回本工具" : $"切回未生效，重试 {attempt}/2 / switch back had no effect, retry {attempt}/2");
+                Native.Activate(target);
+                Thread.Sleep(150);
+            }
+            if (ForegroundIs(vs)) T("⚠ 未能切回本工具，VS 仍在前台 / could not switch back; VS is still in front");
+        }
+
+        private static bool Usable(IntPtr h) => h != IntPtr.Zero && Native.IsWindow(h) && Native.IsWindowVisible(h);
 
         private static bool ForegroundIs(VsInstance vs)
         {
