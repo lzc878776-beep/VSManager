@@ -530,6 +530,36 @@ namespace VSManager
             return -1;
         }
 
+        /// <summary>
+        /// 点击末尾条目下方的空白处：原生列表框会选中最后一项（LB_ITEMFROMPOINT 返回最近的条目），这里改为不选中任何条目；
+        /// 左键保持原选中项，右键清除选中，避免上下文菜单作用于最后一项。
+        /// Clicking the blank area below the last item: the native list box selects the last item (LB_ITEMFROMPOINT returns the
+        /// nearest item). Here no item is selected instead: a left click keeps the current selection, a right click clears it so the
+        /// context menu does not act on the last item.
+        /// </summary>
+        private bool HandleBlankClick(ref Message m)
+        {
+            var p = new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16)));
+            if (ItemIndexAt(p) >= 0) return false;
+            if (!Focused) Focus();
+            bool right = m.Msg == 0x0204 || m.Msg == 0x0206;
+            if (right) { _lastSelected = -1; SelectedIndex = -1; }
+            // 仍发出鼠标按下事件，便于拖拽 / 提示等逻辑复位 / Still raise MouseDown so drag / tooltip logic can reset
+            OnMouseDown(new MouseEventArgs(right ? MouseButtons.Right : MouseButtons.Left, m.Msg == 0x0203 || m.Msg == 0x0206 ? 2 : 1, p.X, p.Y, 0));
+            m.Result = IntPtr.Zero;
+            return true;
+        }
+
+        /// <summary>
+        /// 指针下的条目行号；落在空白处时返回 -1（不同于 <see cref="ListBox.IndexFromPoint(Point)"/> 返回最近的条目）。
+        /// Index of the item under the point, or -1 on blank space (unlike <see cref="ListBox.IndexFromPoint(Point)"/>, which returns the nearest item).
+        /// </summary>
+        public int ItemIndexAt(Point p)
+        {
+            int idx = IndexFromPoint(p);
+            return idx >= 0 && idx < Items.Count && GetItemRectangle(idx).Contains(p) ? idx : -1;
+        }
+
         private bool HandleInertClick(ref Message m)
         {
             if (IsItemSelectable == null) return false;
@@ -608,7 +638,7 @@ namespace VSManager
             // 右键也选中条目，便于上下文菜单操作
             if (e.Button == MouseButtons.Right)
             {
-                int idx = IndexFromPoint(e.Location);
+                int idx = ItemIndexAt(e.Location);
                 if (idx >= 0 && idx != SelectedIndex) SelectedIndex = idx;
             }
             base.OnMouseDown(e);
@@ -633,7 +663,7 @@ namespace VSManager
         {
             if (m.Msg == 0x0014) { m.Result = (IntPtr)1; return; } // WM_ERASEBKGND
             // WM_LBUTTONDOWN / WM_LBUTTONDBLCLK / WM_RBUTTONDOWN / WM_RBUTTONDBLCLK 落在不可选行上 / on a non-selectable row
-            if ((m.Msg == 0x0201 || m.Msg == 0x0203 || m.Msg == 0x0204 || m.Msg == 0x0206) && HandleInertClick(ref m)) return;
+            if ((m.Msg == 0x0201 || m.Msg == 0x0203 || m.Msg == 0x0204 || m.Msg == 0x0206) && (HandleBlankClick(ref m) || HandleInertClick(ref m))) return;
             if (m.Msg == 0x020A && WheelItemsPerNotch > 0)        // WM_MOUSEWHEEL
             {
                 ScrollByWheel(unchecked((short)((long)m.WParam >> 16)));

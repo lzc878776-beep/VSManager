@@ -165,6 +165,8 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 修复 / Fixed
 
+- 点击任务清单 / VS 列表中最后一项下方的空白处时会选中最后一项（原生列表框按最近条目处理点击）：现在左键空白处保持原选中项，右键空白处清除选中，右键菜单不再作用于最后一项。
+  Clicking the blank area below the last item of the task list / VS list selected the last item (the native list box maps clicks to the nearest item): a left click on blank space now keeps the current selection and a right click clears it, so the context menu no longer acts on the last item.
 - 推送任务时未核实结果就提示成功：之前只要调用了入队就返回「已加入任务清单」，即使任务未保存、不在清单中或始终未送达。现在入队后先核实任务确在清单中且已保存，再跟踪最多 30 秒：确认送达 Copilot 才返回「✅ 推送成功」；发送失败返回「❌ 推送失败」及原因；暂未发送（等待开始、队列暂停、前序任务、目标忙碌 / 未打开、手动对话礼让或超时）返回「⏳ 已加入任务清单，尚未推送」及原因。主控 AI、网页远程与内置对话均按此结论提示。
   Pushes were reported as successful without checking: enqueueing always returned "added to the task list", even when the task was not saved, not listed or never delivered. Enqueueing now first verifies the task is listed and saved, then tracks it for up to 30 s: only a confirmed delivery to Copilot returns "✅ 推送成功 (pushed)"; a send failure returns "❌ 推送失败 (push failed)" with the reason; a task not being sent yet (awaiting Start, queue paused, predecessor, target busy / closed, manual-chat yield or timeout) returns "⏳ queued, not yet pushed" with the reason. The main AI, web remote and built-in chat all report this verdict.
 - 带截图的任务推送失败（「所请求的剪贴板操作失败」）：部分剪贴板同步 / 云桌面程序会在 OLE 写入剪贴板后占用它数秒，图片路径连续写入文字与图片时第二次写入被拒。现在改用 Win32 直接写入（文字与 CF_DIB / PNG 图片），占用时最多等待 5 秒；仍被占用时任务保持排队稍后重试，不再直接判失败。纯文字发送也会完整恢复用户原有的剪贴板内容（包括截图），不再把截图清空。

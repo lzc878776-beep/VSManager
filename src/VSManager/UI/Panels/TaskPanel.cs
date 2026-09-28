@@ -145,7 +145,7 @@ namespace VSManager
             {
                 if (e.Button != MouseButtons.Right) return;
                 _menuHeader = null;
-                int i = _list.IndexFromPoint(e.Location);
+                int i = _list.ItemIndexAt(e.Location);
                 if (i >= 0) _list.SelectedIndex = i;
             };
             _list.ContextMenuStrip = BuildMenu();
