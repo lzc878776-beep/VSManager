@@ -310,7 +310,8 @@ namespace VSManager
 
         private void UpdateButtons()
         {
-            _btnSend.Enabled = (VsMentionSession.HasIntent(_input.Text) || (HasTarget && !Busy)) && !_sending && (!string.IsNullOrWhiteSpace(_input.Text) || _images.Count > 0);
+            // Copilot 忙碌时文字照常排入任务清单，图片会得到明确的等待提示，不再静默禁用发送 / While Copilot is busy, text is still queued and images get an explicit wait notice; Send is no longer silently disabled
+            _btnSend.Enabled = (VsMentionSession.HasIntent(_input.Text) || HasTarget) && !_sending && (!string.IsNullOrWhiteSpace(_input.Text) || _images.Count > 0);
             _btnStop.Enabled = HasTarget && Busy;
             _btnNew.Enabled = HasTarget && !Busy && !_sending;
             _btnOpen.Enabled = HasTarget;
@@ -335,7 +336,7 @@ namespace VSManager
             }
             string state = !HasTarget ? "未选择 VS · 请选择发送目标" :
                 _sending ? "正在发送，请稍候…" :
-                Busy ? "Copilot 正在处理 · 可编辑草稿，完成后发送" :
+                Busy ? (_images.Count > 0 ? "Copilot 正在处理 · 图片需等完成后发送" : "Copilot 正在处理 · 发送的文字将排入任务清单，空闲后自动发布") :
                 _input.Focused ? "正在输入" : _input.TextLength > 0 || _images.Count > 0 ? "草稿待发送" : "等待输入";
             string status = state + " · " + _input.TextLength + " 字" +
                 (_images.Count > 0 ? " · " + _images.Count + " 张图片（发送时短暂切换 VS）" : " · 可粘贴或拖入图片");
@@ -621,7 +622,7 @@ namespace VSManager
         private void DoSend()
         {
             var text = _input.Text.Trim();
-            if ((text.Length == 0 && _images.Count == 0) || (!VsMentionSession.HasIntent(text) && (!HasTarget || Busy)) || _sending) return;
+            if ((text.Length == 0 && _images.Count == 0) || (!VsMentionSession.HasIntent(text) && !HasTarget) || _sending) return;
             SendRequested?.Invoke(text);
         }
 

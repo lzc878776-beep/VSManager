@@ -7,6 +7,8 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 
 ### 变更 / Changed
 
+- 修复：在左侧选中某个 VS 后，若其 Copilot 正在处理，内置对话的「发送」按钮被禁用、回车也静默无效。文字消息本就排入任务清单，现在忙碌时照常发送并在空闲后自动发布；带图片时给出需等待完成的明确提示。
+  Fix: after selecting a VS in the sidebar, the built-in chat's Send button was disabled and Enter silently did nothing while that VS's Copilot was busy. Text messages are queued anyway, so they now send while busy and are published once idle; image sends show an explicit wait notice.
 - 任务失败或待验证而阻塞队列时，主控 AI 可直接向阻塞任务补充信息：`retry_task_with_info` 新增 `from_user` 参数，补充来自用户时不受 AI 自主重试次数与补充次数限制（总是请用户确认），并在原条目重新排队、解除阻塞；AI 向被阻塞的 VS 调用 `send_task` 时默认不再新建一条排在阻塞任务后面的任务，而是返回阻塞任务的编号、原因与处理方式（确实无关的新任务可设 `queue_behind_blocked=true`）。系统提示词与失败通知同步说明；任务清单中手动「补充信息后重试」不再受 3 次上限限制。
   When a failed or awaiting-verification task blocks the queue, the main AI can now supplement that task directly: `retry_task_with_info` gains a `from_user` parameter, and user-provided info bypasses the AI self-retry and supplement caps (always confirmed by the user) and requeues the original entry, lifting the block. `send_task` to a blocked VS no longer creates a new task stuck behind the blocker by default; it returns the blocker's id, reason and options instead (`queue_behind_blocked=true` for a genuinely unrelated task). The system prompt and failure notices explain this, and manual "Retry with info" in the task list is no longer capped at 3.
 - 「未验证」与「已完成（待用户验证）」合并为同一个「待验证」状态（`unverified`）：发给 Copilot 的回执规则改为三选一 `SUCCESS` / `UNVERIFIED` / `FAILED`，旧回执 `NEEDS_USER` 仍按待验证识别；tasks.json 中旧的「已完成 + 待用户验证」记录读取时自动迁移为待验证。任务清单、测试清单、悬停提示、AI 助手汇报与归档统一显示「待验证」。
