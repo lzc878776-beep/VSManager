@@ -44,7 +44,12 @@ namespace VSManager
             + "3) 解决冲突后生成解决方案，确保编译通过；4) 不推送远程，不删除 worktree 或分支。"
             + "无法确定如何解决冲突时停止并说明。完成后列出合并了哪些分支及结果。";
 
-        internal const string WorkspaceLayoutPrompt = "先用 get_displays 读取全部显示器的尺寸、横竖屏与相对位置以及各 VS 所在屏，由你自己设计所有 VS 主窗口及 Copilot、输出、错误列表、解决方案资源管理器等窗格的摆放（每个 VS 的这些窗格都要安排，靠近所属主窗口且互不重叠），再用 place_workspace_windows 应用；有警告或失败就调整重试，最后说明布局思路并报告实际结果与未处理项。/ Read every display's size, orientation and relative position plus where each VS is with get_displays, design the placement of all VS main windows and their Copilot, Output, Error List and Solution Explorer panes yourself (arrange all of these panes for every VS, near its main window and without overlaps), apply it with place_workspace_windows, adjust and retry on warnings or failures, then explain the layout and report actual results and skipped items.";
+        internal const string WorkspaceLayoutPrompt = "先用 get_displays 读取全部显示器的尺寸、横竖屏与相对位置以及各 VS 所在屏。"
+            + WorkspaceLayoutPlan.ScreenPolicyZh
+            + "为每个 VS 安排主窗口、Copilot、输出、错误列表与解决方案资源管理器，再用 place_workspace_windows 应用；有警告或失败就调整重试，最后说明布局思路并报告实际结果与未处理项。"
+            + " / Read every display's size, orientation and relative position plus where each VS is with get_displays. "
+            + WorkspaceLayoutPlan.ScreenPolicyEn
+            + " Arrange every VS main window, Copilot, Output, Error List and Solution Explorer, apply it with place_workspace_windows, adjust and retry on warnings or failures, then explain the layout and report actual results and skipped items.";
 
         // 「关闭 .cs 标签页」由 VSManager 直接执行，不经过 AI；未保存的文件保留、不保存。
         // "Close .cs tabs" runs directly in VSManager without the AI; unsaved files stay open and are not saved.

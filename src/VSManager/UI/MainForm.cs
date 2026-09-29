@@ -1049,7 +1049,10 @@ namespace VSManager
 			_agentMode = on;
 			_agentCard.Selected = on;
 			if (on && _list.SelectedIndex >= 0) { _list.ClearSelected(); OnSelectionChanged(); }
-			if (on) _agentPanel.FocusInput();
+			if (on)
+			{
+				if (source != RestoreSource) _agentPanel.FocusInput();
+			}
 			else
 			{
 				_workspaceSidebar?.SetVsCollapsed(false);
@@ -2701,7 +2704,16 @@ namespace VSManager
 
 		protected override void OnShown(EventArgs e)
 		{
-			base.OnShown(e);
+			try
+			{
+				base.OnShown(e);
+				InitializeShownServices();
+			}
+			catch { RestartUi.ReleaseActiveCover(); throw; }
+		}
+
+		private void InitializeShownServices()
+		{
 			SetStatus("正在扫描 VS 实例…");
 			RefreshInstances();
 			_refreshTimer.Start();
@@ -2732,7 +2744,7 @@ namespace VSManager
 			if (_archiveWarning != null)
 			{
 				SetStatus("⚠ " + _archiveWarning);
-				_tray.ShowBalloonTip(8000, "历史归档", _archiveWarning, ToolTipIcon.Warning);
+				if (RestoredUi?.Hidden != true) _tray.ShowBalloonTip(8000, "历史归档", _archiveWarning, ToolTipIcon.Warning);
 			}
 			string watchdogErr = ProcessWatchdog.Apply(_settings);
 			if (watchdogErr != null) SetStatus("⚠ 看门狗启动失败 / Watchdog failed to start：" + watchdogErr);

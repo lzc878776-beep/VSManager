@@ -41,7 +41,9 @@ namespace VSManager
                 MessageFilter.Register();
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
-                Application.Run(new MainForm());
+                // 启动异常或退出时不留下截图遮挡，不改变原有异常处理。/ Release the snapshot on startup errors or exit without changing exception handling.
+                try { Application.Run(new MainForm()); }
+                finally { RestartUi.ReleaseActiveCover(); }
                 ProcessWatchdog.MarkCleanExit();
             }
         }

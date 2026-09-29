@@ -17,6 +17,8 @@ namespace VSManager.Tests
             CollectionAssert.AreEqual(new[] { "屏幕布局 / Layout", AgentPanel.SyncGitText, "🔀 worktree 并入主分支", AgentPanel.CloseCsTabsText }, items.Select(i => i.Item1).ToArray());
             StringAssert.Contains(items[0].Item2, "get_displays");
             StringAssert.Contains(items[0].Item2, "place_workspace_windows");
+            StringAssert.Contains(items[0].Item2, WorkspaceLayoutPlan.ScreenPolicyZh);
+            StringAssert.Contains(items[0].Item2, WorkspaceLayoutPlan.ScreenPolicyEn);
             Assert.IsFalse(items[0].Item2.Contains("send_task"));
             StringAssert.Contains(items[2].Item2, "send_task");
             foreach (var i in items.Skip(1).Take(2)) StringAssert.Contains(i.Item2, "不得丢弃");

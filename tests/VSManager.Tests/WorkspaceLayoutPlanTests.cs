@@ -61,22 +61,83 @@ namespace VSManager.Tests
             for (int i = 0; i < rectangles.Count; i++)
                 for (int j = i + 1; j < rectangles.Count; j++) Assert.IsFalse(rectangles[i].IntersectsWith(rectangles[j]));
             Assert.AreEqual(screenCount == 1 ? 1 : 2, plan.PaneScreen);
+            Assert.AreEqual(Math.Min(screenCount, 3), plan.OutputScreen);
+            CollectionAssert.AreEqual(new[] { 1 }, plan.MainScreens);
+            foreach (var p in plan.Placements)
+            {
+                Assert.IsTrue(screens.Displays[0].WorkingArea.Contains(p.MainBounds));
+                Assert.IsTrue(screens.Displays[0].WorkingArea.Contains(p.SolutionExplorerBounds));
+                Assert.AreEqual(p.MainBounds.Left, p.SolutionExplorerBounds.Right);
+                Assert.AreEqual(p.MainBounds.Top, p.SolutionExplorerBounds.Top);
+                Assert.AreEqual(p.MainBounds.Height, p.SolutionExplorerBounds.Height);
+                Assert.IsTrue(screens.Displays[plan.PaneScreen - 1].WorkingArea.Contains(p.CopilotBounds));
+                Assert.IsTrue(screens.Displays[plan.OutputScreen - 1].WorkingArea.Contains(p.OutputBounds));
+                Assert.IsTrue(screens.Displays[plan.OutputScreen - 1].WorkingArea.Contains(p.ErrorListBounds));
+            }
+            if (screenCount <= 2)
+                Assert.IsTrue(plan.Placements.Max(p => p.CopilotBounds.Bottom) <= plan.Placements.Min(p => p.OutputBounds.Top));
+            StringAssert.Contains(plan.Describe(), "AI chat screen: " + plan.PaneScreen);
+            StringAssert.Contains(plan.Describe(), "Output screen: " + plan.OutputScreen);
+        }
+
+        private static WorkspaceDisplaySnapshot MixedScreens()
+        {
+            // 1：2560x1600 横屏副屏；2：2560x734 窄条屏；3：2560x2880 竖屏主屏（VSManager 所在）。
+            // #1: 2560x1600 landscape secondary; #2: 2560x734 strip; #3: 2560x2880 portrait primary (hosting VSManager).
+            var s = new WorkspaceDisplaySnapshot { CurrentScreen = 3, ManagerScreen = 3 };
+            s.Displays.Add(new WorkspaceDisplay { Number = 1, Bounds = new Rectangle(-2560, 812, 2560, 1600), WorkingArea = new Rectangle(-2560, 812, 2560, 1552) });
+            s.Displays.Add(new WorkspaceDisplay { Number = 2, Bounds = new Rectangle(-2560, 2412, 2560, 734), WorkingArea = new Rectangle(-2560, 2412, 2560, 734) });
+            s.Displays.Add(new WorkspaceDisplay { Number = 3, Primary = true, Bounds = new Rectangle(0, 0, 2560, 2880), WorkingArea = new Rectangle(0, 0, 2560, 2832) });
+            return s;
         }
 
         [TestMethod]
-        public void AutoPlan_UsesCurrentScreenAndLargestOtherWorkArea()
+        public void AutoPlan_ChoosesScreensBySizeNotNumber()
         {
-            var screens = Screens(3);
-            screens.CurrentScreen = 2;
-            screens.Displays[2].Bounds = new Rectangle(1920, -120, 2560, 1440);
-            screens.Displays[2].WorkingArea = new Rectangle(1920, -120, 2560, 1400);
-            var plan = Plan(screens);
-            Assert.AreEqual(2, plan.MainScreens[0]);
+            var screens = MixedScreens();
+            var plan = Plan(screens, solution: true);
+            // 主窗口与资源管理器在主屏，对话在足够大的副屏，窄条屏只放输出。/ Main + Explorer on primary, chats on the roomy secondary, the strip only gets output.
+            CollectionAssert.AreEqual(new[] { 3 }, plan.MainScreens);
+            Assert.AreEqual(1, plan.PaneScreen);
+            Assert.AreEqual(2, plan.OutputScreen);
+            Assert.IsTrue(screens.Displays[1].WorkingArea.Contains(plan.Placements[0].OutputBounds));
+            Assert.IsTrue(screens.Displays[2].WorkingArea.Contains(plan.Placements[0].SolutionExplorerBounds));
+            string text = screens.Describe();
+            StringAssert.Contains(text, "too small for AI chats");
+            StringAssert.Contains(text, "main windows + Solution Explorer=#3");
+            StringAssert.Contains(text, "AI chats=#1");
+            StringAssert.Contains(text, "Output + Error List=#2");
+            Assert.IsFalse(WorkspaceLayoutPlan.RoomyForChat(screens.Displays[1]));
+        }
+
+        [TestMethod]
+        public void AutoPlan_TinySecondaryScreen_SplitsPrimaryForChats()
+        {
+            var screens = MixedScreens();
+            screens.Displays.RemoveAt(0);
+            var plan = Plan(screens, 1);
+            // 没有足够大的副屏：对话与主窗口同屏分区，输出用窄条屏。/ No roomy secondary: chats split the primary, output uses the strip.
+            CollectionAssert.AreEqual(new[] { 3 }, plan.MainScreens);
             Assert.AreEqual(3, plan.PaneScreen);
-            Assert.AreEqual(1, plan.MainScreens[1]);
-            StringAssert.Contains(screens.Describe(), "2560x1440");
-            StringAssert.Contains(screens.Describe(), "Position=(1920,-120)");
-            StringAssert.Contains(screens.Describe(), "Primary=True");
+            Assert.AreEqual(2, plan.OutputScreen);
+            var p = plan.Placements[0];
+            Assert.IsFalse(p.MainBounds.IntersectsWith(p.CopilotBounds));
+            StringAssert.Contains(screens.Describe(), "no suitable secondary screen");
+        }
+
+        [TestMethod]
+        public void AutoPlan_ExplicitScreensOverrideSizeRules()
+        {
+            var screens = MixedScreens();
+            // 用户明确指定时优先，即使屏幕较小。/ Explicit choices win even on a small screen.
+            var plan = Plan(screens, 1, 1, 2);
+            CollectionAssert.AreEqual(new[] { 1 }, plan.MainScreens);
+            Assert.AreEqual(2, plan.PaneScreen);
+            Assert.AreEqual(2, plan.OutputScreen);
+            // 主屏被显式给对话时，主窗口改用其余最大屏。/ When the primary is pinned for chats, main windows take the largest other screen.
+            plan = Plan(screens, 1, 0, 3);
+            Assert.AreEqual(3, plan.PaneScreen);
+            CollectionAssert.AreEqual(new[] { 1 }, plan.MainScreens);
         }
 
         [TestMethod]
@@ -90,6 +151,59 @@ namespace VSManager.Tests
             Assert.AreEqual(screens.Displays[0].WorkingArea, plan.Placements[0].CopilotBounds);
             Assert.AreEqual(Rectangle.Empty, plan.Placements[0].OutputBounds);
             Assert.AreEqual(Rectangle.Empty, plan.Placements[0].ErrorListBounds);
+        }
+
+        [DataTestMethod]
+        [DataRow(1)]
+        [DataRow(2)]
+        [DataRow(3)]
+        public void OptionalPanes_DoNotReserveUnusedScreenRegions(int screenCount)
+        {
+            var screens = Screens(screenCount);
+            foreach (bool output in new[] { false, true })
+                foreach (bool errors in new[] { false, true })
+                    foreach (bool solution in new[] { false, true })
+                    {
+                        var plan = Plan(screens, 1, output: output, errors: errors, solution: solution);
+                        var p = plan.Placements.Single();
+                        Assert.AreEqual(!output, p.OutputBounds.IsEmpty);
+                        Assert.AreEqual(!errors, p.ErrorListBounds.IsEmpty);
+                        Assert.AreEqual(!solution, p.SolutionExplorerBounds.IsEmpty);
+                        Assert.AreEqual(output || errors ? Math.Min(3, screenCount) : 0, plan.OutputScreen);
+                        if (!output && !errors) Assert.AreEqual(screens.Displays[plan.PaneScreen - 1].WorkingArea.Height, p.CopilotBounds.Height);
+                        if (!solution && screenCount > 1) Assert.AreEqual(screens.Displays[0].WorkingArea, p.MainBounds);
+                        if (output != errors && screenCount == 3)
+                            Assert.AreEqual(screens.Displays[2].WorkingArea, output ? p.OutputBounds : p.ErrorListBounds);
+                        if (solution) Assert.AreEqual(p.MainBounds.Left, p.SolutionExplorerBounds.Right);
+                    }
+        }
+
+        [TestMethod]
+        public void ExplicitPaneScreen_KeepsOutputPinnedButExplorerFollowsMain()
+        {
+            var screens = Screens(3);
+            var plan = Plan(screens, 1, 3, 1, true, true, true);
+            Assert.AreEqual(1, plan.OutputScreen);
+            var p = plan.Placements.Single();
+            Assert.IsTrue(screens.Displays[2].WorkingArea.Contains(p.MainBounds));
+            Assert.IsTrue(screens.Displays[2].WorkingArea.Contains(p.SolutionExplorerBounds));
+            foreach (var rect in new[] { p.CopilotBounds, p.OutputBounds, p.ErrorListBounds })
+                Assert.IsTrue(screens.Displays[0].WorkingArea.Contains(rect));
+            Assert.IsTrue(p.CopilotBounds.Bottom <= p.OutputBounds.Top);
+        }
+
+        [TestMethod]
+        public void AutoPlan_PortraitAndNarrowScreensKeepRoleGroups()
+        {
+            var screens = Screens(3);
+            screens.Displays[1].Bounds = screens.Displays[1].WorkingArea = new Rectangle(0, -1440, 1080, 1920);
+            screens.Displays[2].Bounds = screens.Displays[2].WorkingArea = new Rectangle(1080, 0, 1920, 400);
+            var plan = Plan(screens, 2, solution: true);
+            Assert.AreEqual(2, plan.PaneScreen);
+            Assert.AreEqual(3, plan.OutputScreen);
+            Assert.IsTrue(plan.Placements.All(p => screens.Displays[1].WorkingArea.Contains(p.CopilotBounds)
+                && screens.Displays[2].WorkingArea.Contains(p.OutputBounds)
+                && screens.Displays[0].WorkingArea.Contains(p.SolutionExplorerBounds)));
         }
 
         [TestMethod]
@@ -311,6 +425,8 @@ namespace VSManager.Tests
                 StringAssert.Contains(prompt, "place_workspace_windows");
                 StringAssert.Contains(prompt, "restore_workspace_layout");
                 StringAssert.Contains(prompt, "arrange_copilot_panes");
+                StringAssert.Contains(prompt, english ? WorkspaceLayoutPlan.ScreenPolicyEn : WorkspaceLayoutPlan.ScreenPolicyZh);
+                StringAssert.Contains(prompt, english ? "adapt it yourself with place_workspace_windows" : "默认布局仍空间不足时由你用 place_workspace_windows 自行调整");
             }
             using (var agent = new AgentService(new AgentDesktopTests.DesktopHost(), () => new AppSettings()))
                 foreach (var name in new[] { "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout" })

@@ -115,6 +115,27 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void NoInterfaceCastFailure_IsReportedPerTarget_AndOtherTargetsStillArrange()
+        {
+            var backend = new FakeBackend { CastFailurePid = 11 };
+            var engine = new WorkspaceLayoutEngine(backend);
+            string result = engine.Arrange(new[] { Target(11), Target(12) }, true, true, null);
+            StringAssert.Contains(result, "Test11 / Main: 跳过 / skipped: VS 自动化接口不可用（E_NOINTERFACE");
+            StringAssert.Contains(result, "Test11 / Copilot: 跳过：目标不安全 / skipped: target unsafe");
+            foreach (string pane in new[] { "Main", "Copilot", "Output", "ErrorList" }) StringAssert.Contains(result, "Test12 / " + pane + ": 已验证 / verified");
+        }
+
+        [TestMethod]
+        public void NoInterfaceCastFailureOnPane_SkipsOnlyThatPane()
+        {
+            var backend = new FakeBackend { CastCaptureFailure = WorkspacePane.ErrorList };
+            var engine = new WorkspaceLayoutEngine(backend);
+            string result = engine.Arrange(new[] { Target() }, true, true, null);
+            StringAssert.Contains(result, "ErrorList: 跳过 / skipped: VS 自动化接口不可用（E_NOINTERFACE");
+            foreach (string pane in new[] { "Main", "Copilot", "Output" }) StringAssert.Contains(result, pane + ": 已验证 / verified");
+        }
+
+        [TestMethod]
         public void LaterPaneChangesEarlierPane_FinalVerificationReportsFailure()
         {
             var backend = new FakeBackend { DriftCopilotWhenOutputMoves = true };
@@ -385,6 +406,32 @@ namespace VSManager.Tests
             });
         }
 
+        [TestMethod]
+        [TestCategory(TestKind.Ui)]
+        public void NativeNoInterfaceDte_FallsBackToHandle_AndSkipsUnreadableDocuments()
+        {
+            OnSta(() =>
+            {
+                using (var main = new QuietForm())
+                using (var host = new QuietForm())
+                using (var process = Process.GetCurrentProcess())
+                {
+                    main.Show();
+                    host.Show(main);
+                    var dte = new NoInterfaceDte();
+                    dte.Windows.Add(new NoInterfaceDocumentWindow());
+                    dte.Windows.Add(new SyntheticToolWindow { Host = host, ThrowOnDocument = true });
+                    var vs = new VsInstance { Pid = process.Id, StartTicks = process.StartTime.ToUniversalTime().Ticks,
+                        MainHwnd = main.Handle, Dte = dte };
+                    var backend = new WindowsWorkspaceBackend();
+                    backend.Validate(vs);
+                    backend.CaptureMain(vs);
+                    var pane = backend.CapturePane(vs, WorkspacePane.Output, null);
+                    Assert.IsTrue(pane.Floating);
+                }
+            });
+        }
+
         private static void OnSta(Action action)
         {
             Exception failure = null;
@@ -405,16 +452,30 @@ namespace VSManager.Tests
         public sealed class SyntheticDte
         {
             public SyntheticWindow MainWindow { get; set; }
-            public List<SyntheticToolWindow> Windows { get; } = new List<SyntheticToolWindow>();
+            public List<object> Windows { get; } = new List<object>();
         }
         public sealed class SyntheticWindow { public IntPtr HWnd { get; set; } }
+        private static InvalidCastException NoInterface() =>
+            new InvalidCastException("QueryInterface IVsPersistDocData E_NOINTERFACE (synthetic)");
+        public sealed class NoInterfaceDte
+        {
+            public object MainWindow => throw NoInterface();
+            public List<object> Windows { get; } = new List<object>();
+        }
+        public sealed class NoInterfaceDocumentWindow
+        {
+            public string Kind => "Document";
+            public string ObjectKind => throw NoInterface();
+            public object Document => throw NoInterface();
+        }
         public sealed class SyntheticToolWindow
         {
             public Form Host { get; set; }
+            public bool ThrowOnDocument { get; set; }
             public IntPtr HWnd => Host.Handle;
             public string Kind => "Tool";
             public string ObjectKind => VsService.OutputKind;
-            public object Document => null;
+            public object Document { get { if (ThrowOnDocument) throw NoInterface(); return null; } }
             public bool IsFloating { get; set; } = true;
             public bool Linkable { get; set; } = true;
             public bool AutoHides { get; set; }
@@ -426,7 +487,8 @@ namespace VSManager.Tests
             internal readonly List<string> Events = new List<string>();
             internal readonly Dictionary<WorkspacePane, WorkspacePaneSnapshot> Panes = new Dictionary<WorkspacePane, WorkspacePaneSnapshot>();
             internal Rectangle MainBounds = new Rectangle(10, 20, 700, 500);
-            internal WorkspacePane? CaptureFailure, MoveFailure, RestoreFailure;
+            internal WorkspacePane? CaptureFailure, MoveFailure, RestoreFailure, CastCaptureFailure;
+            internal int CastFailurePid;
             internal bool FailMainCapture, FailMainRestore, InvalidateAfterCapture, DriftCopilotWhenOutputMoves;
             private bool valid = true;
 
@@ -440,6 +502,7 @@ namespace VSManager.Tests
             public void Validate(VsInstance vs)
             {
                 if (!valid) throw new InvalidOperationException("synthetic modal or identity change");
+                if (vs != null && vs.Pid == CastFailurePid) throw NoInterface();
             }
             public Native.WINDOWPLACEMENT CaptureMain(VsInstance vs)
             {
@@ -451,6 +514,7 @@ namespace VSManager.Tests
             {
                 Events.Add("capture-" + pane);
                 if (CaptureFailure == pane) throw new InvalidOperationException("unknown pane state");
+                if (CastCaptureFailure == pane) throw NoInterface();
                 if (InvalidateAfterCapture) valid = false;
                 return Clone(Panes[pane]);
             }

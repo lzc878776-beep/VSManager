@@ -92,7 +92,14 @@ namespace VSManager
 
         internal static bool Expected(Exception ex) => ex is COMException || ex is Win32Exception ||
             ex is InvalidOperationException || ex is ArgumentException || ex is NotSupportedException ||
-            ex is UnauthorizedAccessException || ex is RuntimeBinderException || ex is ElementNotAvailableException;
+            ex is UnauthorizedAccessException || ex is RuntimeBinderException || ex is ElementNotAvailableException ||
+            ex is InvalidCastException || ex is InvalidComObjectException;
+
+        // VS 的 DTE 调用在接口 QueryInterface 失败（E_NOINTERFACE，如文档尚未完全加载时的 IVsPersistDocData）时抛 InvalidCastException；按单项失败报告，不让整个布局中断。
+        // VS DTE calls throw InvalidCastException when a QueryInterface fails (E_NOINTERFACE, e.g. IVsPersistDocData on a document not fully loaded); report it per item instead of aborting the whole layout.
+        internal static string Reason(Exception ex) => ex is InvalidCastException
+            ? "VS 自动化接口不可用（E_NOINTERFACE，常见于尚未完全加载的文档窗口）/ VS automation interface unavailable (E_NOINTERFACE, typically a document not fully loaded): " + ex.Message
+            : ex.Message;
 
         internal string Arrange(IList<VsWorkspacePlacement> placements, bool output, bool errors, string keyword, bool solution = false)
         {
@@ -143,7 +150,7 @@ namespace VSManager
                             else state.Panes.Add(request.Item1, current);
                             ready.Add(Tuple.Create(current, request.Item2));
                         }
-                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, request.Item1.ToString(), "跳过 / skipped: " + ex.Message)); }
+                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, request.Item1.ToString(), "跳过 / skipped: " + Reason(ex))); }
                     }
 
                     state.MainPending = true;
@@ -155,7 +162,7 @@ namespace VSManager
                         backend.PlaceMain(target.Vs, target.MainBounds);
                         mainPlaced = true;
                     }
-                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, "Main", "失败，保留快照 / failed, snapshot retained: " + ex.Message)); }
+                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, "Main", "失败，保留快照 / failed, snapshot retained: " + Reason(ex))); }
                     foreach (var pane in ready)
                     {
                         try
@@ -164,7 +171,7 @@ namespace VSManager
                             backend.PlacePane(target.Vs, pane.Item1, pane.Item2);
                             placed.Add(pane);
                         }
-                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, pane.Item1.Pane.ToString(), "失败，保留快照 / failed, snapshot retained: " + ex.Message)); }
+                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, pane.Item1.Pane.ToString(), "失败，保留快照 / failed, snapshot retained: " + Reason(ex))); }
                     }
                     // 后续窗格可能共享宿主或触发缩放，最终再次验证全部目标。/ Later panes may share hosts or trigger resizing; verify all final targets again.
                     if (mainPlaced)
@@ -174,7 +181,7 @@ namespace VSManager
                             backend.VerifyMain(target.Vs, target.MainBounds);
                             lines.Add(Result(name, "Main", "已验证 / verified"));
                         }
-                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, "Main", "最终验证失败，保留快照 / final verification failed, snapshot retained: " + ex.Message)); }
+                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, "Main", "最终验证失败，保留快照 / final verification failed, snapshot retained: " + Reason(ex))); }
                     }
                     foreach (var pane in placed)
                     {
@@ -183,12 +190,12 @@ namespace VSManager
                             backend.VerifyPane(target.Vs, pane.Item1, pane.Item2);
                             lines.Add(Result(name, pane.Item1.Pane.ToString(), "已验证 / verified"));
                         }
-                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, pane.Item1.Pane.ToString(), "最终验证失败，保留快照 / final verification failed, snapshot retained: " + ex.Message)); }
+                        catch (Exception ex) when (Expected(ex)) { lines.Add(Result(name, pane.Item1.Pane.ToString(), "最终验证失败，保留快照 / final verification failed, snapshot retained: " + Reason(ex))); }
                     }
                 }
                 catch (Exception ex) when (Expected(ex))
                 {
-                    lines.Add(Result(name, "Main", "跳过 / skipped: " + ex.Message));
+                    lines.Add(Result(name, "Main", "跳过 / skipped: " + Reason(ex)));
                     foreach (var pane in requested) lines.Add(Result(name, pane.Item1.ToString(), "跳过：目标不安全 / skipped: target unsafe"));
                 }
             }
@@ -209,7 +216,7 @@ namespace VSManager
                 }
                 catch (Exception ex) when (Expected(ex))
                 {
-                    lines.Add(Result(state.Name, "Main", "保留待重试 / retained for retry: " + ex.Message));
+                    lines.Add(Result(state.Name, "Main", "保留待重试 / retained for retry: " + Reason(ex)));
                     foreach (var pane in state.Panes.Keys) lines.Add(Result(state.Name, pane.ToString(), "保留待重试 / retained for retry"));
                     continue;
                 }
@@ -223,7 +230,7 @@ namespace VSManager
                         state.MainPending = false;
                         lines.Add(Result(state.Name, "Main", "已还原并验证 / restored and verified"));
                     }
-                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(state.Name, "Main", "还原失败，保留待重试 / restore failed, retained for retry: " + ex.Message)); }
+                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(state.Name, "Main", "还原失败，保留待重试 / restore failed, retained for retry: " + Reason(ex))); }
                 }
                 foreach (var pane in state.Panes.Values.ToArray())
                 {
@@ -236,7 +243,7 @@ namespace VSManager
                             (state.MainPending ? "；主窗口待重试，仍保留窗格快照 / pane snapshot retained until owner restoration succeeds" : "") +
                             (pane.Floating ? "" : "；停靠组位置由 VS 决定 / docking group position is managed by VS")));
                     }
-                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(state.Name, pane.Pane.ToString(), "还原失败，保留待重试 / restore failed, retained for retry: " + ex.Message)); }
+                    catch (Exception ex) when (Expected(ex)) { lines.Add(Result(state.Name, pane.Pane.ToString(), "还原失败，保留待重试 / restore failed, retained for retry: " + Reason(ex))); }
                 }
                 if (state.Panes.Count == 0 && !state.MainPending) saved.Remove(state);
             }
@@ -269,8 +276,7 @@ namespace VSManager
                 if (process.HasExited || process.StartTime.ToUniversalTime().Ticks != vs.StartTicks)
                     throw new InvalidOperationException("进程身份已改变 / process identity changed");
             ValidateHwnd(vs, vs.MainHwnd);
-            dynamic dte = vs.Dte;
-            if (ToHandle(dte.MainWindow.HWnd) != vs.MainHwnd || GetAncestor(vs.MainHwnd, 2) != vs.MainHwnd ||
+            if (DteMainHandle(vs) != vs.MainHwnd || GetAncestor(vs.MainHwnd, 2) != vs.MainHwnd ||
                 Native.GetWindow(vs.MainHwnd, Native.GW_OWNER) != IntPtr.Zero)
                 throw new InvalidOperationException("DTE 主窗口不匹配 / DTE main window mismatch");
             if (!Native.IsWindowEnabled(vs.MainHwnd))
@@ -278,6 +284,16 @@ namespace VSManager
             var popup = Native.GetLastActivePopup(vs.MainHwnd);
             if (popup != vs.MainHwnd && popup != IntPtr.Zero && Native.IsWindowVisible(popup) && Native.GetClass(popup) == "#32770")
                 throw new InvalidOperationException("存在模态对话框 / modal dialog present");
+        }
+
+        /// <summary>
+        /// DTE.MainWindow 的句柄；该调用因 E_NOINTERFACE 失败时，退回到已按进程、顶层与无所有者校验过的发现句柄。
+        /// Handle of DTE.MainWindow; when that call fails with E_NOINTERFACE, fall back to the discovered handle, which is still checked for process, top level and no owner.
+        /// </summary>
+        private static IntPtr DteMainHandle(VsInstance vs)
+        {
+            try { return ToHandle(((dynamic)vs.Dte).MainWindow.HWnd); }
+            catch (InvalidCastException) { return vs.MainHwnd; }
         }
 
         public Native.WINDOWPLACEMENT CaptureMain(VsInstance vs)
@@ -403,7 +419,11 @@ namespace VSManager
             object match = null;
             foreach (dynamic window in dte.Windows)
             {
-                if (!SameGuid((string)window.ObjectKind, kind)) continue;
+                // 读取不了 ObjectKind 的窗口（多为尚未加载完成的文档）无法是目标窗格，直接跳过。/ Windows whose ObjectKind cannot be read (mostly documents not fully loaded) cannot be the target pane; skip them.
+                string objectKind;
+                try { objectKind = (string)window.ObjectKind; }
+                catch (Exception ex) when (ex is InvalidCastException || ex is COMException) { continue; }
+                if (!SameGuid(objectKind, kind)) continue;
                 CheckTool(window, kind);
                 if (match != null) throw new InvalidOperationException("窗格 GUID 不唯一 / ambiguous pane GUID");
                 match = window;
@@ -421,8 +441,16 @@ namespace VSManager
         private static void CheckTool(dynamic window, string kind)
         {
             if (!Guid.TryParse(kind, out _) || !SameGuid((string)window.ObjectKind, kind) ||
-                !string.Equals((string)window.Kind, "Tool", StringComparison.OrdinalIgnoreCase) || window.Document != null)
+                !string.Equals((string)window.Kind, "Tool", StringComparison.OrdinalIgnoreCase) || HasDocument(window))
                 throw new InvalidOperationException("无法证明是目标工具窗格 / target tool-pane identity unproven");
+        }
+
+        // 工具窗格没有可持久化的文档数据时，Window.Document 可能因 IVsPersistDocData 的 E_NOINTERFACE 抛出，等同于没有文档。
+        // For a tool pane without persistable document data, Window.Document may throw E_NOINTERFACE for IVsPersistDocData, which means there is no document.
+        private static bool HasDocument(dynamic window)
+        {
+            try { return window.Document != null; }
+            catch (InvalidCastException) { return false; }
         }
 
         private void Set(VsInstance vs, dynamic window, string kind, string property, bool value)

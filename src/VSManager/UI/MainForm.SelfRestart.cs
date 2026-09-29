@@ -43,21 +43,42 @@ namespace VSManager
             }
         }
 
-        /// <summary>重启前不在前台时，新窗口显示但不抢焦点。/ When the window was not in the foreground before the restart, the new one shows without taking focus.</summary>
-        protected override bool ShowWithoutActivation => RestoredUi != null && !RestoredUi.Foreground;
+        /// <summary>重启期间用户可能已切走，恢复窗口不主动激活；用户仍可通过托盘或热键激活。/ The user may have switched away during restart: never activate on restore; tray and hotkey activation still work.</summary>
+        protected override bool ShowWithoutActivation => RestoredUi != null;
 
         protected override void OnLoad(EventArgs e)
         {
+            try
+            {
+                PrepareRestoredWindow();
+                base.OnLoad(e);
+            }
+            catch { RestartUi.ReleaseActiveCover(); throw; }
+        }
+
+        private void PrepareRestoredWindow()
+        {
             var ui = RestoredUi;
-            var bounds = RestartUi.FitBounds(ui, Screen.AllScreens.Select(s => s.WorkingArea), MinimumSize);
-            if (bounds != null) StartPosition = FormStartPosition.Manual;
-            base.OnLoad(e);
-            if (bounds == null) return;
-            _restoredBounds = bounds;
-            // 回到重启前的位置与大小，避免窗口跳到屏幕中央 / Back to the pre-restart bounds instead of jumping to the screen center
-            Bounds = bounds.Value;
-            if (ui.Hidden) WindowState = FormWindowState.Minimized;
-            else if (ui.Maximized) WindowState = FormWindowState.Maximized;
+            _restoredBounds = RestartUi.FitBounds(ui, Screen.AllScreens.Select(s => s.WorkingArea), MinimumSize);
+            if (_restoredBounds != null)
+            {
+                StartPosition = FormStartPosition.Manual;
+                Bounds = _restoredBounds.Value;
+            }
+            if (ui != null)
+            {
+                _restoreStartedAt = DateTime.Now;
+                if (ui.Hidden) WindowState = FormWindowState.Minimized;
+                else if (ui.Maximized) WindowState = FormWindowState.Maximized;
+                PrepareRestoredPage(ui);
+            }
+        }
+
+        private void PrepareRestoredPage(RestartUiState ui)
+        {
+            if (!string.IsNullOrEmpty(ui.AgentDraft) && string.IsNullOrEmpty(_agentPanel.DraftText)) _agentPanel.DraftText = ui.AgentDraft;
+            bool wantAgent = RestartUi.WantsAgentPage(ui, _settings.AgentEnabled);
+            if (_agentMode != wantAgent) ShowAgent(wantAgent, RestoreSource);
         }
 
         /// <summary>记录当前界面状态，供重启后恢复。/ Captures the current UI state to restore after a restart.</summary>
@@ -95,6 +116,14 @@ namespace VSManager
         {
             _userNavigatedAt = DateTime.Now;
             _userNavigation = what;
+            ReleaseRestoredCover();
+        }
+
+        private void ReleaseRestoredCover()
+        {
+            if (_coverReleaseRequested || string.IsNullOrEmpty(_restoredUi?.CoverEvent)) return;
+            _coverReleaseRequested = true;
+            _coverSignaled = RestartUi.SignalCover(_restoredUi.CoverEvent);
         }
 
         /// <summary>记录页面切换及其来源，供 get_window_state 对照不一致的原因。/ Records a page switch and its source so get_window_state can explain differences.</summary>
@@ -119,19 +148,17 @@ namespace VSManager
         {
             var ui = RestoredUi;
             if (ui == null) return;
-            _restoreStartedAt = DateTime.Now;
-            if (!string.IsNullOrEmpty(ui.AgentDraft) && string.IsNullOrEmpty(_agentPanel.DraftText)) _agentPanel.DraftText = ui.AgentDraft;
-            bool wantAgent = ui.AgentPage && _settings.AgentEnabled;
-            if (_agentMode != wantAgent) ShowAgent(wantAgent, RestoreSource);
-            if (!ui.Hidden && ui.Foreground) Native.ForceForeground(Handle, TopMost);
+            PrepareRestoredPage(ui);
+            bool wantAgent = RestartUi.WantsAgentPage(ui, _settings.AgentEnabled);
+            if (ui.Hidden && _settings.MinimizeToTray) Hide();
             var started = _restoreStartedAt;
-            var timer = new System.Windows.Forms.Timer { Interval = 300 };
-            bool covered = !string.IsNullOrEmpty(ui.CoverEvent);
+            var rendering = Stopwatch.StartNew();
+            var timer = new System.Windows.Forms.Timer { Interval = 100 };
             bool selected = false;
+            EventHandler disposed = (s, e) => { timer.Stop(); timer.Dispose(); ReleaseRestoredCover(); };
+            Disposed += disposed;
             timer.Tick += (s, e) =>
             {
-                // 先让新窗口完成首次绘制再撤掉过渡画面 / Let the new window paint once before removing the cover
-                if (covered) { covered = false; SignalCover(ui.CoverEvent); _coverSignaled = true; }
                 bool userMoved = _userNavigatedAt >= started;
                 bool expired = DateTime.Now - started > RestoreSettle;
                 if (!userMoved && !expired)
@@ -154,9 +181,21 @@ namespace VSManager
                     }
                     if (v != null && Selected?.Pid == v.Pid) selected = true;
                 }
+                bool selectionReady = wantAgent || ui.SelectedVsPid <= 0 || Selected?.Pid == ui.SelectedVsPid;
+                if (!_coverReleaseRequested && !string.IsNullOrEmpty(ui.CoverEvent))
+                {
+                    if (selectionReady || rendering.Elapsed >= TimeSpan.FromSeconds(3))
+                    {
+                        // 同步绘制已恢复的控件，再撤除截图；WebView 内容仍可能异步加载。/ Paint restored controls before removing the snapshot; WebView content may still load asynchronously.
+                        Refresh();
+                        _restoreFramePrepared = true;
+                    }
+                    if (RestartUi.CanReleaseCover(_restoreFramePrepared, selectionReady, ui.Hidden, userMoved, rendering.Elapsed)) ReleaseRestoredCover();
+                }
                 if (userMoved || expired)
                 {
                     if (userMoved) AppLog.Write(ProcessWatchdog.LogFile, "重启恢复：用户已手动切换，停止恢复 / Restart restore: the user switched manually; restore stopped (" + _userNavigation + ")");
+                    Disposed -= disposed;
                     timer.Stop();
                     timer.Dispose();
                 }
@@ -164,30 +203,22 @@ namespace VSManager
             timer.Start();
         }
 
-        /// <summary>通知过渡画面关闭。/ Tells the cover window to close.</summary>
-        private static void SignalCover(string eventName)
-        {
-            if (string.IsNullOrEmpty(eventName)) return;
-            try
-            {
-                if (EventWaitHandle.TryOpenExisting(eventName, out var h))
-                    using (h) h.Set();
-            }
-            catch { }
-        }
-
         /// <summary>
-        /// 窗口在前台时截取当前画面，并启动独立的过渡画面进程：旧进程退出后在原位置显示截图，直到新窗口就绪。返回命名事件名，未启动时返回 null。
-        /// When the window is in the foreground, captures it and starts a separate cover process that shows the screenshot in place after
-        /// the old process exits, until the new window is ready. Returns the event name, or null when no cover was started.
+        /// 旧窗口仍可交互时异步准备截图，最多等待八秒就绪；失败则清理辅助进程，降级为普通重启。
+        /// Prepares the snapshot asynchronously while the old window remains interactive; waits at most eight seconds, cleans up on failure and falls back to an ordinary restart.
         /// </summary>
-        private string StartRestartCover(RestartUiState ui)
+        private async Task<string> StartRestartCover(RestartUiState ui)
         {
-            if (ui == null || !ui.Foreground || ui.Hidden || !Visible) return null;
-            string id = Guid.NewGuid().ToString("N").Substring(0, 12);
+            if (ui == null || !ui.Foreground || ui.Hidden || !Visible || Native.GetForegroundWindow() != Handle) return null;
+            string id = Guid.NewGuid().ToString("N");
             string dir = Path.GetTempPath();
             string image = Path.Combine(dir, "VSManager-cover-" + id + ".png");
             string script = Path.Combine(dir, "VSManager-cover-" + id + ".ps1");
+            string name = RestartUi.CoverEventName(id);
+            Process child = null;
+            bool prepared = false;
+            using (var stop = new EventWaitHandle(false, EventResetMode.ManualReset, name))
+            using (var ready = new EventWaitHandle(false, EventResetMode.ManualReset, name + "-ready"))
             try
             {
                 Update();
@@ -200,19 +231,43 @@ namespace VSManager
                 File.WriteAllText(script, RestartUi.CoverScript, new UTF8Encoding(true));
                 string ps = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\powershell.exe");
                 if (!File.Exists(ps)) throw new FileNotFoundException("powershell.exe");
-                string name = RestartUi.CoverEventName(id);
                 string args = "-NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -WindowStyle Hidden -File \"" + script + "\" -Image \"" + image + "\"" +
-                    " -X " + b.X + " -Y " + b.Y + " -W " + b.Width + " -H " + b.Height + " -OldPid " + ui.OldPid + " -EventName \"" + name + "\"" +
-                    " -Text \"⟳ 正在重启 VSManager 以加载新程序… / Restarting VSManager to load the new build…\"";
-                using (Process.Start(new ProcessStartInfo(ps, args) { UseShellExecute = false, CreateNoWindow = true })) { }
-                return name;
+                    " -X " + b.X + " -Y " + b.Y + " -W " + b.Width + " -H " + b.Height + " -OldPid " + ui.OldPid + " -OldWindow " + Handle.ToInt64() + " -EventName \"" + name + "\"" +
+                    " -Text \"⟳ 正在恢复，截图暂不可交互（点击关闭） / Restoring; snapshot only (click to dismiss)\"";
+                var watch = Stopwatch.StartNew();
+                child = Process.Start(new ProcessStartInfo(ps, args) { UseShellExecute = false, CreateNoWindow = true });
+                bool acknowledged = await Task.Run(() =>
+                {
+                    while (watch.Elapsed < TimeSpan.FromSeconds(8))
+                    {
+                        if (ready.WaitOne(50)) return true;
+                        if (child.HasExited) return false;
+                    }
+                    return false;
+                });
+                prepared = acknowledged && !child.HasExited && !IsDisposed && Visible && Bounds == b && Native.GetForegroundWindow() == Handle;
+                if (prepared) ui.CoverReadyMilliseconds = (int)watch.ElapsedMilliseconds;
+                AppLog.Write(ProcessWatchdog.LogFile, "过渡画面准备 / Restart cover preparation: " + (prepared ? "就绪 / ready" : "超时、已切走或退出；普通重启 / timeout, switched away or exited; ordinary restart") + " (" + watch.ElapsedMilliseconds + " ms)");
+                return prepared ? name : null;
             }
             catch (Exception ex)
             {
                 AppLog.Write(ProcessWatchdog.LogFile, "过渡画面未启动 / Restart cover not started: " + ex.Message);
-                try { File.Delete(image); } catch { }
-                try { File.Delete(script); } catch { }
                 return null;
+            }
+            finally
+            {
+                if (!prepared)
+                {
+                    stop.Set();
+                    if (child != null)
+                    {
+                        try { await Task.Run(() => { if (!child.WaitForExit(1000)) { child.Kill(); child.WaitForExit(1000); } }); } catch { }
+                    }
+                    try { File.Delete(image); } catch { }
+                    try { File.Delete(script); } catch { }
+                }
+                child?.Dispose();
             }
         }
 
@@ -484,9 +539,12 @@ namespace VSManager
                     handoff.Scenario = scenario.Describe() + ApplyRestartScenario(scenario);
                     await Task.Delay(600);
                 }
-                string fail = null;
-                if (!SaveNotebook()) fail = "笔记未保存 / The note could not be saved";
-                else if (!_tasks.Save()) fail = "任务清单保存失败 / Task list save failed: " + _tasks.SaveError;
+                ui = CaptureUiState();
+                ui.CoverEvent = await StartRestartCover(ui);
+                string fail = _agent.Running || _sending || _tasks.Items.Any(t => t.Status == QueueStatus.Sending) || _dispatcher.IsFinishingWork
+                    ? "准备期间出现新的操作，已取消本次重启 / New work started during preparation; restart cancelled" : SelfVsBusy(vs);
+                if (fail == null && !SaveNotebook()) fail = "笔记未保存 / The note could not be saved";
+                if (fail == null && !_tasks.Save()) fail = "任务清单保存失败 / Task list save failed: " + _tasks.SaveError;
                 if (fail == null)
                 {
                     _settings.Save();
@@ -505,17 +563,19 @@ namespace VSManager
                             + (plans.Count == 0 ? "" : "（" + string.Join("、", plans.Select(p => "#" + p.Id + " " + p.Title)) + "）"));
                     }
                 }
-                if (fail != null) { AbortSelfRestart(fail); return; }
+                if (fail != null) throw new InvalidOperationException(fail);
                 Archive.Flush(3000, true);
+                // 异步准备期间仍可编辑，必须保存最终页面与草稿；所有交接成功后才声明正常退出。/ Editing remains possible during preparation: capture the final page and draft, and mark a clean exit only after every handoff is saved.
+                var finalUi = CaptureUiState();
+                finalUi.SelfTest = true;
+                finalUi.CoverEvent = ui.CoverEvent;
+                finalUi.CoverReadyMilliseconds = ui.CoverReadyMilliseconds;
+                ui = finalUi;
+                string uiError = RestartUi.Save(ui);
+                if (uiError != null) throw new IOException("界面状态未保存 / UI state not saved: " + uiError);
                 ProcessWatchdog.MarkCleanExit();
                 AppLog.Write(ProcessWatchdog.LogFile, "自测重启：请求 VS 重新启动调试 / Self-test restart: asking VS to restart debugging (PID " + handoff.OldPid + ")");
                 SetStatus("⟳ 正在重启 VSManager… / Restarting VSManager…");
-                // 无感重启：保存窗口与页面状态，前台时用过渡画面盖住重新生成的空档，并先移除托盘图标以免残留
-                // Seamless restart: save window and page state, cover the rebuild gap when in the foreground, and remove the tray icon first so no ghost icon remains
-                ui = CaptureUiState();
-                ui.CoverEvent = StartRestartCover(ui);
-                string uiError = RestartUi.Save(ui);
-                if (uiError != null) AppLog.Write(ProcessWatchdog.LogFile, "界面状态未保存 / UI state not saved: " + uiError);
                 _tray.Visible = false;
                 string result;
                 try { result = await DteWorker.Run(() => VsService.DebugAction(vs, "restart")); }
@@ -541,7 +601,7 @@ namespace VSManager
         /// <summary>重启未发生：撤掉过渡画面与界面状态文件，恢复托盘图标。/ The restart did not happen: remove the cover and UI state file and restore the tray icon.</summary>
         private void UndoRestartUi(RestartUiState ui, bool trayVisible)
         {
-            SignalCover(ui?.CoverEvent);
+            RestartUi.SignalCover(ui?.CoverEvent);
             RestartUi.Discard();
             _tray.Visible = trayVisible;
         }
@@ -600,12 +660,12 @@ namespace VSManager
         /// <summary>等实例列表刷新、助手空闲后再执行（最多等 8 秒实例列表）。/ Runs once instances refreshed and the assistant is idle (waits at most 8 s for instances).</summary>
         private void AfterStartupSettled(Action action)
         {
-            var started = DateTime.Now;
-            var timer = new System.Windows.Forms.Timer { Interval = 2000 };
+            var started = Stopwatch.StartNew();
+            var timer = new System.Windows.Forms.Timer { Interval = 200 };
             timer.Tick += (s, e) =>
             {
-                var waited = DateTime.Now - started;
-                if (waited < TimeSpan.FromSeconds(2) || (_instances.Count == 0 && waited < TimeSpan.FromSeconds(8)) || _agent.Running) return;
+                if (IsDisposed) { timer.Stop(); timer.Dispose(); return; }
+                if (!RestartUi.CanResumeStartup(_refreshing, _instances.Count, _agent.Running, started.Elapsed)) return;
                 timer.Stop();
                 timer.Dispose();
                 action();
@@ -639,6 +699,8 @@ namespace VSManager
                     "交接单创建于 " + handoff.CreatedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm") + "，超过 " + (int)SelfRestart.MaxAge.TotalMinutes + " 分钟，未恢复授权也未续跑测试。/ Created too long ago; grants were not restored and no tests were resumed.");
                 return;
             }
+            // 旧版本写入的界面状态没有自测标记，仍按有效交接单应用新页面策略。/ Older UI states lack the self-test flag; a valid handoff still applies the new page policy.
+            if (RestoredUi != null) RestoredUi.SelfTest = true;
             var outcome = new SelfRestartOutcome
             {
                 NewPid = Process.GetCurrentProcess().Id,
@@ -669,7 +731,7 @@ namespace VSManager
             {
                 if (_settings.AgentEnabled && _agent.Configured)
                 {
-                    // 重启前在看 VS 对话时不切走页面 / Keep the VS chat page if the user was on it before the restart
+                    // 页面已在恢复阶段选定，不在通知到达时打断用户的新导航。/ The restore already selected the page; do not interrupt newer navigation when the notice arrives.
                     if (RestoredUi == null) ShowAgent(true, "重启完成通知 / restart notice");
                     _ = _agent.RunAsync(content, display, null, handoff.Scope ?? "");
                 }

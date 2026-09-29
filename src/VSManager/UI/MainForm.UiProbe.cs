@@ -17,6 +17,8 @@ namespace VSManager
     {
         private Rectangle? _restoredBounds;
         private bool _coverSignaled;
+        private bool _coverReleaseRequested;
+        private bool _restoreFramePrepared;
         private SelfRestartHandoff _resumedHandoff;
         private SelfRestartOutcome _resumeOutcome;
         private string _resumeError;
@@ -72,19 +74,24 @@ namespace VSManager
               .AppendLine(Same(ui.Hidden || ui.Maximized == (WindowState == FormWindowState.Maximized)));
             bool hiddenNow = !Visible || WindowState == FormWindowState.Minimized;
             sb.Append("- 最小化或隐藏 / Minimized or hidden: 保存值 / saved ").Append(YesNo(ui.Hidden)).Append("，当前 / now ").Append(YesNo(hiddenNow)).Append(" → ").AppendLine(Same(ui.Hidden == hiddenNow));
-            sb.Append("- 页面 / Page: 保存值 / saved ").Append(ui.AgentPage ? "AI 总控 / AI assistant" : "VS 对话 / VS chat").Append(" → ").AppendLine(Same(ui.AgentPage == _agentMode));
+            bool wantAgent = RestartUi.WantsAgentPage(ui, _settings.AgentEnabled);
+            sb.Append("- 页面 / Page: ").Append(ui.SelfTest ? "自测恢复目标 / self-test restore target " : "恢复目标 / restore target ")
+              .Append(wantAgent ? "AI 总控 / AI assistant" : "VS 对话 / VS chat").Append(" → ").AppendLine(Same(wantAgent == _agentMode));
             if (_pageChange != null) sb.Append("  最近一次页面切换 / Last page switch: ").AppendLine(_pageChange);
             if (_userNavigatedAt >= _restoreStartedAt && _restoreStartedAt > DateTime.MinValue)
                 sb.Append("  重启后用户手动切换过 / The user switched manually after the restart: ").Append(_userNavigatedAt.ToString("HH:mm:ss")).Append("（").Append(_userNavigation).AppendLine("）");
-            if (!ui.AgentPage && ui.SelectedVsPid > 0)
+            if (!wantAgent && ui.SelectedVsPid > 0)
                 sb.Append("- 选中的 VS / Selected VS: 保存值 / saved PID ").Append(ui.SelectedVsPid).Append("，当前 / now ").Append(sel?.Pid.ToString() ?? "无 / none").Append(" → ")
                   .AppendLine(sel?.Pid == ui.SelectedVsPid ? Same(true)
                       : _instances.Any(v => v.Pid == ui.SelectedVsPid) ? Same(false) : "该 VS 已不在实例列表中 / that VS is no longer listed");
             sb.Append("- 草稿 / Draft: 保存值 / saved ").Append((ui.AgentDraft ?? "").Length).Append(" 字 / chars → ").AppendLine(Same((ui.AgentDraft ?? "") == draft || string.IsNullOrEmpty(ui.AgentDraft) && draft.Length == 0));
-            sb.Append("- 前台 / Foreground: 重启前 / before ").Append(ui.Foreground ? "在前台，应回到前台 / foreground, should return to it" : "不在前台，新窗口不应抢焦点 / not foreground, the new window must not take focus")
-              .Append("，当前 / now ").Append(YesNo(foreground)).Append(" → ").AppendLine(ui.Foreground == foreground ? Same(true) : ui.Foreground ? "不一致（用户可能已切走）/ differs (the user may have switched away)" : "不一致，疑似抢焦点 / differs, possible focus steal");
-            sb.Append("- 过渡画面 / Cover: ").Append(string.IsNullOrEmpty(ui.CoverEvent) ? "未使用（重启前窗口不在前台或已隐藏）/ not used (window was not foreground or hidden)"
-                : _coverSignaled ? "已通知关闭 / told to close" : "尚未通知关闭 / not yet told to close");
+            sb.Append("- 前台 / Foreground: 重启前 / before ").Append(YesNo(ui.Foreground)).Append("，当前 / now ").Append(YesNo(foreground))
+              .AppendLine("；恢复策略是不主动激活；单次采样无法证明期间未抢焦点 / restore never requests activation; a single sample cannot prove no focus steal during the transition");
+            sb.Append("- 过渡画面 / Cover: ").Append(string.IsNullOrEmpty(ui.CoverEvent) ? "未使用（无需截图或准备失败）/ not used (unneeded or preparation failed)"
+                : _coverSignaled ? "关闭事件已触发（不代表已退出）/ close event signaled (not proof of exit)"
+                : _coverReleaseRequested ? "已请求释放，事件已不存在或不可访问 / release requested; event absent or inaccessible" : "尚未请求关闭 / close not yet requested");
+            sb.Append("；旧进程确认就绪用时 / readiness acknowledged after: ").Append(ui.CoverReadyMilliseconds).Append(" ms")
+              .Append("；恢复控件已同步绘制 / restored controls synchronously painted: ").Append(YesNo(_restoreFramePrepared));
             return sb.ToString();
         });
 

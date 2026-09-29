@@ -23,11 +23,11 @@ namespace VSManager
             return (await host.GetDisplays()).Describe();
         }
 
-        [Description("自动布局 VS 主窗口、Copilot 与输出、错误列表、解决方案资源管理器等工具窗格（默认全部包含，可逐项关闭）。先读取显示器，0 为自动：主窗口优先当前屏，窗格放到其他最大工作区，多余屏幕分担 VS；单屏分区不重叠。不保存或关闭文件，不最小化 VS，可用 restore_workspace_layout 还原。/ Arranges main VS windows plus Copilot, Output, Error List and Solution Explorer panes (all included by default, each can be turned off); auto-selects displays, splits one screen, never saves/closes files or minimizes VS; supports restore.")]
+        [Description("自动布局 VS 主窗口及工具窗格（默认全部包含，可逐项关闭）。按各屏尺寸与主屏属性（不是编号）分配：主窗口集中在主屏（与 VSManager 同屏），资源管理器同屏相邻；Copilot 集中在尺寸足够大的非主屏中最大的一块，过小的屏幕不放对话；自动模式下输出与错误列表优先剩余屏幕，否则与 Copilot 上下分布；没有合适副屏时与主窗口左右分区。空间不足时请用 place_workspace_windows 自行调整。不保存或关闭文件，不最小化 VS，可还原。/ Arranges main VS windows and tool panes (all included by default, each optional), assigning screens by size and the primary flag rather than numbers: main windows share the primary screen (with VSManager) with their adjacent Solution Explorers; Copilot chats use the largest sufficiently large non-primary screen and never a too-small one; auto mode prefers a remaining screen for Output and Error List, otherwise stacked below Copilot; without a suitable secondary screen the chats split the main screen. Adapt with place_workspace_windows if space is insufficient. Never saves/closes files or minimizes VS; restorable.")]
         private async Task<string> ArrangeWorkspace(
             [Description("VS 编号或名称，多个用逗号分隔，留空为全部 / Comma-separated VS numbers or names; empty means all")] string vs = "",
-            [Description("主窗口屏幕编号，0 自动 / Main-window screen number; 0 selects automatically")] int mainScreen = 0,
-            [Description("窗格屏幕编号，0 自动 / Tool-pane screen number; 0 selects automatically")] int paneScreen = 0,
+            [Description("主窗口与解决方案资源管理器屏幕编号，0 自动 / Main-window and Solution Explorer screen number; 0 selects automatically")] int mainScreen = 0,
+            [Description("Copilot、输出与错误列表屏幕编号；0 自动按角色分屏 / Copilot, Output and Error List screen number; 0 automatically separates screen roles")] int paneScreen = 0,
             [Description("同时布局输出窗格，默认 true / Include Output, default true")] bool includeOutput = true,
             [Description("同时布局错误列表，默认 true / Include Error List, default true")] bool includeErrorList = true,
             [Description("同时布局解决方案资源管理器，默认 true / Include Solution Explorer, default true")] bool includeSolutionExplorer = true)
@@ -54,6 +54,7 @@ namespace VSManager
         }
 
         [Description("按你自己设计的位置摆放 VS 主窗口与 Copilot / 输出 / 错误列表 / 解决方案资源管理器窗格。先 get_displays 了解各屏尺寸、方向与相对位置，再为每个 VS 选择屏幕和位置。"
+            + WorkspaceLayoutPlan.ScreenPolicyZh + " / " + WorkspaceLayoutPlan.ScreenPolicyEn + " "
             + "layout 为 JSON 数组，每项 {\"vs\":\"1\",\"main\":{\"screen\":1,\"x\":0,\"y\":0,\"w\":65,\"h\":100},\"copilot\":{...},\"output\":{...},\"errorList\":{...},\"solutionExplorer\":{...}}；"
             + "x/y/w/h 为该屏工作区百分比（0–100），main 必填，其余窗格省略则不移动；尚未创建的内置窗格会被创建，还原时恢复隐藏。重叠或过小只警告不拒绝。不保存或关闭文件，不最小化 VS，可用 restore_workspace_layout 还原。"
             + " / Places VS main windows and Copilot/Output/Error List/Solution Explorer panes where you decide. Call get_displays first (sizes, orientation, relative positions), then choose a screen and position per VS. "

@@ -31,10 +31,14 @@ namespace VSManager
         /// <summary>重启前窗口在前台（用户正在看）。/ The window was in the foreground (the user was looking at it).</summary>
         [DataMember] public bool Foreground;
         [DataMember] public bool AgentPage;
+        /// <summary>自测重启固定回到 AI 总控页；普通重启仍恢复原页面。/ Self-test restarts open the AI page; ordinary restarts keep the saved page.</summary>
+        [DataMember(EmitDefaultValue = false)] public bool SelfTest;
         [DataMember] public int SelectedVsPid;
         [DataMember] public string AgentDraft;
         /// <summary>过渡画面的命名事件；为空表示没有过渡画面。/ Named event of the cover window; empty when there is none.</summary>
         [DataMember] public string CoverEvent;
+        /// <summary>旧进程等待截图就绪的毫秒数；零表示没有确认。/ Milliseconds the old process waited for snapshot readiness; zero means no acknowledgement.</summary>
+        [DataMember(EmitDefaultValue = false)] public int CoverReadyMilliseconds;
 
         public Rectangle Bounds => new Rectangle(X, Y, Width, Height);
     }
@@ -48,6 +52,10 @@ namespace VSManager
         /// <summary>有效期：超过即忽略（例如重启失败后很久才手动启动）。/ Lifetime: older states are ignored (e.g. a manual start long after a failed restart).</summary>
         public static readonly TimeSpan MaxAge = TimeSpan.FromMinutes(15);
 
+        /// <summary>自测重启优先 AI 总控页，但不改变 AI 功能的启用设置。/ Self-test restarts prefer the AI page without changing whether the AI feature is enabled.</summary>
+        public static bool WantsAgentPage(RestartUiState state, bool agentEnabled) =>
+            state != null && agentEnabled && (state.SelfTest || state.AgentPage);
+
         /// <summary>草稿最大长度。/ Maximum draft length.</summary>
         public const int MaxDraftChars = 20000;
 
@@ -55,6 +63,23 @@ namespace VSManager
 
         /// <summary>过渡画面命名事件名（本机会话内）。/ Name of the cover window's event (local session).</summary>
         public static string CoverEventName(string id) => @"Local\VSManager-restart-cover-" + id;
+
+        private static string _activeCoverEvent;
+
+        public static void ReleaseActiveCover() => SignalCover(_activeCoverEvent);
+
+        /// <summary>仅在事件确实存在并已触发时返回真。/ Returns true only when the event exists and was actually signaled.</summary>
+        public static bool SignalCover(string eventName)
+        {
+            if (string.IsNullOrEmpty(eventName)) return false;
+            try
+            {
+                if (System.Threading.EventWaitHandle.TryOpenExisting(eventName, out var handle))
+                    using (handle) return handle.Set();
+            }
+            catch { }
+            return false;
+        }
 
         public static string Save(RestartUiState state)
         {
@@ -91,6 +116,7 @@ namespace VSManager
                     s = (RestartUiState)new DataContractJsonSerializer(typeof(RestartUiState)).ReadObject(r);
                 if (s == null || s.OldPid == currentPid) return null;
                 if (s.CreatedUtc > nowUtc.AddMinutes(1) || nowUtc - s.CreatedUtc > MaxAge) return null;
+                _activeCoverEvent = s.CoverEvent;
                 return s;
             }
             catch { return null; }
@@ -115,44 +141,84 @@ namespace VSManager
             return (workingAreas ?? Enumerable.Empty<Rectangle>()).Any(a => a.IntersectsWith(title)) ? b : (Rectangle?)null;
         }
 
+        /// <summary>首次绘制并选中页面后撤除截图；找不到 VS 时最多额外等三秒。/ Release after painting and selection, waiting at most three extra seconds for a missing VS.</summary>
+        public static bool CanReleaseCover(bool painted, bool selected, bool hidden, bool userMoved, TimeSpan elapsed) =>
+            hidden || userMoved || painted && (selected || elapsed >= TimeSpan.FromSeconds(3));
+
+        /// <summary>实例刷新结束即可续跑；空列表最多等八秒，助手忙时仍等待。/ Resume once discovery completes; wait at most eight seconds for an empty list, but always wait for the assistant.</summary>
+        public static bool CanResumeStartup(bool refreshing, int instanceCount, bool agentBusy, TimeSpan elapsed) =>
+            !agentBusy && ((!refreshing && instanceCount > 0) || elapsed >= TimeSpan.FromSeconds(8));
+
         /// <summary>
-        /// 过渡画面脚本（PowerShell）：等旧进程退出后在原位置显示旧窗口截图，新窗口就绪（命名事件被触发）或超时后关闭并删除截图。
-        /// Cover script (PowerShell): after the old process exits it shows the old window's screenshot in place, and closes and deletes
-        /// the screenshot once the new window is ready (the named event is set) or on timeout.
+        /// 先在旧窗口正后方准备不激活的截图并确认就绪；不置顶、不占任务栏，关闭事件或超时后清理。
+        /// Prepares a nonactivating snapshot directly behind the old window and acknowledges readiness; never topmost or on the taskbar, and cleans up on cancellation or timeout.
         /// </summary>
-        public const string CoverScript = @"param([string]$Image, [int]$X, [int]$Y, [int]$W, [int]$H, [int]$OldPid, [string]$EventName, [string]$Text)
-$ErrorActionPreference = 'SilentlyContinue'
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-try { Add-Type -Namespace VsmCover -Name Dpi -MemberDefinition '[DllImport(""user32.dll"")] public static extern bool SetProcessDpiAwarenessContext(System.IntPtr v); [DllImport(""user32.dll"")] public static extern bool SetProcessDPIAware();'
-  if (-not [VsmCover.Dpi]::SetProcessDpiAwarenessContext([IntPtr](-4))) { [void][VsmCover.Dpi]::SetProcessDPIAware() } } catch { }
-$created = $false
-$ev = New-Object System.Threading.EventWaitHandle($false, [System.Threading.EventResetMode]::ManualReset, $EventName, [ref]$created)
-$start = Get-Date
+        public const string CoverScript = @"param([string]$Image, [int]$X, [int]$Y, [int]$W, [int]$H, [int]$OldPid, [long]$OldWindow, [string]$EventName, [string]$Text)
+$ErrorActionPreference = 'Stop'
+$ev = $null; $ready = $null; $bmp = $null; $f = $null; $t = $null
 try {
-  while ($true) {
-    if ($ev.WaitOne(200)) { return }
-    if (-not (Get-Process -Id $OldPid -ErrorAction SilentlyContinue)) { break }
-    if (((Get-Date) - $start).TotalSeconds -gt 90) { return }
+  $ev = [System.Threading.EventWaitHandle]::OpenExisting($EventName)
+  $ready = [System.Threading.EventWaitHandle]::OpenExisting($EventName + '-ready')
+  if ($ev.WaitOne(0)) { return }
+  Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+  Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @'
+using System;
+using System.Windows.Forms;
+using System.Runtime.InteropServices;
+namespace VsmCover {
+  public sealed class CoverForm : Form {
+    protected override bool ShowWithoutActivation { get { return true; } }
+    protected override CreateParams CreateParams {
+      get { var p = base.CreateParams; p.ExStyle |= 0x08000080; return p; }
+    }
+    [DllImport(""user32.dll"")] public static extern IntPtr GetForegroundWindow();
+    [DllImport(""user32.dll"")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int w, int hgt, uint flags);
+    [DllImport(""user32.dll"")] public static extern bool SetProcessDpiAwarenessContext(IntPtr v);
+    [DllImport(""user32.dll"")] public static extern bool SetProcessDPIAware();
   }
+}
+'@
+  try { if (-not [VsmCover.CoverForm]::SetProcessDpiAwarenessContext([IntPtr](-4))) { [void][VsmCover.CoverForm]::SetProcessDPIAware() } } catch { }
+  if ($ev.WaitOne(0)) { return }
   $bmp = [System.Drawing.Image]::FromFile($Image)
-  $f = New-Object System.Windows.Forms.Form
-  $f.FormBorderStyle = 'None'; $f.StartPosition = 'Manual'; $f.ShowInTaskbar = $false
+  $f = New-Object VsmCover.CoverForm
+  $f.FormBorderStyle = 'None'; $f.StartPosition = 'Manual'; $f.ShowInTaskbar = $false; $f.Opacity = 0
   $f.Bounds = New-Object System.Drawing.Rectangle($X, $Y, $W, $H)
   $f.BackgroundImage = $bmp; $f.BackgroundImageLayout = 'Stretch'
   $l = New-Object System.Windows.Forms.Label
-  $l.AutoSize = $true; $l.Text = $Text; $l.Padding = New-Object System.Windows.Forms.Padding(14, 8, 14, 8)
+  $l.AutoSize = $true; $l.Text = $Text; $l.Visible = $false; $l.Padding = New-Object System.Windows.Forms.Padding(14, 8, 14, 8)
   $l.BackColor = [System.Drawing.Color]::FromArgb(62, 52, 96); $l.ForeColor = [System.Drawing.Color]::White
   $l.Font = New-Object System.Drawing.Font('Microsoft YaHei UI', 10)
   $f.Controls.Add($l)
-  $f.Add_Shown({ $l.Left = [Math]::Max(0, [int](($f.ClientSize.Width - $l.Width) / 2)); $l.Top = [Math]::Max(0, $f.ClientSize.Height - $l.Height - 48) })
+  $clock = [System.Diagnostics.Stopwatch]::StartNew()
+  $script:exitedAt = -1
+  $f.Add_Shown({
+    if ($ev.WaitOne(0) -or [VsmCover.CoverForm]::GetForegroundWindow() -ne [IntPtr]$OldWindow) { $f.Close(); return }
+    if (-not [VsmCover.CoverForm]::SetWindowPos($f.Handle, [IntPtr]$OldWindow, 0, 0, 0, 0, 0x13)) { $f.Close(); return }
+    # 旧窗口置顶也不让截图继承置顶 / Do not inherit topmost status from the old window.
+    if (-not [VsmCover.CoverForm]::SetWindowPos($f.Handle, [IntPtr](-2), 0, 0, 0, 0, 0x13)) { $f.Close(); return }
+    $l.Left = [Math]::Max(0, [int](($f.ClientSize.Width - $l.Width) / 2)); $l.Top = [Math]::Max(0, $f.ClientSize.Height - $l.Height - 48)
+    $f.Opacity = 1; $f.Update(); [void]$ready.Set()
+  })
+  $f.Add_MouseDown({ $f.Close() }); $l.Add_MouseDown({ $f.Close() })
   $t = New-Object System.Windows.Forms.Timer
-  $t.Interval = 150
-  $t.Add_Tick({ if ($ev.WaitOne(0) -or ((Get-Date) - $start).TotalSeconds -gt 240) { $t.Stop(); $f.Close() } })
+  $t.Interval = 75
+  $t.Add_Tick({
+    if ($ev.WaitOne(0) -or $clock.Elapsed.TotalSeconds -gt 240) { $f.Close(); return }
+    if ($script:exitedAt -lt 0) {
+      if (-not (Get-Process -Id $OldPid -ErrorAction SilentlyContinue)) { $script:exitedAt = $clock.ElapsedMilliseconds }
+      elseif ([VsmCover.CoverForm]::GetForegroundWindow() -ne [IntPtr]$OldWindow -or $clock.Elapsed.TotalSeconds -gt 90) { $f.Close(); return }
+    }
+    if ($script:exitedAt -ge 0 -and $clock.ElapsedMilliseconds - $script:exitedAt -ge 1500) { $l.Visible = $true }
+  })
   $t.Start()
   [System.Windows.Forms.Application]::Run($f)
-  $bmp.Dispose()
 } finally {
-  $ev.Dispose()
+  if ($t) { $t.Dispose() }
+  if ($f) { $f.Dispose() }
+  if ($bmp) { $bmp.Dispose() }
+  if ($ready) { $ready.Dispose() }
+  if ($ev) { $ev.Dispose() }
   Remove-Item -LiteralPath $Image -Force -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $MyInvocation.MyCommand.Path -Force -ErrorAction SilentlyContinue
 }
