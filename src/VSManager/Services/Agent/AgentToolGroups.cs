@@ -37,7 +37,7 @@ namespace VSManager
             new Group
             {
                 Key = "layout", Title = "屏幕布局与 Copilot 窗格 / Screen layout and Copilot panes",
-                Tools = new[] { "close_cs_tabs", "dock_copilot_panes", "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout", "arrange_copilot_panes", "restore_copilot_layout", "open_copilot" },
+                Tools = new[] { "close_cs_tabs", "dock_copilot_panes", "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout", "save_layout_memory", "apply_layout_memory", "list_layout_memories", "delete_layout_memory", "arrange_copilot_panes", "restore_copilot_layout", "open_copilot" },
                 Trigger = new Regex(@"布局|屏幕|显示器|多屏|窗口|排列|停靠|摆放|标签页|窗格|layout|screen|monitor|display|arrange|dock|window|\btabs?\b|pane", Opt),
             },
             new Group

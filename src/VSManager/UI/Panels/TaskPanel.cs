@@ -596,9 +596,11 @@ if (c != null)
                 dispatch.Visible = dispatch.Enabled = has && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
                 retry.Visible = retry.Enabled = has && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Cancelled || t.Status == QueueStatus.Unverified);
                 verify.Visible = verify.Enabled = has && TaskTestChecklist.Pending(t);
-                supplement.Visible = has && TaskStateMachine.IsHoldOutcome(t);
+                supplement.Visible = has && TaskStateMachine.CanSupplement(t);
                 supplement.Enabled = supplement.Visible;
-                supplement.Text = has && t.SupplementCount > 0
+                supplement.Text = has && TaskStateMachine.IsQueued(t)
+                    ? "补充要求（合并到此任务）… / Add to this task…"
+                    : has && t.SupplementCount > 0
                     ? $"补充信息后重试…（已补充 {t.SupplementCount} 次）/ Retry with info… ({t.SupplementCount} so far)"
                     : "补充信息后重试… / Retry with info…";
                 // 仅当前等级下会阻塞后续的结果才需要放行 / Release only matters for outcomes that block at the current level

@@ -19,11 +19,13 @@ namespace VSManager
         /// <summary>等待监听程序释放剪贴板的上限。/ Upper bound for waiting until listeners release the clipboard.</summary>
         private const int ClipboardReleaseTimeoutMs = 2000;
         /// <summary>单张图片等待附件出现的总时长。/ Total time to wait for one image's attachment.</summary>
-        private const int ImageConfirmTimeoutMs = 12000;
+        private const int ImageConfirmTimeoutMs = 15000;
         /// <summary>这么久仍没有新附件时补粘一次。/ Paste once more when no attachment has appeared after this long.</summary>
-        private const int RepasteAfterMs = 3000;
-        /// <summary>图片确认后、粘贴下一张前的间隔。/ Pause after an image is confirmed, before the next paste.</summary>
-        private const int ImageSettleMs = 300;
+        private const int RepasteAfterMs = 2500;
+        /// <summary>单张图片最多补粘次数。/ Maximum re-pastes for one image.</summary>
+        private const int MaxRepastes = 3;
+        /// <summary>图片确认后、粘贴下一张前的间隔（VS 处理刚加入的图片期间会忽略粘贴）。/ Pause after an image is confirmed, before the next paste (VS ignores pastes while processing the image just added).</summary>
+        private const int ImageSettleMs = 800;
 
         private string SendImages(VsInstance vs, AutomationElement pane, AutomationElement edit,
             string text, IReadOnlyList<ChatImage> images, IntPtr returnTo)
@@ -156,6 +158,8 @@ namespace VSManager
                     var started = DateTime.UtcNow;
                     var until = started.AddMilliseconds(ImageConfirmTimeoutMs);
                     bool repasted = false;
+                    int repastes = 0;
+                    var lastPaste = started;
                     var state = ImagePasteState.Pending;
                     HashSet<string> current = null;
                     do
@@ -169,19 +173,22 @@ namespace VSManager
                         else current = AttachmentIds(pane);
                         state = ImagePasteCheck.Evaluate(baseline, confirmedCount, current.Count);
                         if (state != ImagePasteState.Pending) break;
-                        // 一直没有新附件：这次粘贴没被 VS 接收（未加入任何内容），重新写入并再粘贴一次，只补粘一次。
-                        // Still no new attachment: VS did not take this paste (nothing was added), so write and paste once more, only once.
-                        if (!repasted && DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(RepasteAfterMs) && current.Count == baseline + confirmedCount)
+                        // 一直没有新附件：这次粘贴没被 VS 接收（未加入任何内容），重新写入并再粘贴。
+                        // Still no new attachment: VS did not take this paste (nothing was added), so write and paste again.
+                        // 多图时 VS 可能还在处理上一张而忽略这次粘贴：每次补粘前重新写入图片（新的剪贴板版本），最多补粘 MaxRepastes 次。
+                        // With several images VS may still be busy with the previous one and ignore this paste: rewrite the image
+                        // (fresh clipboard version) before each re-paste, up to MaxRepastes times.
+                        if (repastes < MaxRepastes && DateTime.UtcNow - lastPaste >= TimeSpan.FromMilliseconds(RepasteAfterMs) && current.Count == baseline + confirmedCount)
                         {
                             if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
-                            if (GetClipboardSequenceNumber() != clipboardVersion)
-                            {
-                                using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
-                                clipboardVersion = GetClipboardSequenceNumber();
-                            }
+                            using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
+                            clipboardVersion = GetClipboardSequenceNumber();
                             DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
-                            T($"图片 / image {index + 1}/{images.Count}：{RepasteAfterMs} ms 内未出现附件，重新粘贴 / no attachment yet, pasting again");
+                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
+                            repastes++;
+                            T($"图片 / image {index + 1}/{images.Count}：{RepasteAfterMs} ms 内未出现附件，第 {repastes} 次重新粘贴 / no attachment yet, re-paste #{repastes}");
                             Combo(VK_CONTROL, VK_V);
+                            lastPaste = DateTime.UtcNow;
                             repasted = true;
                         }
                     } while (DateTime.UtcNow < until && ForegroundIs(vs));
@@ -210,6 +217,7 @@ namespace VSManager
                 blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
                 if (blocked != null) return blocked;
                 // 只提交一次，延迟确认不能触发重复发送。/ Submit once; delayed acknowledgement must not cause duplicate prompts.
+                Stage(SendStage.Submit);
                 if (!TryInvokeSend(pane)) return "图片已附加，但发送按钮不可用；请在 VS 中检查模型是否支持图片后发送";
                 var sentUntil = DateTime.UtcNow.AddSeconds(5);
                 do

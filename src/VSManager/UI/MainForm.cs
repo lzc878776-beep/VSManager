@@ -470,6 +470,7 @@ namespace VSManager
 			ctx.Items.Add("生成解决方案", null, (s, e) => DoDebug("build"));
 			ctx.Items.Add("关闭所有 .cs 标签页 / Close all .cs tabs", null, async (s, e) => { if (Check()) await CloseCsTabsAsync(Selected); });
 			ctx.AddGroup("管理与诊断 / Management and diagnostics");
+			ctx.Items.Add("发送诊断 / Send diagnostics", null, (s, e) => OpenSendDiagnostics(Selected?.Pid));
 			ctx.Items.Add("查看发送日志", null, (s, e) => OpenSendLog());
 			ctx.Items.Add("打开配置目录", null, (s, e) =>
 			{
@@ -478,6 +479,17 @@ namespace VSManager
 			});
 			ctx.Items.Add("属性…", null, (s, e) => OpenSettings());
 			return ctx;
+		}
+
+		private SendDiagnosticsForm _sendDiagnostics;
+
+		/// <summary>打开（或激活）发送诊断面板；pid 为 null 时显示全部 VS。/ Opens (or activates) the send diagnostics panel; a null pid shows every VS.</summary>
+		private void OpenSendDiagnostics(int? pid)
+		{
+			if (_sendDiagnostics != null && !_sendDiagnostics.IsDisposed) _sendDiagnostics.Close();
+			_sendDiagnostics = new SendDiagnosticsForm(pid, OpenSendLog);
+			_sendDiagnostics.FormClosed += (s, e) => _sendDiagnostics = null;
+			_sendDiagnostics.Show(this);
 		}
 
 		private void OpenSendLog()
@@ -1341,8 +1353,9 @@ namespace VSManager
 		/// <summary>发送到指定 VS 的 Copilot（界面与网页远程共用）。必须在界面线程调用。</summary>
 		private async Task<string> SendChatCore(VsInstance v, string text, IReadOnlyList<ChatImage> images = null, Func<bool> queueGuard = null)
 		{
-			if (_sending) { SendLog.Event(NameOf(v), "发送被拒绝：另一条消息正在发送"); return "另一条消息正在发送，请稍后再试"; }
-			if (v.Copilot == CopilotState.Busy) { SendLog.Event(NameOf(v), "发送被拒绝：Copilot 状态为运行中"); return "Copilot 正在运行，请等待完成或先停止"; }
+			long diagSeq = SendDiagnosis.LastSeq;
+			if (_sending) { SendLog.Event(NameOf(v), "发送被拒绝：另一条消息正在发送"); return DiagnoseQueue(v, "另一条消息正在发送，请稍后再试"); }
+			if (v.Copilot == CopilotState.Busy) { SendLog.Event(NameOf(v), "发送被拒绝：Copilot 状态为运行中"); return DiagnoseQueue(v, "Copilot 正在运行，请等待完成或先停止"); }
 			_sending = true;
 			// 在文档清理等任何 DTE 调用之前记录前台窗口 / Record the foreground before any DTE call such as the document cleanup
 			var foreground = ForegroundKeeper.Capture();
@@ -1363,9 +1376,9 @@ namespace VSManager
 				if (queueGuard != null && _settings.WaitForManualChat)
 				{
 					var observation = await ((IManualChatDispatchHost)this).ObserveManualChatAsync(v);
-					if (ManualChatProtection.Blocks(observation)) return ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(observation);
+					if (ManualChatProtection.Blocks(observation)) return DiagnoseQueue(v, ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(observation));
 				}
-				if (queueGuard != null && !queueGuard()) return ManualChatProtection.WaitPrefix + "任务或目标已变化 / Task or target changed";
+				if (queueGuard != null && !queueGuard()) return DiagnoseQueue(v, ManualChatProtection.WaitPrefix + "任务或目标已变化 / Task or target changed");
 				int threshold = _settings.CloseVsDocumentsThreshold;
 				r = await PreSendDocumentCleanup.SendAsync(_settings.CloseVsDocumentsBeforeSend,
 					() => DteWorker.RunSta(() => VsDocumentCleanup.Run(v, threshold, message => SendLog.Event(NameOf(v), message))),
@@ -1380,15 +1393,22 @@ namespace VSManager
 				_chatSvc.Paused = false;
 				_sending = false;
 				_chat.SetSending(false);
-				RestoreForeground(foreground, v);
+				_focusDiagSeq = diagSeq;
+				string restored = RestoreForeground(foreground, v);
+				_focusDiagSeq = null;
+				if (restored != null)
+					SendDiagnosis.UpdateFocus(v.Pid, diagSeq, !foreground.IsStolen(new[] { v.Pid }), "VSManager 切回 / VSManager switch-back：" + restored);
 			}
+			// 发送器未留下记录（文档清理拦截、线程异常等）时补一条「排队」记录 / Add a queue-step record when the sender left none (document cleanup, thread exception…)
+			if (SendDiagnosis.Since(v.Pid, diagSeq).Count == 0) DiagnoseQueue(v, r);
+			else SendDiagnosis.Annotate(v.Pid, diagSeq, NameOf(v), null);
 			if (SendRetryPolicy.IsDelivered(r))
 			{
 				_awaitReply[v.Pid] = DateTime.Now.AddSeconds(20);
 				_recentSends.RemoveAll(x => (DateTime.Now - x.At).TotalMinutes > 30);
 				if (queueGuard != null && !string.IsNullOrWhiteSpace(text)) _recentSends.Add((v.Pid, Squash(text), DateTime.Now));
 			}
-			SetStatus($"「{NameOf(v)}」{r}" + (SendRetryPolicy.IsDelivered(r) ? "" : "　·　右键 VS →「查看发送日志」"));
+			SetStatus($"「{NameOf(v)}」{r}" + (SendRetryPolicy.IsDelivered(r) ? "" : "　·　右键 VS →「发送诊断」"));
 			UpdateChatHeader();
 			_chatSvc.Poke();
 			return r;
@@ -1398,16 +1418,80 @@ namespace VSManager
 		/// 操作结束后，若前台被这些 VS 抢走则切回操作前的窗口，并记入发送日志。必须在界面线程调用。
 		/// After an operation, switches back to the previous window if these VS took the foreground, and logs it. Call on the UI thread.
 		/// </summary>
-		private void RestoreForeground(ForegroundKeeper keeper, params VsInstance[] vs)
+		private string RestoreForeground(ForegroundKeeper keeper, params VsInstance[] vs)
 		{
-			if (keeper == null || IsDisposed || !IsHandleCreated) return;
+			if (keeper == null || IsDisposed || !IsHandleCreated) return null;
 			try
 			{
 				var targets = vs.Where(x => x != null).ToArray();
 				string r = keeper.RestoreIfStolen(targets.Select(x => x.Pid), Handle, TopMost);
 				if (r != null) SendLog.Event(targets.Length == 1 ? NameOf(targets[0]) : "VSManager", r);
+				GuardForeground(keeper, targets, _focusDiagSeq);
+				return r;
 			}
-			catch (Exception ex) { SendLog.Event("VSManager", "切回前台窗口失败 / Failed to restore the foreground window：" + ex.Message); }
+			catch (Exception ex)
+			{
+				SendLog.Event("VSManager", "切回前台窗口失败 / Failed to restore the foreground window：" + ex.Message);
+				return null;
+			}
+		}
+
+		/// <summary>发送诊断记录的起始序号（仅在发送后切回期间有值）。/ Diagnosis sequence of the current send (set only while restoring after a send).</summary>
+		private long? _focusDiagSeq;
+
+		/// <summary>
+		/// 为未进入发送器的发送（发送前检查未通过）记一条「排队」步骤的诊断，并原样返回结果。
+		/// Records a queue-step diagnosis for a send that never reached the sender (pre-send checks failed) and returns the result unchanged.
+		/// </summary>
+		private string DiagnoseQueue(VsInstance v, string result)
+		{
+			SendDiagnosis.Add(v.Pid, NameOf(v), SendStage.Queue, result, null, null, 0, new[] { "发送前检查 / Pre-send check：" + result });
+			return result;
+		}
+
+		private System.Windows.Forms.Timer _foregroundGuard;
+
+		/// <summary>
+		/// 操作结束后继续守护前台数秒：VS 延迟激活自己、或临时窗口关闭后系统把前台交给 VS 时切回原窗口（原窗口已失效时切回 VSManager）；
+		/// 用户一有键盘 / 鼠标操作就停止，不与用户抢焦点。必须在界面线程调用。
+		/// Keeps guarding the foreground for a few seconds after an operation: when VS activates itself late, or the system hands VS the
+		/// foreground after a transient window closed, switches back to the original window (VSManager if it is gone). Stops as soon as
+		/// the user types or clicks, so it never fights the user. Call on the UI thread.
+		/// </summary>
+		private void GuardForeground(ForegroundKeeper keeper, VsInstance[] targets, long? diagSeq = null)
+		{
+			_foregroundGuard?.Dispose();
+			_foregroundGuard = null;
+			if (keeper == null || targets.Length == 0) return;
+			var pids = targets.Select(x => x.Pid).ToArray();
+			string name = targets.Length == 1 ? NameOf(targets[0]) : "VSManager";
+			int start = Environment.TickCount, since = start, restores = 0;
+			var timer = new System.Windows.Forms.Timer { Interval = ForegroundKeeper.GuardTickMs };
+			timer.Tick += (s, e) =>
+			{
+				if (IsDisposed || timer != _foregroundGuard) { timer.Dispose(); return; }
+				int idle = UserActivity.IdleMs();
+				bool acted = idle != int.MaxValue && ForegroundKeeper.UserActedSince(unchecked(Environment.TickCount - idle), since);
+				var step = ForegroundKeeper.NextGuardStep(unchecked(Environment.TickCount - start), acted || restores >= ForegroundKeeper.GuardMaxRestores, keeper.IsStolen(pids));
+				if (step == ForegroundKeeper.GuardStep.Wait) return;
+				if (step == ForegroundKeeper.GuardStep.Stop) { timer.Dispose(); _foregroundGuard = null; return; }
+				try
+				{
+					restores++;
+					string r = keeper.RestoreIfStolen(pids, Handle, TopMost);
+					if (r != null) SendLog.Event(name, "延迟 / delayed：" + r);
+					if (r != null && diagSeq.HasValue)
+					{
+						bool ok = !keeper.IsStolen(pids);
+						foreach (int pid in pids) SendDiagnosis.UpdateFocus(pid, diagSeq.Value, ok, "延迟切回 / delayed switch-back：" + r);
+					}
+				}
+				catch (Exception ex) { SendLog.Event("VSManager", "切回前台窗口失败 / Failed to restore the foreground window：" + ex.Message); }
+				// 切回可能模拟 Alt 键，不把它当作用户操作 / Switching back may synthesize Alt; do not count it as user input
+				since = Environment.TickCount + 100;
+			};
+			_foregroundGuard = timer;
+			timer.Start();
 		}
 
 		#region IRemoteHost（网页远程控制，均可在后台线程调用）
@@ -2200,7 +2284,8 @@ namespace VSManager
 					return;
 				case "remove_invalid": RemoveInvalidTasks(); return;
 				case "retry":
-					if (MessageBox.Show(this, "请先检查目标 Copilot 的历史消息和草稿，确认需要重新发送。本操作只重新排队当前任务，不会覆盖已有草稿。\nVerify prior delivery and the target draft before resending. Only this task is requeued; existing drafts are never overwritten.",
+					if (SendDiagnosis.IsUncertainFailure(t)) { if (!ConfirmUncertainResend(t)) return; }
+					else if (MessageBox.Show(this, "请先检查目标 Copilot 的历史消息和草稿，确认需要重新发送。本操作只重新排队当前任务，不会覆盖已有草稿。\nVerify prior delivery and the target draft before resending. Only this task is requeued; existing drafts are never overwritten.",
 						"手动重新排队 / Requeue manually", MessageBoxButtons.OKCancel, MessageBoxIcon.Warning) != DialogResult.OK) return;
 					// 手动重新排队复用原条目，不再隐藏 / A manual requeue reuses the entry, which is no longer hidden
 					if (TaskHideList.Remove(_settings.HiddenResentTasks, t.Id)) _settings.Save();

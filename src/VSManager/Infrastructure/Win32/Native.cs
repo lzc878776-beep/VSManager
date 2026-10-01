@@ -110,7 +110,8 @@ namespace VSManager
             if (attached) AttachThreadInput(me, fgThread, false);
             if (!ok || GetForegroundWindow() != h)
             {
-                // Alt 键技巧：解除系统前台锁定
+                // Alt 键技巧：解除系统前台锁定 / Alt-key trick: release the system foreground lock
+                UserActivity.MarkSynthetic();
                 keybd_event(0x12, 0, 0, UIntPtr.Zero);
                 keybd_event(0x12, 0, 2, UIntPtr.Zero);
                 SetForegroundWindow(h);

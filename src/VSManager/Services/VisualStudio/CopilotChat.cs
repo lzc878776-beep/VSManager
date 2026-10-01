@@ -699,6 +699,9 @@ namespace VSManager
 
         private static void T(string s) => _trace?.Step(s);
 
+        /// <summary>进入发送诊断的某一步。/ Enters a send-diagnosis step.</summary>
+        private static void Stage(SendStage stage) => _trace?.Enter(stage);
+
         private static string Short(string s, int max = 40)
         {
             if (_queueGuard != null) return "输入内容已隐藏 / Input content redacted";
@@ -799,7 +802,11 @@ namespace VSManager
             // 任何提前返回（等待、失败）也要切回：打开窗格或激活定位都可能已把 VS 带到前台。
             // Every early return (wait, failure) also switches back: opening the pane or activating to locate may have brought VS forward.
             try { return SendCoreInner(vs, text, back, returnTo, fgBefore, background, images); }
-            finally { if (!fgBefore) ReturnFocus(vs, back, returnTo); }
+            finally
+            {
+                if (!fgBefore) ReturnFocus(vs, back, returnTo);
+                else _trace?.Focus(SendStageState.Skipped, "发送前用户就在该 VS 中 / the user was already in this VS");
+            }
         }
 
         private string SendCoreInner(VsInstance vs, string text, IntPtr returnTo, IntPtr app, bool fgBefore, bool background, IReadOnlyList<ChatImage> images)
@@ -813,6 +820,7 @@ namespace VSManager
             text = (text ?? "").Replace("\r\n", "\n").Replace('\r', '\n').Trim();
             T("发送前 VS 在前台 / VS foreground before=" + fgBefore + "，切回目标 / return target=0x" + returnTo.ToInt64().ToString("X"));
 
+            Stage(SendStage.Locate);
             var pane = FindPane(vs);
             if (_queueGuard != null)
             {
@@ -884,6 +892,7 @@ namespace VSManager
             if (busyBefore) return _queueGuard != null ? ManualChatProtection.WaitPrefix + ManualChatProtection.Reason(ManualChatObservation.Generating)
                 : "Copilot 仍在处理上一条消息（VS 中存在停止按钮），请等待完成或先停止后再发送";
 
+            Stage(SendStage.Fill);
             string r = null;
             if (hasImages) r = WaitUserIdle(vs) ?? SendImages(vs, pane, edit, text, images, returnTo);
             else
@@ -900,6 +909,7 @@ namespace VSManager
             }
             // 打开窗格等 DTE 命令可能把 VS 带到前台：发送后切回本工具，保持用户当前界面
             if (!fgBefore) ReturnFocus(vs, returnTo, app);
+            if (r.StartsWith("已发送")) Stage(SendStage.Confirm);
             if (r.StartsWith("已发送") && !ConfirmDelivered(vs, pane, itemsBefore, hasImages && string.IsNullOrWhiteSpace(text) ? "" : text, 5000))
                 r = "输入框已清空，但未在对话中确认到新消息，可能未送达，请在 VS 中查看（详见发送日志）";
             Poke();
@@ -1061,6 +1071,7 @@ namespace VSManager
 
                 blocked = GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
                 if (blocked != null) return blocked;
+                Stage(SendStage.Submit);
                 T("后台：内容已写入，发送 Enter");
                 PostKey(target, 0x0D, 0x1C); // Enter
                 if (WaitSent(pane, edit, 2000)) return "已发送";
@@ -1100,7 +1111,12 @@ namespace VSManager
         private const byte VK_CONTROL = 0x11, VK_SHIFT = 0x10, VK_MENU = 0x12, VK_RETURN = 0x0D, VK_A = 0x41, VK_V = 0x56;
         private const uint KEYUP = 2;
 
-        private static void Key(byte vk, bool up) => Native.keybd_event(vk, 0, up ? KEYUP : 0, UIntPtr.Zero);
+        private static void Key(byte vk, bool up)
+        {
+            // 标记为本程序的模拟输入，避免后续队列发送误判用户正在操作 / Mark as our own input so later queued sends do not think the user is active
+            UserActivity.MarkSynthetic();
+            Native.keybd_event(vk, 0, up ? KEYUP : 0, UIntPtr.Zero);
+        }
 
         private static void Combo(byte mod, byte vk)
         {
@@ -1146,6 +1162,8 @@ namespace VSManager
         private string WaitUserIdle(VsInstance vs)
         {
             if (_queueGuard == null) return null;
+            // 目标 VS 已在前台时无需切换前台，不必等待 / No foreground switch is needed when the target VS is already in front
+            if (ForegroundIs(vs)) return null;
             if (UserActivity.WaitIdle(UserIdleSource, UserActivity.RequiredIdleMs, UserActivity.MaxWaitMs)) return null;
             T("前台：用户正在操作电脑，暂不切换到 VS，稍后重试 / user is active; not switching to VS, retrying later");
             return SendRetryPolicy.UserBusyPrefix + "用户正在操作电脑，稍后自动发送 / The user is working; sending automatically later";
@@ -1181,7 +1199,11 @@ namespace VSManager
         /// </summary>
         private static void ReturnFocus(VsInstance vs, IntPtr returnTo, IntPtr app)
         {
-            if (!ForegroundIs(vs)) return;
+            if (!ForegroundIs(vs))
+            {
+                _trace?.Focus(SendStageState.Ok, "VS 未占据前台，无需切回 / VS not in front; nothing to restore");
+                return;
+            }
             for (int attempt = 0; attempt < 3 && ForegroundIs(vs); attempt++)
             {
                 IntPtr target = attempt == 0 && Usable(returnTo) ? returnTo : Usable(app) ? app : returnTo;
@@ -1190,7 +1212,12 @@ namespace VSManager
                 Native.Activate(target);
                 Thread.Sleep(150);
             }
-            if (ForegroundIs(vs)) T("⚠ 未能切回本工具，VS 仍在前台 / could not switch back; VS is still in front");
+            if (ForegroundIs(vs))
+            {
+                T("⚠ 未能切回本工具，VS 仍在前台 / could not switch back; VS is still in front");
+                _trace?.Focus(SendStageState.Failed, "VS 仍在前台，未能切回 / VS is still in front; could not switch back");
+            }
+            else _trace?.Focus(SendStageState.Ok, "已切回 / switched back");
         }
 
         private static bool Usable(IntPtr h) => h != IntPtr.Zero && Native.IsWindow(h) && Native.IsWindowVisible(h);
@@ -1271,6 +1298,7 @@ namespace VSManager
                     T("前台：无法读取输入框文本，但水印已隐藏、剪贴板内容正确且焦点在输入框，继续发送并以送达确认为准 / " +
                       "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
 
+                Stage(SendStage.Submit);
                 string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
                 if (beforeSubmit != null) return beforeSubmit;
                 if (!ForegroundIs(vs) || !HasFocus(edit))

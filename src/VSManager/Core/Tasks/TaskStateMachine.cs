@@ -146,8 +146,12 @@ namespace VSManager
             bool prior = !string.IsNullOrEmpty(t.PriorFailure), sup = !string.IsNullOrEmpty(t.Supplement);
             if (round > 1) sb.Append("【第 ").Append(round).Append(" 轮】本需求此前已执行 ").Append(round - 1).Append(" 次未通过。");
             if (prior) sb.Append("【前次尝试反馈】").Append(t.PriorFailure).Append(' ');
-            if (sup) sb.Append("【补充信息】").Append(t.Supplement).Append(' ');
-            if (sup) sb.Append("请以补充信息为准（与前次反馈或此前做法冲突时以补充信息为准）继续完成本任务，")
+            // 尚未执行过的任务：补充要求是任务本身的一部分，没有「上次」可言 / Never run yet: the supplement is part of the task itself; there is no "last time"
+            bool firstRun = round == 1 && !prior && t.SupplementCount == 0;
+            if (sup && firstRun)
+                sb.Append("【补充要求】").Append(t.Supplement).Append(" 以上补充要求是本任务的一部分，请与任务要求一并完成（冲突时以补充要求为准）。 ");
+            else if (sup) sb.Append("【补充信息】").Append(t.Supplement).Append(' ');
+            if (sup && !firstRun) sb.Append("请以补充信息为准（与前次反馈或此前做法冲突时以补充信息为准）继续完成本任务，")
                 .Append(prior ? "前次反馈中无关的遗留问题可忽略，" : "").Append("不要原样重复上次的步骤。 ");
             else if (prior) sb.Append("请先判断上述反馈中哪些问题属于本任务范围、哪些是无关的遗留问题，针对反馈调整做法，不要原样重复上次的步骤。 ");
             else if (round > 1) sb.Append("请调整做法，不要原样重复上次的步骤。 ");
@@ -435,6 +439,13 @@ namespace VSManager
         public static bool IsHoldOutcome(QueuedTask t) =>
             t != null && (t.Status == QueueStatus.Failed || t.Status == QueueStatus.Unverified);
 
+        /// <summary>是否仍在排队、尚未开始发送（补充要求可直接合并到原任务）。/ Whether the task is still queued and not yet being sent (supplements merge into it directly).</summary>
+        public static bool IsQueued(QueuedTask t) =>
+            t != null && (t.Status == QueueStatus.Waiting || t.Status == QueueStatus.WaitingVs);
+
+        /// <summary>是否可以补充信息：排队中（合并到原任务）或失败 / 待验证（补充后重试）。/ Whether info can be added: queued (merged into the task) or failed / awaiting verification (retried with it).</summary>
+        public static bool CanSupplement(QueuedTask t) => IsQueued(t) || IsHoldOutcome(t);
+
         /// <summary>
         /// 放行：失败或待验证的任务不再暂停后续，结果保持不变。
         /// Release: a failed or awaiting-verification task stops pausing successors; its outcome is kept.
@@ -448,20 +459,30 @@ namespace VSManager
 
         /// <summary>
         /// 插入补充信息并重新排队（失败或待验证；<paramref name="enforceLimit"/> 为 true 时最多 <see cref="MaxSupplements"/> 次，用户补充不限）；前次反馈一并带上。
+        /// 任务仍在排队时只把补充合并到原任务，不重新排队、不计次数。
         /// <paramref name="replace"/> 为 true 时 info 是整合后的完整重试说明，替换此前累积的补充信息、前次反馈与接续说明；
         /// <paramref name="freshContext"/> 为 true 表示 Copilot 对话已清空，提示其重新阅读相关内容。
         /// Adds supplementary info and requeues (failed or awaiting verification; at most <see cref="MaxSupplements"/> times when
         /// <paramref name="enforceLimit"/> is true, unlimited for user supplements); the previous feedback is carried along.
         /// With <paramref name="replace"/> the info is a consolidated retry brief replacing the accumulated supplements, previous
         /// feedback and continuation note; <paramref name="freshContext"/> means the Copilot conversation was cleared and Copilot
-        /// should re-read the relevant content.
+        /// should re-read the relevant content. A still-queued task just gets the info merged in, without requeueing or counting.
         /// </summary>
         public static bool Supplement(QueuedTask t, string info, out string error, bool enforceLimit = true, bool replace = false, bool freshContext = false)
         {
             error = null;
             info = info?.Trim();
             if (string.IsNullOrEmpty(info)) { error = "补充信息不能为空 / Supplementary info is empty"; return false; }
-            if (!IsHoldOutcome(t)) { error = "只有失败或待验证的任务可以补充信息重试 / Only failed or awaiting-verification tasks can be retried with info"; return false; }
+            if (IsQueued(t))
+            {
+                // 排队中：合并到原任务，发送时一并带上；不重新排队、不计补充次数（还没有消耗 Copilot 执行）
+                // Queued: merge into the task and send it along; no requeue and no supplement count (no Copilot run was used)
+                t.Supplement = replace || string.IsNullOrEmpty(t.Supplement) ? info : t.Supplement + " ｜ " + info;
+                if (freshContext) t.FreshContext = true;
+                if (replace) t.PriorFailure = t.ResumeNote = null;
+                return true;
+            }
+            if (!IsHoldOutcome(t)) { error = "只有排队中、失败或待验证的任务可以补充信息 / Only queued, failed or awaiting-verification tasks can take supplementary info"; return false; }
             if (enforceLimit && t.SupplementCount >= MaxSupplements)
             {
                 error = $"已补充 {t.SupplementCount} 次，达到上限，请把情况告诉用户由用户决定 / Supplement limit reached ({t.SupplementCount}); hand over to the user";

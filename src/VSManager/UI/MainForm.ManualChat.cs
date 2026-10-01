@@ -16,7 +16,22 @@ namespace VSManager
             return Task.FromResult(_manualProbes.Read(target, _instances));
         }
 
-        Task<string> IManualChatDispatchHost.SendQueuedAsync(VsInstance target, QueuedTask task, Func<bool> stillValid)
+        Task<string> IManualChatDispatchHost.SendQueuedAsync(VsInstance target, QueuedTask task, Func<bool> stillValid) =>
+            WithTaskDiagnosis(target, task, () => SendQueuedCore(target, task, stillValid));
+
+        /// <summary>
+        /// 执行发送，并把本次产生的发送诊断记录关联到任务编号。
+        /// Runs the send and links the send-diagnosis records it produced to the task id.
+        /// </summary>
+        internal static async Task<string> WithTaskDiagnosis(VsInstance target, QueuedTask task, Func<Task<string>> send)
+        {
+            long seq = SendDiagnosis.LastSeq;
+            string result = await send();
+            if (target != null && task != null) SendDiagnosis.Annotate(target.Pid, seq, null, task.Id);
+            return result;
+        }
+
+        private Task<string> SendQueuedCore(VsInstance target, QueuedTask task, Func<bool> stillValid)
         {
             if (task.HasExplicitTarget) return SendMentionedQueuedAsync(target, task, stillValid);
             Func<bool> guard = () => CheckQueueSendValid(stillValid);

@@ -5,8 +5,8 @@ using System.Windows.Forms;
 namespace VSManager
 {
     /// <summary>
-    /// 为失败 / 待验证的任务输入补充信息，确认后插入补充信息重新排队。
-    /// Enters supplementary info for a failed / awaiting-verification task; on confirm the task is requeued with it.
+    /// 为失败 / 待验证的任务输入补充信息，确认后插入补充信息重新排队；排队中的任务则把补充合并到原任务。
+    /// Enters supplementary info for a failed / awaiting-verification task; on confirm the task is requeued with it. For a queued task the info is merged into it.
     /// </summary>
     public sealed class SupplementForm : Form
     {
@@ -22,7 +22,8 @@ namespace VSManager
 
         public SupplementForm(QueuedTask t)
         {
-            Text = $"补充信息后重试 #{t.Id} / Retry #{t.Id} with info";
+            bool queued = TaskStateMachine.IsQueued(t);
+            Text = queued ? $"补充要求（合并到排队中的 #{t.Id}）/ Add to queued #{t.Id}" : $"补充信息后重试 #{t.Id} / Retry #{t.Id} with info";
             Font = Theme.Regular;
             BackColor = Theme.Background;
             ForeColor = Theme.Text;
@@ -39,7 +40,9 @@ namespace VSManager
                 else if (e.KeyCode == Keys.Enter && e.Control) Confirm();
             };
 
-            string reason = t.Status == QueueStatus.Failed
+            string reason = queued
+                ? "排队中，补充要求会合并到原任务，不会新建任务 / Queued: merged into this task, no new task is created"
+                : t.Status == QueueStatus.Failed
                 ? "失败原因 / Failure: " + TextUtil.Clip(t.FailureReason ?? t.Error ?? "", 240)
                 : "待处理 / Pending: " + TextUtil.Clip(t.PendingNote ?? t.Result ?? "", 240);
             var hint = new Label
@@ -51,8 +54,10 @@ namespace VSManager
                 UseMnemonic = false,
                 Padding = new Padding(Dpi.S(10), Dpi.S(8), Dpi.S(10), 0),
                 Text = $"「{t.VsName}」任务：{TextUtil.Clip(t.Text, 120)}\r\n{reason}\r\n"
-                    + $"补充信息会与前次反馈一起发给原 VS 的 Copilot（已补充 {t.SupplementCount} 次，Ctrl+Enter 确认）"
-                    + " / Sent to the same Copilot with the previous feedback (Ctrl+Enter to confirm)"
+                    + (queued
+                        ? "发送时与任务内容一起发给 Copilot（Ctrl+Enter 确认） / Sent to Copilot together with the task (Ctrl+Enter to confirm)"
+                        : $"补充信息会与前次反馈一起发给原 VS 的 Copilot（已补充 {t.SupplementCount} 次，Ctrl+Enter 确认）"
+                            + " / Sent to the same Copilot with the previous feedback (Ctrl+Enter to confirm)")
             };
 
             _input.Dock = DockStyle.Fill;
@@ -81,7 +86,7 @@ namespace VSManager
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = Dpi.S(48), FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(Dpi.S(8)), BackColor = Theme.Sidebar };
             buttons.Controls.Add(Button("取消 / Cancel", false, () => { DialogResult = DialogResult.Cancel; Close(); }));
-            buttons.Controls.Add(Button("补充并重试 / Retry", true, Confirm));
+            buttons.Controls.Add(Button(queued ? "合并到原任务 / Merge" : "补充并重试 / Retry", true, Confirm));
 
             Controls.Add(inputHost);
             Controls.Add(hint);

@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
@@ -18,11 +20,21 @@ namespace VSManager
         private string _html = "";
         private bool _ready, _initializing, _initialNavigation;
         private bool _scrollTop;
+        // 当前显示的页面标识、Markdown 原文（\n 换行）与块位置；原文未变时不重新渲染，以免打断正在进行的就地编辑。
+        // Key, Markdown source (\n newlines) and block spans being shown; an unchanged source is not re-rendered so in-place editing is not interrupted.
+        private string _key, _source, _raw;
+        private int[][] _spans;
         public event Action<string> Error;
         /// <summary>点击笔记间相对链接（原始链接目标）。/ A relative note link was clicked (raw link target).</summary>
         public event Action<string> NoteLinkRequested;
-        /// <summary>双击阅读视图，请求进入编辑。/ The preview was double-clicked to request editing.</summary>
+        /// <summary>双击不可就地编辑的页面（如任务记录），请求打开 Markdown 源码。/ A page that cannot be edited in place (e.g. a task journal) was double-clicked to request the Markdown source.</summary>
         public event Action EditRequested;
+        /// <summary>在渲染视图中就地编辑后生成的 Markdown（页面标识, 原文）。/ Markdown produced by in-place editing in the rendered view (page key, source).</summary>
+        public event Action<string, string> MarkdownEdited;
+        /// <summary>在渲染视图中粘贴了图片。/ Images were pasted into the rendered view.</summary>
+        public event Action ImagePasteRequested;
+        /// <summary>渲染视图中的可编辑区域是否有焦点。/ Whether the editable area of the rendered view has focus.</summary>
+        internal bool EditorFocused { get; private set; }
 
         public NotebookPreview()
         {
@@ -33,11 +45,48 @@ namespace VSManager
             Controls.Add(_message);
         }
 
-        public void Render(string html, bool scrollTop)
+        public void Render(string html, bool scrollTop) => Render(html, scrollTop, null, null, null);
+
+        /// <summary>
+        /// 显示页面；spans 不为空时可在渲染视图中直接编辑。同一页面原文未变时跳过，保留光标与撤销记录。
+        /// Shows a page; it is editable in place when spans is given. The same page with an unchanged source is skipped to keep the caret and undo history.
+        /// </summary>
+        public void Render(string html, bool scrollTop, string key, string source, int[][] spans)
         {
+            string normalized = source == null ? null : NotebookStore.NormalizeNewLines(source, "\n");
+            if (!scrollTop && spans != null && _spans != null && key == _key && normalized == _source) return;
             _html = html ?? "";
+            _key = key;
+            _spans = spans;
+            _source = normalized;
+            _raw = source;
             _scrollTop |= scrollTop;
             Flush();
+        }
+
+        /// <summary>把焦点放到渲染视图的可编辑区域末尾。/ Focuses the end of the rendered view's editable area.</summary>
+        public void FocusEditor()
+        {
+            if (!_ready || IsDisposed) return;
+            _web.Focus();
+            Post(new { focus = true });
+        }
+
+        /// <summary>在渲染视图的光标处插入图片（Markdown 目标, data URI）。/ Inserts images at the rendered view's caret (Markdown target, data URI).</summary>
+        public void InsertImages(IEnumerable<KeyValuePair<string, string>> images)
+        {
+            var list = images.Select(i => new { md = i.Key, data = i.Value }).ToArray();
+            if (list.Length > 0) Post(new { images = list });
+        }
+
+        private void Post(object message)
+        {
+            if (!_ready || IsDisposed) return;
+            try { _web.CoreWebView2.PostWebMessageAsJson(_json.Serialize(message)); }
+            catch (Exception ex) when (ex is COMException || ex is InvalidOperationException)
+            {
+                ShowError("阅读视图更新失败 / Preview update failed: " + ex.Message);
+            }
         }
 
         protected override void OnHandleCreated(EventArgs e)
@@ -85,10 +134,22 @@ namespace VSManager
                 {
                     try
                     {
-                        var message = _json.Deserialize<System.Collections.Generic.Dictionary<string, object>>(e.WebMessageAsJson);
-                        if (message != null && message.TryGetValue("note", out var note) && note is string target && NotebookMarkdown.IsNoteLink(target))
+                        var message = _json.Deserialize<Dictionary<string, object>>(e.WebMessageAsJson);
+                        if (message == null) return;
+                        if (message.TryGetValue("note", out var note) && note is string target && NotebookMarkdown.IsNoteLink(target))
                             NoteLinkRequested?.Invoke(target);
-                        else if (message != null && message.ContainsKey("edit"))
+                        else if (message.TryGetValue("open", out var open) && open is string link)
+                            OpenExternal(link);
+                        else if (message.TryGetValue("md", out var md) && md is string markdown && message.TryGetValue("key", out var key) && key is string page)
+                        {
+                            if (page == _key) _source = NotebookStore.NormalizeNewLines(markdown, "\n");
+                            MarkdownEdited?.Invoke(page, markdown);
+                        }
+                        else if (message.TryGetValue("focused", out var focused) && focused is bool hasFocus)
+                            EditorFocused = hasFocus;
+                        else if (message.ContainsKey("pasteImage"))
+                            ImagePasteRequested?.Invoke();
+                        else if (message.ContainsKey("edit"))
                             EditRequested?.Invoke();
                     }
                     catch (ArgumentException) { }
@@ -120,7 +181,7 @@ namespace VSManager
             if (!_ready || IsDisposed) return;
             try
             {
-                _web.CoreWebView2.PostWebMessageAsJson(_json.Serialize(new { html = _html, top = _scrollTop }));
+                _web.CoreWebView2.PostWebMessageAsJson(_json.Serialize(new { html = _html, top = _scrollTop, key = _key ?? "", src = _raw ?? "", spans = _spans, editable = _spans != null }));
                 _scrollTop = false;
             }
             catch (Exception ex) when (ex is COMException || ex is InvalidOperationException)
@@ -204,6 +265,8 @@ main.has-journal{max-width:1100px;padding:32px 32px 100px}.task-journal [hidden]
 .tj-table tbody tr:hover,.tj-table tbody tr:focus-within{background:var(--surface)}.tj-table td:first-child,.tj-table td:last-child{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--secondary)}
 .tj-task a{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-decoration:none;color:var(--text)}.tj-task a:hover{color:var(--accent-text)}
 ::-webkit-scrollbar{width:10px;height:10px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--border);border-radius:5px}::-webkit-scrollbar-thumb:hover{background:var(--elevated)}
+main[contenteditable=true]{outline:none;min-height:100vh;caret-color:var(--accent-text)}main[contenteditable=true]:empty::before{content:attr(data-placeholder);color:var(--muted)}
+main[contenteditable=true] input[type=checkbox]{pointer-events:auto;cursor:pointer}main[contenteditable=true] .note-card,main[contenteditable=true] img{cursor:default}
 @media(max-width:600px){main,main.has-journal{padding:32px 24px 80px}h1{font-size:28px}}
 </style></head><body><main id='note'></main><script nonce='{{nonce}}'>
 const journalFilters=new Map();
@@ -218,11 +281,218 @@ journal.querySelector('.tj-empty').hidden=!!journal.querySelector('tbody tr:not(
 document.addEventListener('click',e=>{
 if(!e.target.closest)return;
 const filter=e.target.closest('[data-status-filter]');if(filter){filterJournal(filter.closest('.task-journal'),filter.dataset.statusFilter);return;}
+if(doc.editable&&note.contains(e.target)){
+// 就地编辑时单击页面链接直接跳转；网页链接单击只定位光标，Ctrl+单击才打开 / While editing in place page links open on click; web links only place the caret unless Ctrl+Clicked
+if(e.target.matches('input[type=checkbox]')){e.preventDefault();return;}
+const link=e.target.closest('a');if(!link)return;e.preventDefault();if(!link.dataset.note&&!e.ctrlKey)return;
+if(link.dataset.note)post({note:link.dataset.note});else if(/^https?:/i.test(link.getAttribute('href')||''))post({open:link.getAttribute('href')});
+return;}
 const row=e.target.closest('tr[data-task-status]');const a=e.target.closest('a[data-note]')||(row&&row.querySelector('a[data-note]'));
-if(!a)return;e.preventDefault();window.chrome.webview.postMessage({note:a.getAttribute('data-note')});
+if(!a)return;e.preventDefault();post({note:a.getAttribute('data-note')});
 });
-document.addEventListener('dblclick',e=>{if(e.target.closest&&e.target.closest('a,button,.tj-table'))return;window.chrome.webview.postMessage({edit:true});});
-window.chrome.webview.addEventListener('message',e=>{const y=window.scrollY;const note=document.getElementById('note');note.innerHTML=e.data.html;const journal=note.querySelector('.task-journal');note.classList.toggle('has-journal',!!journal);if(journal)filterJournal(journal,journalFilters.get(journal.dataset.journal)||'all');window.scrollTo(0,e.data.top?0:y);});
+document.addEventListener('dblclick',e=>{if(doc.editable||(e.target.closest&&e.target.closest('a,button,.tj-table')))return;post({edit:true});});
+const note=document.getElementById('note');
+let doc={key:'',src:'',spans:[],snap:{},editable:false},timer=0,lastRange=null;
+document.execCommand('defaultParagraphSeparator',false,'p');
+function post(m){window.chrome.webview.postMessage(m);}
+function prep(){
+if(!doc.editable){note.removeAttribute('contenteditable');return;}
+note.contentEditable='true';note.spellcheck=false;note.dataset.placeholder='在这里输入… / Start typing…';
+note.querySelectorAll('.note-card,[data-raw],.image-placeholder').forEach(x=>x.contentEditable='false');
+note.querySelectorAll('input[type=checkbox]').forEach(c=>{c.removeAttribute('disabled');c.tabIndex=-1;});
+note.querySelectorAll('a:not([data-note])').forEach(a=>a.title='Ctrl+单击打开 / Ctrl+Click to open');
+doc.snap={};for(const x of note.children)if(x.dataset.b!=null)doc.snap[x.dataset.b]=x.outerHTML;
+}
+function schedule(){if(!doc.editable)return;clearTimeout(timer);timer=setTimeout(flush,150);}
+function flush(){if(!timer)return;clearTimeout(timer);timer=0;post({md:serialize(),key:doc.key});}
+// —— 把编辑后的 DOM 转回 Markdown：未改动的块沿用原文 / Turn the edited DOM back into Markdown: untouched blocks keep their source ——
+const BLOCK=/^(P|DIV|H[1-6]|UL|OL|LI|BLOCKQUOTE|PRE|HR|TABLE|SECTION|ARTICLE|HEADER|FOOTER|FIGURE)$/;
+let inTable=false;
+function groups(c){const out=[];let run=null;for(const n of Array.from(c.childNodes)){if(n.nodeType===1&&BLOCK.test(n.tagName)){run=null;out.push({el:n});}else{if(!run){run={inl:[]};out.push(run);}run.inl.push(n);}}return out;}
+function serialize(){
+const parts=[],used=new Set();
+for(const g of groups(note)){
+if(g.el){const b=g.el.dataset.b;
+if(b!=null&&!used.has(b)&&doc.spans[b]&&(doc.snap[b]===g.el.outerHTML||g.el.contentEditable==='false')){used.add(b);parts.push({b:+b});continue;}
+const s=blockMd(g.el);if(s)parts.push({md:s});}
+else{const s=para(g.inl);if(s)parts.push({md:s});}
+}
+let out='';
+parts.forEach((p,i)=>{
+if(p.b==null){out+=(i?'\n\n':'')+p.md;return;}
+const sp=doc.spans[p.b],prev=parts[i-1];
+if(!prev)out+=p.b===0?doc.src.slice(0,sp[0]):'';
+else if(prev.b===p.b-1)out+=doc.src.slice(doc.spans[prev.b][1],sp[0]);
+else out+='\n\n';
+out+=doc.src.slice(sp[0],sp[1]);
+});
+const last=parts[parts.length-1];
+if(last&&last.b!=null&&last.b===doc.spans.length-1)out+=doc.src.slice(doc.spans[last.b][1]);else if(out)out+='\n';
+return out;
+}
+function blocks(c,tight){return groups(c).map(g=>g.el?blockMd(g.el):para(g.inl)).filter(s=>s!=='').join(tight?'\n':'\n\n');}
+function blockMd(el){
+const t=el.tagName;
+if(el.dataset.raw!=null||el.classList.contains('note-card'))return '';
+if(/^H[1-6]$/.test(t)){const s=para(Array.from(el.childNodes)).replace(/\\\n|\n/g,' ');return s?'#'.repeat(+t[1])+' '+s:'';}
+if(t==='UL'||t==='OL')return list(el);
+if(t==='BLOCKQUOTE'){const s=blocks(el);return s?s.split('\n').map(l=>l?'> '+l:'>').join('\n'):'';}
+if(t==='PRE')return fence(el);
+if(t==='HR')return '---';
+if(t==='TABLE')return table(el);
+return blocks(el);
+}
+function para(nodes){return lineEsc(nodes.map(inl).join('')).replace(/^(?:\s|\\\n)+|(?:\s|\\\n)+$/g,'');}
+function lineEsc(s){return s.split('\n').map(l=>l.replace(/^[ \t]+/,'').replace(/^(#{1,6}|[>+-])(?=[ \t]|$)/,'\\$1').replace(/^(\d{1,9})([.)])(?=[ \t]|$)/,'$1\\$2').replace(/^(=+|-+)[ \t]*$/,'\\$&')).join('\n');}
+function esc(s){
+s=s.replace(/\u00a0/g,' ').replace(/[\\`*\[\]<~^]/g,'\\$&').replace(/&(?=#?\w+;)/g,'\\&').replace(/==/g,'\\=\\=').replace(/\+\+/g,'\\+\\+')
+.replace(/_/g,(m,i,x)=>/[\p{L}\p{N}]/u.test(x[i-1]||'')&&/[\p{L}\p{N}]/u.test(x[i+1]||'')?'_':'\\_');
+return inTable?s.replace(/\|/g,'\\|'):s;}
+function wrap(m,s){const x=s.match(/^(\s*)([\s\S]*?)(\s*)$/);return x[2]?x[1]+m+x[2]+m+x[3]:s;}
+function code(s){s=s.replace(/\u00a0/g,' ');if(!s)return '';let f='`';while(s.includes(f))f+='`';const pad=/^`|`$|^ [\s\S]* $/.test(s)?' ':'';return f+pad+s+pad+f;}
+function dest(u){return /[\s()<>]/.test(u)?'<'+u.replace(/[<>\n]/g,encodeURIComponent)+'>':u;}
+function title(n){return n.dataset.title?' \u0022'+n.dataset.title.replace(/[\u0022\\]/g,'\\$&')+'\u0022':'';}
+function linkMd(n,kids){const target=n.dataset.md!=null?n.dataset.md:(n.dataset.note||n.getAttribute('href')||'');if(!kids.trim()||!target)return kids;if(n.dataset.auto&&n.textContent===target)return '<'+target+'>';return '['+kids+']('+dest(target)+title(n)+')';}
+function inl(n){
+if(n.nodeType===3)return esc(n.nodeValue);
+if(n.nodeType!==1)return '';
+const t=n.tagName,kids=()=>Array.from(n.childNodes).map(inl).join('');
+if(n.dataset.md!=null&&(t==='IMG'||n.classList.contains('image-placeholder')))return '!['+esc(n.dataset.alt||'')+']('+dest(n.dataset.md)+title(n)+')';
+switch(t){
+case 'BR':return '\\\n';
+case 'STRONG':case 'B':return wrap('**',kids());
+case 'EM':case 'I':return wrap('*',kids());
+case 'DEL':case 'S':case 'STRIKE':return wrap('~~',kids());
+case 'SUB':return wrap('~',kids());
+case 'SUP':return wrap('^',kids());
+case 'INS':return wrap('++',kids());
+case 'MARK':return wrap('==',kids());
+case 'CODE':return code(n.textContent);
+case 'INPUT':case 'IMG':case 'SCRIPT':case 'STYLE':return '';
+case 'A':return linkMd(n,kids());
+case 'SPAN':return n.classList.contains('md-link')?linkMd(n,kids()):kids();
+default:return kids();
+}
+}
+function indent(s,w){const pad=' '.repeat(w);return s.split('\n').map((l,i)=>i&&l?pad+l:l).join('\n');}
+function list(el){
+const ol=el.tagName==='OL';let n=ol?(parseInt(el.getAttribute('start')||'1',10)||1):0,w=2;
+const loose=Array.from(el.children).some(li=>Array.from(li.children).some(c=>c.tagName==='P'));
+const items=[];
+for(const c of Array.from(el.children)){
+if(c.tagName==='UL'||c.tagName==='OL'){const s=list(c);if(!s)continue;if(items.length)items[items.length-1]+='\n'+' '.repeat(w)+indent(s,w);else items.push(s);continue;}
+const marker=ol?(n++)+'. ':'- ';w=marker.length;
+const cb=c.querySelector(':scope>input[type=checkbox],:scope>p:first-child>input[type=checkbox]');
+const body=(cb?(cb.hasAttribute('checked')?'[x] ':'[ ] '):'')+blocks(c,!loose);
+items.push((marker+indent(body,w)).replace(/\s+$/,''));
+}
+return items.join(loose?'\n\n':'\n');
+}
+function table(el){
+const rows=Array.from(el.rows);if(!rows.length)return '';
+const cols=Math.max(...rows.map(r=>r.cells.length));
+inTable=true;
+try{
+const line=r=>{const a=Array.from(r.cells).map(c=>para(Array.from(c.childNodes)).replace(/\\\n|\n/g,' '));while(a.length<cols)a.push('');return '| '+a.join(' | ')+' |';};
+const al=Array.from({length:cols},(_,i)=>{const c=rows[0].cells[i];const m=c?/text-align:\s*(\w+)/.exec(c.getAttribute('style')||''):null;const a=c?(m?m[1]:c.getAttribute('align')||''):'';return a==='center'?':---:':a==='right'?'---:':a==='left'?':---':'---';});
+return [line(rows[0]),'| '+al.join(' | ')+' |'].concat(rows.slice(1).map(line)).join('\n');
+}finally{inTable=false;}
+}
+function fence(pre){const c=pre.querySelector('code')||pre;const lang=((c.className||'').match(/language-(\S+)/)||[])[1]||'';const t=c.innerText.replace(/\n$/,'');let f='```';while(t.includes(f))f+='`';return f+lang+'\n'+t+'\n'+f;}
+// —— 编辑操作 / Editing behaviour ——
+function topBlock(n){while(n&&n.parentNode!==note)n=n.parentNode;return n&&n.nodeType===1?n:null;}
+function up(n,tag){for(;n&&n!==note;n=n.parentNode)if(n.nodeName===tag)return n;return null;}
+function caret(node,offset){const r=document.createRange();r.setStart(node,offset);r.collapse(true);const s=getSelection();s.removeAllRanges();s.addRange(r);}
+function caretEnd(el){const r=document.createRange();r.selectNodeContents(el);r.collapse(false);const s=getSelection();s.removeAllRanges();s.addRange(r);}
+function emptyP(){const p=document.createElement('p');p.appendChild(document.createElement('br'));return p;}
+function atStart(el,s){const r=document.createRange();r.selectNodeContents(el);r.setEnd(s.anchorNode,s.anchorOffset);return r.toString()===''&&!r.cloneContents().querySelector('img');}
+function retag(el,tag){const n=document.createElement(tag);while(el.firstChild)n.appendChild(el.firstChild);el.replaceWith(n);caret(n,0);}
+function focusEnd(){if(!doc.editable)return;note.focus();let last=note.lastElementChild;if(!last||last.contentEditable==='false'||!/^(P|H[1-6])$/.test(last.tagName)){last=emptyP();note.appendChild(last);}caretEnd(last);}
+function autoFormat(){
+// 行首输入 #、-、1.、>、- [ ] 后按空格即转为标题、列表、引用、待办 / Typing #, -, 1., > or - [ ] then a space at a line start makes a heading, list, quote or to-do
+const s=getSelection();if(!s.rangeCount||!s.isCollapsed)return;
+const blk=topBlock(s.anchorNode);if(!blk||!/^(P|DIV)$/.test(blk.tagName)||blk.contentEditable==='false')return;
+const r=document.createRange();r.setStart(blk,0);r.setEnd(s.anchorNode,s.anchorOffset);
+const t=r.toString().replace(/\u00a0/g,' ');let m,outer,inner,task=null;
+if(m=t.match(/^(#{1,6}) $/))outer=inner=document.createElement('h'+m[1].length);
+else if(m=t.match(/^[-*+] \[([ xX]?)\] $/)){outer=document.createElement('ul');inner=outer.appendChild(document.createElement('li'));inner.className='task-list-item';task=document.createElement('input');task.type='checkbox';task.className='task-list-item-checkbox';task.tabIndex=-1;if(/x/i.test(m[1]))task.setAttribute('checked','');}
+else if(/^[-*+] $/.test(t)){outer=document.createElement('ul');inner=outer.appendChild(document.createElement('li'));}
+else if(m=t.match(/^(\d{1,9})[.)] $/)){outer=document.createElement('ol');if(m[1]!=='1')outer.setAttribute('start',m[1]);inner=outer.appendChild(document.createElement('li'));}
+else if(t==='> '){outer=document.createElement('blockquote');inner=outer.appendChild(document.createElement('p'));}
+else return;
+r.deleteContents();
+while(blk.firstChild)inner.appendChild(blk.firstChild);
+let text=null;if(task){text=document.createTextNode(' ');inner.prepend(task,text);}
+if(!inner.textContent.trim()&&!inner.querySelector('img,br'))inner.appendChild(document.createElement('br'));
+blk.replaceWith(outer);if(text)caret(text,1);else caret(inner,0);
+}
+note.addEventListener('input',e=>{if(!doc.editable)return;if(e.inputType==='insertText'&&e.data===' ')autoFormat();schedule();});
+note.addEventListener('keydown',e=>{
+if(!doc.editable||e.isComposing)return;
+const s=getSelection();if(!s.rangeCount)return;
+const pre=up(s.anchorNode,'PRE'),blk=topBlock(s.anchorNode);
+if(e.key==='Enter'&&!e.shiftKey&&!e.ctrlKey&&!e.altKey){
+if(pre){
+e.preventDefault();
+const whole=document.createRange();whole.selectNodeContents(pre);const a=whole.cloneRange(),b=whole.cloneRange();a.setStart(s.anchorNode,s.anchorOffset);b.setEnd(s.anchorNode,s.anchorOffset);
+// 代码块末尾空行再按 Enter 退出代码块 / Enter on an empty last line leaves the code block
+if(s.isCollapsed&&/\n$/.test(b.toString())&&/^\n?$/.test(a.toString())){const c=pre.querySelector('code')||pre;c.textContent=c.textContent.replace(/\n+$/,'')+'\n';const p=emptyP();pre.after(p);caret(p,0);schedule();}
+else document.execCommand('insertText',false,'\n');
+return;}
+if(blk&&blk.tagName==='P'){const m=blk.textContent.replace(/\u00a0/g,' ').match(/^```\s*([\w+#.-]*)\s*$/);
+if(m){e.preventDefault();const p=document.createElement('pre'),c=p.appendChild(document.createElement('code'));if(m[1])c.className='language-'+m[1];c.textContent='\n';blk.replaceWith(p);caret(c.firstChild,0);schedule();}}
+return;}
+if(e.key==='Tab'){
+if(up(s.anchorNode,'LI')){e.preventDefault();document.execCommand(e.shiftKey?'outdent':'indent');schedule();}
+else if(pre){e.preventDefault();document.execCommand('insertText',false,'    ');}
+return;}
+if(e.key==='Backspace'&&s.isCollapsed&&blk&&!pre){
+if(/^H[1-6]$/.test(blk.tagName)&&atStart(blk,s)){e.preventDefault();retag(blk,'p');schedule();}
+else if(blk.tagName==='BLOCKQUOTE'&&atStart(blk,s)){e.preventDefault();const first=blk.firstElementChild;blk.replaceWith(...Array.from(blk.childNodes));if(first)caret(first,0);schedule();}
+}
+});
+note.addEventListener('mousedown',e=>{
+if(!doc.editable)return;
+const t=e.target;
+if(t.matches&&t.matches('input[type=checkbox]')){e.preventDefault();t.toggleAttribute('checked');t.checked=t.hasAttribute('checked');schedule();return;}
+if(t!==note)return;
+// 点击正文下方空白处时在末尾继续输入 / Clicking the blank area below the content continues typing at the end
+const last=note.lastElementChild;if(last&&e.clientY<=last.getBoundingClientRect().bottom)return;
+e.preventDefault();focusEnd();
+});
+note.addEventListener('paste',e=>{
+if(!doc.editable||!e.clipboardData)return;
+e.preventDefault();
+const text=e.clipboardData.getData('text/plain');
+if(text){document.execCommand('insertText',false,text.replace(/\r\n?/g,'\n'));return;}
+if(Array.from(e.clipboardData.items||[]).some(i=>i.kind==='file'))post({pasteImage:true});
+});
+note.addEventListener('focus',()=>post({focused:true}));
+note.addEventListener('blur',()=>{flush();post({focused:false});});
+window.addEventListener('blur',flush);
+document.addEventListener('selectionchange',()=>{const s=getSelection();if(s.rangeCount&&note.contains(s.anchorNode))lastRange=s.getRangeAt(0).cloneRange();});
+function insertImages(list){
+if(!doc.editable)return;
+let r=lastRange&&note.contains(lastRange.startContainer)?lastRange:null;
+if(!r){const p=emptyP();note.appendChild(p);r=document.createRange();r.selectNodeContents(p);}
+r.deleteContents();
+const frag=document.createDocumentFragment();let last=null;
+for(const i of list){const img=document.createElement('img');img.src=i.data;img.alt='Local image';img.dataset.md=i.md;img.dataset.alt='图片 / Image';frag.appendChild(img);last=img;}
+if(!last)return;
+r.insertNode(frag);note.focus();const s=getSelection();const after=document.createRange();after.setStartAfter(last);after.collapse(true);s.removeAllRanges();s.addRange(after);
+schedule();
+}
+window.chrome.webview.addEventListener('message',e=>{
+const d=e.data;
+if(d.images){insertImages(d.images);return;}
+if(d.focus){focusEnd();return;}
+clearTimeout(timer);timer=0;lastRange=null;
+const y=window.scrollY;
+doc={key:d.key||'',src:d.src||'',spans:d.spans||[],snap:{},editable:!!d.editable};
+note.innerHTML=d.html;const journal=note.querySelector('.task-journal');note.classList.toggle('has-journal',!!journal);if(journal)filterJournal(journal,journalFilters.get(journal.dataset.journal)||'all');
+prep();
+window.scrollTo(0,d.top?0:y);
+});
 </script></body></html>".Replace("{{nonce}}", nonce).Replace("{{palette}}", palette).Replace("{{font}}", Theme.FontName);
         }
     }

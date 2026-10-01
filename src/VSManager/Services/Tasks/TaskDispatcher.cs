@@ -728,14 +728,17 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
             return true;
         }
 
-        /// <summary>插入补充信息后重试失败 / 待验证的任务（用户补充时 <paramref name="enforceLimit"/> 为 false）。/ Retries a failed / awaiting-verification task with supplementary info (<paramref name="enforceLimit"/> is false for user supplements).</summary>
+        /// <summary>插入补充信息后重试失败 / 待验证的任务，或合并到排队中的任务（用户补充时 <paramref name="enforceLimit"/> 为 false）。/ Retries a failed / awaiting-verification task with supplementary info, or merges it into a queued task (<paramref name="enforceLimit"/> is false for user supplements).</summary>
         public bool RetryWithInfo(QueuedTask t, string info, out string error, bool enforceLimit = true, bool replace = false, bool freshContext = false)
         {
             error = null;
             if (t == null || _tasks.Find(t.Id) != t || _finishing.Contains(t)) { error = "任务已被替换或正在处理 / Task was replaced or is being processed"; return false; }
+            bool queued = TaskStateMachine.IsQueued(t);
             if (!TaskStateMachine.Supplement(t, info, out error, enforceLimit, replace, freshContext)) return false;
             _tasks.Commit();
-            _host.LogEvent(t.VsName, $"任务清单：#{t.Id} 补充信息后重新排队（第 {t.SupplementCount} 次）/ Task #{t.Id} requeued with info");
+            _host.LogEvent(t.VsName, queued
+                ? $"任务清单：#{t.Id} 排队中，补充要求已合并到原任务 / Task #{t.Id} is queued; info merged into it"
+                : $"任务清单：#{t.Id} 补充信息后重新排队（第 {t.SupplementCount} 次）/ Task #{t.Id} requeued with info");
             Pump();
             return true;
         }

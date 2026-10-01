@@ -257,6 +257,7 @@ namespace VSManager.Tests
                     var expected = new List<string>();
                     if (waiting) expected.Add("重新检查并推送 / Recheck and send");
                     if (ended) expected.Add("手动重新排队 / Requeue manually");
+                    if (waiting) expected.Add("补充要求（合并到此任务）… / Add to this task…");
                     if (status == QueueStatus.Failed || status == QueueStatus.Unverified) expected.Add("补充信息后重试… / Retry with info…");
                     if (status == QueueStatus.Unverified) expected.Add("标记为已验证 / Mark as verified");
                     if (cancellable) expected.Add(cancelText);

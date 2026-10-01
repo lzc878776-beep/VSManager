@@ -51,7 +51,7 @@ namespace VSManager
         /// Sends a task with attachments. When the text is delivered but images are not, the result still starts with "已发送"
         /// (the task does not fail); diagnostics are recorded and the user is told.
         /// </summary>
-        Task<string> ITaskAttachmentDispatchHost.SendTaskAsync(VsInstance v, QueuedTask t) => SendTaskCore(v, t);
+        Task<string> ITaskAttachmentDispatchHost.SendTaskAsync(VsInstance v, QueuedTask t) => WithTaskDiagnosis(v, t, () => SendTaskCore(v, t));
 
         private async Task<string> SendTaskCore(VsInstance v, QueuedTask t, Func<bool> queueGuard = null)
         {

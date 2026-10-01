@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -27,15 +27,16 @@ namespace VSManager
         private readonly NotebookPreview _preview = new NotebookPreview();
         private readonly SplitContainer _split = new SplitContainer();
         private readonly Label _breadcrumb = new Label();
+        private Button _sourceToggle;
         private readonly Label _status = new Label();
         private readonly Label _empty = new Label();
         private readonly Timer _saveTimer = new Timer { Interval = 900 };
         private readonly Timer _searchTimer = new Timer { Interval = 350 };
         private readonly ImageList _icons = new ImageList();
-        private NotebookDocument _document, _pendingDocument;
+        private NotebookDocument _document, _pendingDocument, _previousDocument;
         private TreeNode _hoverNode;
         private bool _loading, _dirty;
-        // 是否正在编辑；平时只显示渲染后的阅读视图，不显示 Markdown 原文。/ Whether editing; otherwise only the rendered view shows, never the Markdown source.
+        // 是否在查看 / 编辑 Markdown 源码；平时直接在渲染后的页面上编辑。/ Whether the Markdown source is shown; normally editing happens directly on the rendered page.
         private bool _editing;
         // 光标位置是否来自用户在本页的编辑；否则插入内容追加到末尾。/ Whether the caret comes from editing this page; otherwise inserted text is appended.
         private bool _caretValid;
@@ -55,6 +56,8 @@ namespace VSManager
             Load += (s, e) => Initialize();
             _preview.NoteLinkRequested += OpenLinkedNote;
             _preview.EditRequested += BeginEdit;
+            _preview.MarkdownEdited += ApplyRenderedEdit;
+            _preview.ImagePasteRequested += PasteImagesIntoPreview;
         }
 
         internal void Initialize()
@@ -246,13 +249,25 @@ namespace VSManager
             sidebar.Controls.Add(title);
 
             var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Background };
-            _breadcrumb.Dock = DockStyle.Top;
-            _breadcrumb.Height = Dpi.S(45);
+            _breadcrumb.Dock = DockStyle.Fill;
             _breadcrumb.Padding = new Padding(Dpi.S(24), 0, Dpi.S(16), 0);
             _breadcrumb.TextAlign = ContentAlignment.MiddleLeft;
             _breadcrumb.ForeColor = Theme.TextSecondary;
             _breadcrumb.AutoEllipsis = true;
             _breadcrumb.UseMnemonic = false;
+            var header = new Panel { Dock = DockStyle.Top, Height = Dpi.S(45), BackColor = Theme.Background };
+            _sourceToggle = ActionButton(SourceLabel, ToggleSource);
+            _sourceToggle.AutoSize = false;
+            _sourceToggle.Dock = DockStyle.Fill;
+            _sourceToggle.Font = Theme.Small;
+            _sourceToggle.ForeColor = Theme.TextSecondary;
+            _sourceToggle.Margin = Padding.Empty;
+            _sourceToggle.AccessibleName = "切换 Markdown 源码 / Toggle Markdown source";
+            int toggleWidth = new[] { SourceLabel, RenderedLabel }.Max(t => TextRenderer.MeasureText(t, Theme.Small).Width) + Dpi.S(24);
+            var toggleHost = new Panel { Dock = DockStyle.Right, Width = toggleWidth + Dpi.S(16), Padding = new Padding(0, Dpi.S(8), Dpi.S(16), Dpi.S(7)) };
+            toggleHost.Controls.Add(_sourceToggle);
+            header.Controls.Add(_breadcrumb);
+            header.Controls.Add(toggleHost);
             _split.Dock = DockStyle.Fill;
             _split.Size = new Size(Dpi.S(800), Dpi.S(500));
             _split.BackColor = Theme.Divider;
@@ -284,12 +299,6 @@ namespace VSManager
                 _saveTimer.Start();
             };
             _editor.GotFocus += (s, e) => { _editing = true; _caretValid = true; };
-            _editor.Leave += (s, e) =>
-            {
-                _editing = false;
-                RenderPreview(false);
-                UpdateLayout();
-            };
             _editor.KeyDown += (s, e) =>
             {
                 if (((e.Control && e.KeyCode == Keys.V) || (e.Shift && e.KeyCode == Keys.Insert)) && PasteImages())
@@ -297,11 +306,7 @@ namespace VSManager
                 else if (e.KeyCode == Keys.Escape && e.Modifiers == Keys.None)
                 {
                     e.Handled = e.SuppressKeyPress = true;
-                    TrySave();
-                    _editing = false;
-                    RenderPreview(false);
-                    UpdateLayout();
-                    _preview.Focus();
+                    EndEdit();
                 }
             };
             _editor.AllowDrop = true;
@@ -333,7 +338,7 @@ namespace VSManager
             _status.Font = Theme.Small;
             content.Controls.Add(_split);
             content.Controls.Add(_empty);
-            content.Controls.Add(_breadcrumb);
+            content.Controls.Add(header);
             content.Controls.Add(_status);
             Controls.Add(content);
             _sidebarSplitter = new Splitter { Dock = DockStyle.Left, Width = Dpi.S(3), MinSize = Dpi.S(200), MinExtra = Dpi.S(450), BackColor = Theme.Divider };
@@ -448,6 +453,7 @@ namespace VSManager
             bool samePage = keepView && document != null && _document != null
                 && string.Equals(document.Path, _document.Path, StringComparison.OrdinalIgnoreCase);
             _loading = true;
+            if (!samePage && _document != null && document != _document) _previousDocument = _document;
             _document = document;
             _dirty = false;
             if (!samePage) { _editing = false; _caretValid = false; }
@@ -460,7 +466,8 @@ namespace VSManager
             _breadcrumb.Text = "笔记本 / Notebooks" + (document == null ? "" : "  /  " + string.Join("  /  ", SafeTitlePath(document.Path)));
             Text = (document == null ? "" : document.Title + " — ") + "笔记本 / Notebooks";
             SetStatus(document == null ? "仅本地存储，不自动上传 / Local only · No automatic upload"
-                : "已读取 · 双击内容即可编辑 / Loaded · Double-click the content to edit");
+                : NotebookTaskTable.IsJournal(document.Title) ? "已读取 · 任务记录页只读，可点右上角查看源码 / Loaded · Task journal pages are read-only; use Source at the top right"
+                : "已读取 · 直接在页面上编辑，Ctrl+单击打开网页链接 / Loaded · Edit right on the page; Ctrl+Click opens web links");
             UpdateLayout();
             RenderPreview(!samePage);
         }
@@ -559,23 +566,44 @@ namespace VSManager
                     try { return _store.ImageData(_document.Path, target); }
                     catch (Exception ex) when (IsFileError(ex)) { imageError = ex.Message; return null; }
                 }
-                string html = NotebookTaskTable.IsJournal(_document.Title)
-                    ? NotebookTaskTable.Render(_document.Path, _document.Title, _editor.Text, _store.ReadChildHeaders(_document.Path), ImageData)
-                    : NotebookMarkdown.Render(_editor.Text, ImageData);
-                _preview.Render(html, scrollTop);
+                string html;
+                if (NotebookTaskTable.IsJournal(_document.Title))
+                {
+                    html = NotebookTaskTable.Render(_document.Path, _document.Title, _editor.Text, _store.ReadChildHeaders(_document.Path), ImageData);
+                    _preview.Render(html, scrollTop, _document.Path, null, null);
+                }
+                else
+                {
+                    html = NotebookMarkdown.RenderEditable(_editor.Text, ImageData, out var spans);
+                    _preview.Render(html, scrollTop, _document.Path, _editor.Text, spans);
+                }
                 if (imageError != null) SetStatus("图片未加载 / Image not loaded: " + imageError, true);
             }
             catch (Exception ex) when (IsFileError(ex)) { Report(ex); }
         }
 
         /// <summary>
-        /// 默认只显示渲染后的阅读视图（不展示 Markdown 原文）；双击进入编辑时只显示编辑器，离开编辑器或按 Esc 回到阅读。
-        /// Shows only the rendered view by default (never the Markdown source); double-click to edit shows the editor alone, and leaving it or pressing Esc returns to reading.
+        /// 默认显示渲染后的页面并可直接在其中编辑；点右上角「Markdown 源码」改为只显示源码编辑器，再点一次或按 Esc 返回。
+        /// Shows the rendered page by default and edits happen right on it; "Markdown source" at the top right shows the source editor alone, and clicking again or pressing Esc returns.
         /// </summary>
         private void UpdateLayout()
         {
             if (_editing && _document != null) { _split.Panel1Collapsed = false; _split.Panel2Collapsed = true; }
             else { _split.Panel2Collapsed = false; _split.Panel1Collapsed = true; }
+            if (_sourceToggle != null)
+            {
+                _sourceToggle.Text = _editing && _document != null ? RenderedLabel : SourceLabel;
+                _sourceToggle.Visible = _document != null;
+            }
+        }
+
+        private const string SourceLabel = "Markdown 源码 / Source";
+        private const string RenderedLabel = "返回页面编辑 / Back to page";
+
+        private void ToggleSource()
+        {
+            if (_editing) EndEdit();
+            else BeginEdit();
         }
 
         private void BeginEdit()
@@ -584,6 +612,37 @@ namespace VSManager
             _editing = true;
             UpdateLayout();
             _editor.Focus();
+        }
+
+        private void EndEdit()
+        {
+            TrySave();
+            _editing = false;
+            RenderPreview(false);
+            UpdateLayout();
+            _preview.FocusEditor();
+        }
+
+        /// <summary>
+        /// 渲染视图中就地编辑后生成的 Markdown：写入当前页并触发自动保存；切换页面后才到达的编辑写回它所属的页面。
+        /// Markdown from in-place editing: goes into the current page and triggers autosave; edits arriving after a page switch are saved to their own page.
+        /// </summary>
+        private void ApplyRenderedEdit(string key, string markdown)
+        {
+            if (_document != null && string.Equals(key, _document.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                if (_editing && _dirty) return;
+                string text = NotebookStore.NormalizeNewLines(markdown ?? "", "\r\n");
+                if (text == _editor.Text) return;
+                _editor.Text = text;
+                _caretValid = false;
+                return;
+            }
+            var previous = _previousDocument;
+            if (previous == null || !string.Equals(key, previous.Path, StringComparison.OrdinalIgnoreCase)) return;
+            try { _store.Save(previous, markdown); }
+            catch (NotebookConflictException) { SetStatus("切换页面前的最后修改未能保存：页面已在别处修改 / The last edit before switching pages was not saved: the page changed elsewhere", true); }
+            catch (Exception ex) when (IsFileError(ex)) { Report(ex); }
         }
 
         private void RefreshTree(string selectedPath = null, bool keepView = false)
@@ -599,7 +658,7 @@ namespace VSManager
                     && string.Equals(Selected.Path, selection, StringComparison.OrdinalIgnoreCase))
                 {
                     var current = selection.Length == 0 ? null : _store.Read(selection);
-                    bool same = SameDocument(current) || (current != null && _document != null && _editor.Focused
+                    bool same = SameDocument(current) || (current != null && _document != null && (_editor.Focused || _preview.EditorFocused)
                         && string.Equals(current.Path, _document.Path, StringComparison.OrdinalIgnoreCase));
                     if (!same) Display(current, true);
                     return;
@@ -632,7 +691,7 @@ namespace VSManager
                     else selected.EnsureVisible();
                 }
                 finally { _tree.EndUpdate(); _loading = false; }
-                bool unchanged = keepView && (SameDocument(document) || (document != null && _document != null && _editor.Focused
+                bool unchanged = keepView && (SameDocument(document) || (document != null && _document != null && (_editor.Focused || _preview.EditorFocused)
                     && string.Equals(document.Path, _document.Path, StringComparison.OrdinalIgnoreCase)));
                 if (!unchanged) Display(document, keepView);
                 if (focused != null && !focused.IsDisposed && focused.Visible && focused.CanFocus && !focused.Focused) focused.Focus();
@@ -717,7 +776,7 @@ namespace VSManager
                 ClearSearch();
                 RefreshTree(path);
                 ContentRequested?.Invoke();
-                BeginEdit();
+                _preview.FocusEditor();
             }
             catch (Exception ex) when (IsFileError(ex)) { Report(ex); }
         }
@@ -752,23 +811,50 @@ namespace VSManager
         /// <summary>粘贴剪贴板中的截图或图片文件；没有图片时返回 false，按普通文本粘贴。/ Pastes a clipboard screenshot or image files; returns false to fall back to text paste.</summary>
         private bool PasteImages()
         {
-            if (_document == null) return false;
+            var imports = ClipboardImageImports();
+            if (imports == null) return false;
+            InsertImages(imports);
+            return true;
+        }
+
+        /// <summary>在渲染视图中粘贴图片：导入笔记库后插入到页面光标处。/ Pastes images in the rendered view: imports them into the library and inserts them at the page caret.</summary>
+        private void PasteImagesIntoPreview()
+        {
+            var imports = ClipboardImageImports();
+            if (imports == null || _document == null) return;
+            var images = new List<KeyValuePair<string, string>>();
+            foreach (var import in imports)
+            {
+                try
+                {
+                    string target = import();
+                    string data = _store.ImageData(_document.Path, target);
+                    if (data != null) images.Add(new KeyValuePair<string, string>(target, data));
+                }
+                catch (Exception ex) when (IsFileError(ex)) { Report(ex); }
+            }
+            _preview.InsertImages(images);
+        }
+
+        /// <summary>剪贴板中图片的导入操作；没有图片时返回 null。/ Import actions for clipboard images; null when there are none.</summary>
+        private Func<string>[] ClipboardImageImports()
+        {
+            if (_document == null) return null;
             try
             {
                 var files = Clipboard.ContainsFileDropList() ? DroppedImages(Clipboard.GetDataObject()) : new string[0];
-                if (files.Length > 0) { InsertImages(files.Select(f => (Func<string>)(() => _store.ImportImage(_document.Path, f)))); return true; }
-                if (!Clipboard.ContainsImage()) return false;
+                if (files.Length > 0) return files.Select(f => (Func<string>)(() => _store.ImportImage(_document.Path, f))).ToArray();
+                if (!Clipboard.ContainsImage()) return null;
                 using (var image = Clipboard.GetImage())
                 using (var stream = new MemoryStream())
                 {
-                    if (image == null) return false;
+                    if (image == null) return null;
                     image.Save(stream, ImageFormat.Png);
                     byte[] bytes = stream.ToArray();
-                    InsertImages(new Func<string>[] { () => _store.ImportImage(_document.Path, bytes, ".png") });
-                    return true;
+                    return new Func<string>[] { () => _store.ImportImage(_document.Path, bytes, ".png") };
                 }
             }
-            catch (ExternalException ex) { Report(ex); return true; }
+            catch (ExternalException ex) { Report(ex); return new Func<string>[0]; }
         }
 
         private void InsertImages(IEnumerable<Func<string>> imports)

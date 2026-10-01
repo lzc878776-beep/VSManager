@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -199,6 +199,35 @@ namespace VSManager.Tests
             Assert.IsFalse(html.Contains("href=\"javascript:"));
             Assert.IsFalse(html.Contains("<img"));
             StringAssert.Contains(html, "href=\"https://example.com\"");
+        }
+
+        [TestMethod]
+        public void Markdown_RenderEditable_TagsEveryBlockWithItsExactSourceSpan()
+        {
+            string md = "# Title\r\n\r\nSetext\r\n===\r\n\r\nPara *one*\r\nsoft line\r\n\r\n- a\r\n  - nested\r\n- [x] done\r\n\r\n1. x\r\n\r\n2. y\r\n\r\n> quote\r\n> more\r\n\r\n| A | B |\r\n|:-:|--:|\r\n| 1 | 2 |\r\n\r\n```cs\r\nvar x = 1;\r\n```\r\n\r\n```card\r\nstatus: done\r\ntitle: T\r\n```\r\n\r\n---\r\n\r\n[ref]: https://example.com\r\n\r\n![pic](attachments/a.png) [bad](javascript:x)\r\n";
+            string html = NotebookMarkdown.RenderEditable(md, _ => null, out var spans);
+            Assert.AreEqual(spans.Length, System.Text.RegularExpressions.Regex.Matches(html, " data-b=\"").Count, "每个块一个标记 / One marker per block");
+            int previous = 0;
+            for (int i = 0; i < spans.Length; i++)
+            {
+                StringAssert.Contains(html, " data-b=\"" + i + "\"");
+                Assert.IsTrue(spans[i][0] >= previous && spans[i][1] > spans[i][0], "块位置递增且非空 / Spans increase and are non-empty: " + i + " " + string.Join(";", spans.Select(s => s[0] + "-" + s[1])));
+                Assert.AreEqual("", md.Substring(previous, spans[i][0] - previous).Trim(), "块之间只有空白 / Only whitespace between blocks");
+                previous = spans[i][1];
+            }
+            Assert.AreEqual("", md.Substring(previous).Trim());
+            // 每个块的原文单独渲染后与整篇渲染中的该块一致 / Each block's source renders exactly like that block within the whole page
+            var parts = System.Text.RegularExpressions.Regex.Split(html, "(?=<[a-z0-9]+ data-b=\")").Where(p => p.Length > 0).ToArray();
+            Assert.AreEqual(spans.Length, parts.Length);
+            for (int i = 0; i < spans.Length; i++)
+            {
+                if (parts[i].Contains("data-raw")) continue;
+                string slice = md.Substring(spans[i][0], spans[i][1] - spans[i][0]);
+                Assert.AreEqual(NotebookMarkdown.Render(slice, _ => null).Trim(), parts[i].Replace(" data-b=\"" + i + "\"", "").Trim(), slice);
+            }
+            StringAssert.Contains(html, "data-alt=\"pic\" data-md=\"attachments/a.png\"");
+            StringAssert.Contains(html, "<span class=\"md-link\" data-md=\"javascript:x\">bad</span>");
+            Assert.IsFalse(html.Contains("href=\"javascript:"));
         }
     }
 }

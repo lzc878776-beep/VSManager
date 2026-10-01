@@ -110,6 +110,7 @@ namespace VSManager
         }
 
         [Description("为失败或待验证的任务插入补充信息后在原条目重新排队重试：补充信息与前次反馈一起发给原 VS 的 Copilot，阻塞随之解除。" +
+            "任务仍在排队（尚未发送）时，用户对它的补充或追加要求也用本工具合并到原任务（发送时一并带上，不计补充次数），不要用 send_task 另发一条内容重复的新任务。" +
             "任务失败 / 待验证并阻塞同一 VS 的后续任务时，用户或你对该任务的补充、修正、追加要求或验证反馈都应通过本工具发给该任务，不要用 send_task 另起新任务（新任务只会排在阻塞任务后面）。" +
             "接续等级使失败阻塞后续时，若你能根据 VS 返回的信息补齐缺失内容（例如指明文件、澄清要求、给出已知参数），可自行调用；" +
             "需要用户决定或只有用户知道的信息时，先询问用户再把用户的答复作为 info 传入，并设 from_user=true。" +
@@ -131,7 +132,7 @@ namespace VSManager
             // 用户补充绕过 AI 自主限制，因此总是请用户确认 / User supplements bypass the AI limits, so always confirm
             string mode = (replace_previous ? "\n（替换此前的补充与反馈 / replaces earlier supplements and feedback）" : "")
                 + (fresh_context ? "\n（对话已重置，Copilot 将重新阅读相关内容 / conversation reset, Copilot re-reads the relevant content）" : "");
-            if ((from_user || _settings().AgentConfirm) && !await ConfirmAsync("补充信息后重试任务 #" + id + (from_user ? "（来自用户 / from the user）" : ""), info + mode))
+            if ((from_user || _settings().AgentConfirm) && !await ConfirmAsync("补充信息到任务 #" + id + "（排队中合并到原任务，否则补充后重试）" + (from_user ? "（来自用户 / from the user）" : ""), info + mode))
                 return "用户拒绝了该操作。";
             return await host.RetryTaskWithInfo(id, info, from_user, replace_previous, fresh_context).ConfigureAwait(false);
         }
@@ -161,5 +162,12 @@ namespace VSManager
             if (!(_host is IAgentTaskReplyHost host)) return "当前宿主不支持读取任务回复 / Reading task replies is unavailable.";
             return await host.ReadTaskReply(id, page).ConfigureAwait(false);
         }
+
+        [Description("读取发送诊断：最近几次发送到 VS 的逐步结果（排队 → 定位输入框 → 填入 → 提交 → 确认送达 → 恢复焦点）、出错的步骤与处理建议。" +
+            "发送失败或「送达待核实」时调用，按出错步骤决定下一步；送达不确定的任务不得重发，先用 read_vs_chat 核实目标对话，再交给用户。")]
+        internal Task<string> ReadSendDiagnostics(
+            [Description("可选：任务编号，只看该任务的发送；0 表示不限")] int task_id = 0,
+            [Description("返回的记录数，默认 5，最多 20")] int count = 5) =>
+            Task.FromResult(SendDiagnosisReport.Format(SendDiagnosis.Recent(), task_id, count));
     }
 }

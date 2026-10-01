@@ -408,6 +408,7 @@ namespace VSManager
             if (t == null) return "任务不存在 / Task not found.";
             if (t.Status != QueueStatus.Failed)
                 return $"任务 #{t.Id} 没有失败，无需重试 / Task #{t.Id} has not failed; nothing to retry.";
+            if (SendDiagnosis.IsUncertainFailure(t)) return SendDiagnosis.UncertainRetryRefusal(t.Id);
             if (!FailureKind.IsRecoverable(t.FailureKind))
                 return $"已拒绝：任务 #{t.Id} 是「{FailureKind.Label(t.FailureKind)}」，不是投递、读取或 Copilot 本轮中断这类可原样重试的失败，原样重试大概率仍会失败。请根据其 Copilot 回复分析原因，用 retry_task_with_info 写明新信息，或交给用户。"
                     + $" / Refused: task #{t.Id} is '{FailureKind.Label(t.FailureKind)}', not a delivery, read or interrupted-run failure that can be retried unchanged; an unchanged retry would likely fail again. Analyze its Copilot reply and use retry_task_with_info with new information, or hand it to the user.";
@@ -430,6 +431,9 @@ namespace VSManager
         /// <summary>非内容类失败通知用的直接重试说明。/ Direct-retry summary for non-content failure notices.</summary>
         public static string RecoveryNote(QueuedTask t)
         {
+            if (SendDiagnosis.IsUncertainFailure(t))
+                return "送达不确定：禁止用 retry_task / retry_task_with_info 重发，先用 read_vs_chat 核实目标对话、用 read_send_diagnostics 查看出错步骤，再交给用户决定。"
+                    + " / Delivery uncertain: do not resend with retry_task / retry_task_with_info; verify the target chat with read_vs_chat and the failing step with read_send_diagnostics, then let the user decide.";
             int left = Math.Max(0, MaxRecoveryRetries - (t?.RecoveryRetries ?? 0));
             return left == 0
                 ? $"本任务已直接重试 {MaxRecoveryRetries} 次，请交给用户检查。/ This task has been retried directly {MaxRecoveryRetries} times; hand it to the user."

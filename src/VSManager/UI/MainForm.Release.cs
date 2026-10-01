@@ -88,7 +88,23 @@ namespace VSManager
         {
             var t = _tasks.Find(id);
             if (t == null) return "没有任务 #" + id + " / No task #" + id;
+            if (TaskStateMachine.IsQueued(t))
+            {
+                // 排队中：合并到原任务，尚未消耗 Copilot 执行，无需重试限制 / Queued: merged into the task; no Copilot run used yet, so no retry limits apply
+                if (!RetryWithInfo(t, info, out string mergeError, false, replace, freshContext)) return $"任务 #{id} 当前{StatusText(t)}：{mergeError}";
+                AppLog.Write(AppLog.TasksFile, $"AI 助手把补充要求合并到排队中的任务 #{id} / Assistant merged info into queued task #{id}");
+                return $"任务 #{id} 仍在排队，补充要求已合并到原任务，发送时一并带上，没有新建任务 / "
+                    + $"Task #{id} is still queued; the info was merged into it and will be sent along, no new task created"
+                    + (replace ? "；已替换此前的补充 / replaced earlier supplements" : "");
+            }
             // AI 自主重试：限制次数并要求有新信息；用户提供的补充（已经用户确认）不受限 / AI self-retries: capped and must carry new information; user-provided info (user-confirmed) is not
+            // 送达不确定时 AI 不得重发（原样或补充后都可能重复执行）/ With uncertain delivery the AI may not resend (either way it could run twice)
+            if (!fromUser && SendDiagnosis.IsUncertainFailure(t))
+            {
+                string uncertain = SendDiagnosis.UncertainRetryRefusal(id);
+                AppLog.Write(AppLog.TasksFile, $"拒绝 AI 补充重试 #{id} / Refused AI retry: " + TextUtil.Clip(uncertain, 200));
+                return uncertain;
+            }
             if (!fromUser && TaskFailureAnalyzer.CheckAiRetry(_tasks.Items, t, info, replace, freshContext) is string refused)
             {
                 AppLog.Write(AppLog.TasksFile, $"拒绝 AI 补充重试 #{id} / Refused AI retry: " + TextUtil.Clip(refused, 200));
@@ -181,16 +197,48 @@ namespace VSManager
             return ok;
         }
 
-        /// <summary>任务菜单「补充信息后重试」：弹出输入框。/ Task menu "Retry with info": shows an input dialog.</summary>
+        /// <summary>
+        /// 送达不确定的任务在用户重发前强提醒（默认「否」），并附上出错步骤；其他任务直接放行。
+        /// Before the user resends a task with uncertain delivery, shows a strong warning (default "No") with the failing step; other tasks pass.
+        /// </summary>
+        private bool ConfirmUncertainResend(QueuedTask t)
+        {
+            if (!SendDiagnosis.IsUncertainFailure(t)) return true;
+            var record = SendDiagnosis.LatestForTask(t.Id);
+            string detail = record != null
+                ? "\n\n" + SendDiagnosis.Verdict(record) + "\n" + record.StageLine
+                : "\n\n" + TextUtil.Clip(t.Error, 200);
+            string message = $"任务 #{t.Id} 的送达结果不确定：消息可能已经提交给 Copilot。请先在目标 VS 的 Copilot 对话中确认没有收到这条消息，并清理输入框中的草稿，否则重发会让同一任务执行两次。"
+                + $"\nDelivery of task #{t.Id} is uncertain: the message may already have been submitted to Copilot. First confirm in the target VS Copilot chat that it was not received and clear any draft in the input box; otherwise resending runs the same task twice."
+                + detail + "\n\n已确认未送达，仍要重新发送？/ Confirmed not delivered and resend anyway?";
+            return MessageBox.Show(this, message, "送达不确定 / Delivery uncertain", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
+
+        /// <summary>任务菜单「补充信息」：弹出输入框；排队中的任务合并到原任务，失败 / 待验证的任务补充后重试。/ Task menu "Add info": shows an input dialog; queued tasks get it merged in, failed / awaiting-verification tasks are retried with it.</summary>
         private void PromptSupplement(QueuedTask t)
         {
-            if (!TaskStateMachine.IsHoldOutcome(t)) { SetStatus("只有失败或待验证的任务可以补充信息重试 / Only failed or awaiting-verification tasks can be retried with info"); return; }
+            if (!TaskStateMachine.CanSupplement(t)) { SetStatus("只有排队中、失败或待验证的任务可以补充信息 / Only queued, failed or awaiting-verification tasks can take supplementary info"); return; }
+            bool queued = TaskStateMachine.IsQueued(t);
+            if (!queued && !ConfirmUncertainResend(t)) return;
             using (var f = new SupplementForm(t))
             {
                 if (f.ShowDialog(this) != DialogResult.OK) return;
+                // 对话框打开期间任务可能已开始发送 / The task may have started sending while the dialog was open
+                if (queued && !TaskStateMachine.CanSupplement(t))
+                {
+                    // 保留用户刚写的内容，便于完成后再补充 / Keep what the user just wrote so it can be added once the task finishes
+                    try { Clipboard.SetText(f.Info); }
+                    catch (System.Runtime.InteropServices.ExternalException) { }
+                    SetStatus($"任务 #{t.Id} 已开始发送（{StatusText(t)}），补充未合并，内容已复制到剪贴板；完成后可再补充重试 / Task #{t.Id} already started sending; info not merged and copied to the clipboard");
+                    return;
+                }
+                bool merge = TaskStateMachine.IsQueued(t);
                 // 用户亲自补充不受 AI 自主次数限制 / The user's own supplements are not capped
                 SetStatus(RetryWithInfo(t, f.Info, out string error, false, f.ReplacePrevious, f.FreshContext)
-                    ? $"任务 #{t.Id} 已插入补充信息并重新排队 / Task #{t.Id} requeued with info"
+                    ? (merge
+                        ? $"补充要求已合并到排队中的任务 #{t.Id}，发送时一并带上 / Info merged into queued task #{t.Id}"
+                        : $"任务 #{t.Id} 已插入补充信息并重新排队 / Task #{t.Id} requeued with info")
                     : error);
             }
         }

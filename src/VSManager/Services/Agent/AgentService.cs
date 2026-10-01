@@ -285,6 +285,10 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<string, int, int, bool, bool, bool, Task<string>>)ArrangeWorkspace, "arrange_workspace_layout"),
                 AIFunctionFactory.Create((Func<string, Task<string>>)PlaceWorkspace, "place_workspace_windows"),
                 AIFunctionFactory.Create((Func<Task<string>>)RestoreWorkspaceLayout, "restore_workspace_layout"),
+                AIFunctionFactory.Create((Func<string, Task<string>>)SaveLayoutMemory, "save_layout_memory"),
+                AIFunctionFactory.Create((Func<Task<string>>)ApplyLayoutMemory, "apply_layout_memory"),
+                AIFunctionFactory.Create((Func<Task<string>>)ListLayoutMemories, "list_layout_memories"),
+                AIFunctionFactory.Create((Func<int, Task<string>>)DeleteLayoutMemory, "delete_layout_memory"),
 AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
 AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
 AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"),
@@ -318,6 +322,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string>)StopSelfIteration, "stop_self_iteration"),
                 AIFunctionFactory.Create((Func<int, string, bool, Task<string>>)RetryTask, "retry_task"),
                 AIFunctionFactory.Create((Func<int, int, Task<string>>)ReadTaskReply, "read_task_reply"),
+                AIFunctionFactory.Create((Func<int, int, Task<string>>)ReadSendDiagnostics, "read_send_diagnostics"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)ScanVsCode, "scan_vs_code"),
                 AIFunctionFactory.Create((Func<string, string, string, Task<string>>)RequestImprovement, "request_vsmanager_improvement"),
                 AIFunctionFactory.Create((Func<string, string, int, string, CancellationToken, Task<string>>)ReadVsFile, "read_vs_file"),
@@ -578,7 +583,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             // 会话层隔离：确定本轮所属项目 / Session isolation: decide which project this round belongs to
             scope = !SessionIsolation ? null : scope == null ? InferScope(text) : AgentSessionScopes.Key(scope);
             CurrentScope = scope;
-            if (files.Length > 0) RememberAttachments(files);
+            // 无附件时也要重置「最近附件」，避免 "last" 取到上一条消息的附件 / Reset "last" even without attachments so it never resolves to a previous message's files
+            RememberAttachments(files);
             string links = AttachmentLinks(files);
             var user = new ChatMessage { Role = ChatRole.User };
             user.Parts.Add(new ChatPart { Text = (string.IsNullOrWhiteSpace(display) ? text : display) + links });
@@ -932,6 +938,10 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "arrange_workspace_layout": return "自动布局 VS 主窗口、Copilot 与附属窗格 / Arrange VS workspace";
                 case "place_workspace_windows": return "按 AI 设计摆放 VS 窗口与窗格 / Place VS windows as designed by the AI";
                 case "restore_workspace_layout": return "还原 VS 工作区布局 / Restore VS workspace layout";
+                case "save_layout_memory": return "保存窗口布局记忆 / Save window layout memory";
+                case "apply_layout_memory": return "按布局记忆一键布局 / Apply remembered layout";
+                case "list_layout_memories": return "查看窗口布局记忆 / List window layout memories";
+                case "delete_layout_memory": return "删除窗口布局记忆 / Delete window layout memory";
                 case "arrange_copilot_panes":
                 {
                     string scr = Arg("screen");
@@ -957,7 +967,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "pause_task_queue":
                     return Arg("paused").Equals("false", StringComparison.OrdinalIgnoreCase) ? "继续任务队列 / Resume task queue"
                         : "暂停任务队列" + (Arg("interrupt_running").Equals("true", StringComparison.OrdinalIgnoreCase) ? "并中断执行中的任务（需用户确认）" : "") + " / Pause task queue";
-                case "retry_task_with_info": return "补充信息后重试任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
+                case "retry_task_with_info": return "补充信息（排队中合并 / 否则重试）任务 #" + Arg("id") + (Arg("from_user") == "True" || Arg("from_user") == "true" ? "（用户补充）" : "") + "：" + OneLine(Arg("info"), 50);
                 case "continue_task": return "发布任务 #" + Arg("id") + " 的接续任务：" + OneLine(Arg("remaining"), 50) + " / Continue task";
                 case "edit_task_result": return "修改任务 #" + Arg("id") + " 的结果文字 / Edit task result";
                 case "restart_vsmanager_for_testing": return "预编译并重启 VSManager 以测试新程序 / Pre-build and restart VSManager for testing";
@@ -972,6 +982,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "list_test_checklists": return (Arg("taskId").Length > 0 && Arg("taskId") != "0" ? "查看任务 #" + Arg("taskId") + " 的测试清单" : "查看全部测试清单") + " / List test checklists";
                 case "mark_test_item": return (Arg("passed").Equals("false", StringComparison.OrdinalIgnoreCase) ? "取消勾选" : "勾选") + "任务 #" + Arg("taskId") + " 的测试项 " + Arg("item") + " / Mark test item";
                 case "retry_task": return "重试任务 #" + Arg("id") + (Arg("note").Length > 0 ? "：" + OneLine(Arg("note"), 50) : "") + " / Retry task";
+                case "read_send_diagnostics": return "读取发送诊断" + (Arg("task_id").Length > 0 && Arg("task_id") != "0" ? "（任务 #" + Arg("task_id") + "）" : "") + " / Read send diagnostics";
                 case "read_task_reply": return "读取任务 #" + Arg("id") + " 的完整 Copilot 回复 / Read the whole task reply";
                 case "scan_vs_code": return "扫描授权文件元数据 / Scan granted file metadata";
                 case "read_vs_file":

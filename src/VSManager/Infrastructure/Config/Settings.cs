@@ -462,6 +462,8 @@ namespace VSManager
         [DataMember] public bool CadDebugAutoLoad;
         /// <summary>各解决方案的 CAD 调试图纸（Key 为解决方案路径，Alias 为图纸路径），由 AI 总控助手记录。/ CAD debug drawing per solution (Key = solution path, Alias = drawing path), recorded by the AI assistant.</summary>
         [DataMember] public List<AliasEntry> CadDebugDrawings;
+        /// <summary>窗口布局记忆（Key 为屏幕签名 + VS 个数，Alias 为 place_workspace_windows 布局 JSON），同一屏幕状态再次保存会替换。/ Window layout memories (Key = display signature + VS count, Alias = place_workspace_windows layout JSON); saving again for the same state replaces the entry.</summary>
+        [DataMember] public List<AliasEntry> LayoutMemories;
         /// <summary>是否为 AI 总控助手挂载 MCP 服务器，默认关闭。/ Whether MCP servers are mounted for the AI assistant; off by default.</summary>
         [DataMember] public bool McpEnabled;
         /// <summary>MCP 服务器配置 JSON（{"mcpServers":{...}}），只由用户在属性页编辑，默认为空。/ MCP server configuration JSON ({"mcpServers":{...}}), edited only by the user in Settings; empty by default.</summary>

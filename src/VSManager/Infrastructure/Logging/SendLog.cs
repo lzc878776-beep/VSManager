@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -46,6 +47,7 @@ namespace VSManager
 
             public Trace(VsInstance vs, string text, int images, bool background)
             {
+                _vs = vs;
                 string one = (text ?? "").Replace("\r", " ").Replace("\n", " ⏎ ");
                 if (one.Length > 80) one = one.Substring(0, 80) + "…";
                 _sb.Append("===== ").Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"))
@@ -55,12 +57,44 @@ namespace VSManager
                 _sb.Append("，").Append(background ? "后台优先" : "前台").Append(")：").Append(one).Append("\r\n");
             }
 
-            public void Step(string s) => _sb.Append("  +").Append(_sw.ElapsedMilliseconds.ToString().PadLeft(5)).Append("ms  ").Append(s).Append("\r\n");
+            private readonly VsInstance _vs;
+            private readonly List<string> _steps = new List<string>();
+            private SendStage _stage = SendStage.Queue;
+            private SendStageState? _focus;
+            private string _focusDetail;
 
-            public void Done(string result)
+            /// <summary>发送进入的最后一步。/ Last step the send entered.</summary>
+            public SendStage Stage => _stage;
+
+            public void Step(string s)
             {
+                string line = "+" + _sw.ElapsedMilliseconds.ToString().PadLeft(5) + "ms  " + s;
+                _steps.Add(line);
+                _sb.Append("  ").Append(line).Append("\r\n");
+            }
+
+            /// <summary>进入某一步（只前进不后退）。/ Enters a step (only moves forward).</summary>
+            public void Enter(SendStage stage)
+            {
+                if (stage <= _stage || stage == SendStage.Focus) return;
+                _stage = stage;
+                Step("【步骤 / Step】" + SendDiagnosis.Name(stage));
+            }
+
+            /// <summary>记录恢复焦点的结果。/ Records the focus-restore outcome.</summary>
+            public void Focus(SendStageState state, string detail)
+            {
+                _focus = state;
+                _focusDetail = detail;
+            }
+
+            public SendDiagnosisRecord Done(string result)
+            {
+                var record = SendDiagnosis.Add(_vs?.Pid ?? 0, _vs?.Title, _stage, result, _focus, _focusDetail, _sw.ElapsedMilliseconds, _steps);
+                _sb.Append("  阶段 / Stages：").Append(record.StageLine).Append("\r\n");
                 _sb.Append("  => ").Append(result).Append("  (").Append(_sw.ElapsedMilliseconds).Append("ms)\r\n");
                 Write(_sb.ToString());
+                return record;
             }
         }
     }

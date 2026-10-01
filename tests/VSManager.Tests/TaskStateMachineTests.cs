@@ -67,7 +67,9 @@ namespace VSManager.Tests
         {
             var t = Waiting();
             t.CompletionToken = "tok";
-            Assert.IsFalse(TaskStateMachine.Supplement(t, "info", out _), "排队中不能补充 / waiting cannot be supplemented");
+            t.Status = QueueStatus.Running;
+            Assert.IsFalse(TaskStateMachine.Supplement(t, "info", out _), "执行中不能补充 / running cannot be supplemented");
+            t.Status = QueueStatus.Waiting;
             for (int i = 1; i <= TaskStateMachine.MaxSupplements; i++)
             {
                 TaskStateMachine.Fail(t, "err" + i, T0);
@@ -83,6 +85,35 @@ namespace VSManager.Tests
             Assert.IsFalse(TaskStateMachine.Supplement(t, "info4", out string capped));
             StringAssert.Contains(capped, "上限");
             Assert.IsFalse(TaskStateMachine.Supplement(t, "  ", out _));
+        }
+
+        [TestMethod]
+        public void Supplement_QueuedTask_MergesIntoOriginalWithoutRequeueOrCount()
+        {
+            foreach (string status in new[] { QueueStatus.Waiting, QueueStatus.WaitingVs })
+            {
+                var t = Waiting();
+                t.CompletionToken = "tok";
+                t.Status = status;
+                t.NextTry = T0.AddMinutes(5);
+                Assert.IsTrue(TaskStateMachine.CanSupplement(t));
+                for (int i = 1; i <= TaskStateMachine.MaxSupplements + 1; i++)
+                    Assert.IsTrue(TaskStateMachine.Supplement(t, "要求" + i, out string error), error);
+                Assert.AreEqual(status, t.Status, "仍在原条目排队 / stays queued in place");
+                Assert.AreEqual(T0.AddMinutes(5), t.NextTry, "不打乱排队节奏 / queue timing untouched");
+                Assert.AreEqual(0, t.SupplementCount, "排队中的补充不计次数 / queued merges are not counted");
+                string text = TaskStateMachine.DispatchText(t);
+                StringAssert.Contains(text, "【补充要求】要求1 ｜ 要求2 ｜ 要求3 ｜ 要求4");
+                StringAssert.Contains(text, "一并完成");
+                Assert.IsFalse(text.Contains("上次"), "未执行过的任务不提「上次」/ never-run tasks do not mention a previous attempt");
+                Assert.IsTrue(TaskStateMachine.Supplement(t, "整合后的要求", out _, replace: true));
+                StringAssert.Contains(TaskStateMachine.DispatchText(t), "【补充要求】整合后的要求 ");
+            }
+            var sending = Waiting();
+            sending.Status = QueueStatus.Sending;
+            Assert.IsFalse(TaskStateMachine.CanSupplement(sending));
+            Assert.IsFalse(TaskStateMachine.Supplement(sending, "late", out string refused));
+            StringAssert.Contains(refused, "排队中");
         }
 
         [TestMethod]

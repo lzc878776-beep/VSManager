@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
@@ -84,6 +85,7 @@ namespace VSManager.Tests
                                 while (!Field<bool>(preview, "_ready") && DateTime.UtcNow < deadline) await Task.Delay(50);
                                 Assert.IsTrue(Field<bool>(preview, "_ready"), Field<Label>(preview, "_message").Text);
                                 browser = Process.GetProcessById((int)web.CoreWebView2.BrowserProcessId);
+                                await WaitForScript(web, "!!document.querySelector('h1')");
                                 Assert.AreEqual("3", await web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('input[type=checkbox]').length"));
                                 Assert.AreEqual("1", await web.CoreWebView2.ExecuteScriptAsync("document.querySelectorAll('table').length"));
                                 Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('h1').textContent === '项目修改记录'"));
@@ -233,6 +235,123 @@ namespace VSManager.Tests
             Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("document.documentElement.scrollWidth<=window.innerWidth"));
             form.Width = Dpi.S(1400);
             await Task.Delay(100);
+        }
+
+        [TestMethod]
+        [TestCategory("WebView2")]
+        public void Notebook_RenderedView_EditsInPlace_AndKeepsUntouchedMarkdown()
+        {
+            try { CoreWebView2Environment.GetAvailableBrowserVersionString(); }
+            catch (WebView2RuntimeNotFoundException) { Assert.Inconclusive("WebView2 Runtime is required for this UI integration test."); }
+            Exception failure = null;
+            var thread = new Thread(() =>
+            {
+                string root = Path.Combine(Path.GetTempPath(), "vsm-notebook-inplace-" + Guid.NewGuid().ToString("N"));
+                string previousFolder = TranscriptView.UserDataFolder;
+                var environmentField = typeof(TranscriptView).GetField("_sharedEnvironment", BindingFlags.Static | BindingFlags.NonPublic);
+                object previousEnvironment = environmentField.GetValue(null);
+                Process browser = null;
+                try
+                {
+                    TranscriptView.UserDataFolder = Path.Combine(root, "browser");
+                    environmentField.SetValue(null, null);
+                    var store = new NotebookStore(Path.Combine(root, "notes"));
+                    string original = "# Plan\n\nKeep *this* exactly  \nas is.\n\nEdit me\n\n- [ ] task\n- other\n\n| A | B |\n|:-:|---|\n| 1 | 2 |\n\n" +
+                        "```card\nstatus: done\ntitle: Card\n```\n\n[r]: https://example.com\n";
+                    string note = store.CreatePage("", "In place", original);
+                    string other = store.CreatePage("", "Other", "other");
+                    using (var form = new Form { Size = new Size(Dpi.S(1200), Dpi.S(820)) })
+                    using (var workspace = new NotebookWorkspace(store) { Dock = DockStyle.Fill })
+                    {
+                        form.Controls.Add(workspace);
+                        workspace.Initialize();
+                        form.Shown += async (s, e) =>
+                        {
+                            try
+                            {
+                                var tree = Field<TreeView>(workspace, "_tree");
+                                tree.ExpandAll();
+                                tree.SelectedNode = Flatten(tree.Nodes).First(n => n.Text.Contains("In place"));
+                                var preview = Field<NotebookPreview>(workspace, "_preview");
+                                var web = Field<WebView2>(preview, "_web");
+                                DateTime deadline = DateTime.UtcNow.AddSeconds(20);
+                                while (!Field<bool>(preview, "_ready") && DateTime.UtcNow < deadline) await Task.Delay(50);
+                                Assert.IsTrue(Field<bool>(preview, "_ready"), Field<Label>(preview, "_message").Text);
+                                browser = Process.GetProcessById((int)web.CoreWebView2.BrowserProcessId);
+                                await WaitForScript(web, "note.isContentEditable&&!!document.querySelector('h1')");
+                                Assert.IsTrue(Field<SplitContainer>(workspace, "_split").Panel1Collapsed, "不显示 Markdown 源码 / The Markdown source stays hidden");
+                                Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("serialize()===doc.src"), "未改动时原样输出 / Untouched pages serialize to their exact source");
+                                Assert.AreEqual("\"false\"", await web.CoreWebView2.ExecuteScriptAsync("document.querySelector('.note-card').contentEditable"));
+                                await web.CoreWebView2.ExecuteScriptAsync("window.marker=note.firstElementChild");
+
+                                await web.CoreWebView2.ExecuteScriptAsync("(()=>{const p=[...note.querySelectorAll('p')].find(p=>p.textContent==='Edit me');p.firstChild.nodeValue='Edited a*b_c [x] 1. done';note.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:'x'}));})()");
+                                string expected = original.Replace("Edit me", "Edited a\\*b_c \\[x\\] 1. done");
+                                await WaitForStore(store, note, expected);
+
+                                await web.CoreWebView2.ExecuteScriptAsync("note.querySelector('input[type=checkbox]').dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true}))");
+                                expected = expected.Replace("- [ ] task", "- [x] task");
+                                await WaitForStore(store, note, expected);
+
+                                await web.CoreWebView2.ExecuteScriptAsync("(()=>{const cell=note.querySelector('td');cell.firstChild.nodeValue='1|x';note.dispatchEvent(new InputEvent('input',{inputType:'insertText',data:'x'}));})()");
+                                expected = expected.Replace("| A | B |\n|:-:|---|\n| 1 | 2 |", "| A | B |\n| :---: | --- |\n| 1\\|x | 2 |");
+                                await WaitForStore(store, note, expected);
+
+                                await web.CoreWebView2.ExecuteScriptAsync(
+                                    "focusEnd();document.execCommand('insertText',false,'#');document.execCommand('insertText',false,' ');document.execCommand('insertText',false,'New heading');" +
+                                    "document.execCommand('insertParagraph');document.execCommand('bold');document.execCommand('insertText',false,'strong');document.execCommand('bold');" +
+                                    "document.execCommand('insertParagraph');document.execCommand('insertText',false,'-');document.execCommand('insertText',false,' ');document.execCommand('insertText',false,'item');" +
+                                    "document.execCommand('insertParagraph');document.execCommand('insertParagraph');document.execCommand('insertText',false,'```js');" +
+                                    "note.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));document.execCommand('insertText',false,'let a = 1;');");
+                                expected += "\n# New heading\n\n**strong**\n\n- item\n\n```js\nlet a = 1;\n```\n";
+                                await WaitForStore(store, note, expected);
+                                Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync("note.firstElementChild===window.marker"), "保存后不重新渲染 / Saving does not re-render the page");
+
+                                workspace.OpenLinkedNote("page:" + other);
+                                await WaitForScript(web, "note.textContent.trim()==='other'");
+                                workspace.OpenLinkedNote("page:" + note);
+                                await WaitForScript(web, "!!note.querySelector('pre code.language-js')");
+                                Assert.AreEqual("true", await web.CoreWebView2.ExecuteScriptAsync(
+                                    "[...note.querySelectorAll('p')].some(p=>p.textContent==='Edited a*b_c [x] 1. done')&&note.querySelector('strong').textContent==='strong'" +
+                                    "&&[...note.querySelectorAll('h1')].some(h=>h.textContent==='New heading')&&note.querySelector('td').textContent==='1|x'" +
+                                    "&&note.querySelector('input[type=checkbox]').hasAttribute('checked')&&serialize()===doc.src"));
+                                Assert.AreEqual(expected, store.Read(note).Text);
+                            }
+                            catch (Exception ex) { failure = ex; }
+                            finally { form.Close(); }
+                        };
+                        Application.Run(form);
+                    }
+                }
+                catch (Exception ex) { failure = ex; }
+                finally
+                {
+                    TranscriptView.UserDataFolder = previousFolder;
+                    environmentField.SetValue(null, previousEnvironment);
+                    if (browser != null) { browser.WaitForExit(10000); browser.Dispose(); }
+                    try { if (Directory.Exists(root)) Directory.Delete(root, true); }
+                    catch (IOException ex) { if (failure == null) failure = ex; }
+                }
+            }) { IsBackground = true };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            Assert.IsTrue(thread.Join(TimeSpan.FromSeconds(90)), "Notebook in-place edit test timed out");
+            if (failure != null) ExceptionDispatchInfo.Capture(failure).Throw();
+        }
+
+        private static IEnumerable<TreeNode> Flatten(TreeNodeCollection nodes) =>
+            nodes.Cast<TreeNode>().SelectMany(n => new[] { n }.Concat(Flatten(n.Nodes)));
+
+        private static async Task WaitForStore(NotebookStore store, string page, string expected)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            string actual = null;
+            while (DateTime.UtcNow < deadline)
+            {
+                actual = store.Read(page).Text;
+                if (actual == expected) return;
+                await Task.Delay(50);
+            }
+            Assert.AreEqual(expected, actual, "笔记内容未按预期保存 / Note was not saved as expected");
         }
 
         private static async Task WaitForScript(WebView2 web, string condition)
