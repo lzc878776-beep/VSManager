@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
+using System.Threading.Tasks;
 using Microsoft.Extensions.AI;
 
 namespace VSManager
@@ -33,13 +34,26 @@ namespace VSManager
         /// </summary>
         public Func<NoteSnapshot> CurrentNoteSource { get; set; }
 
-        private List<AITool> NoteTools() => new List<AITool>
+        /// <summary>
+        /// 笔记本技能的工具：总控助手与笔记助手共用同一套（提示词见 <see cref="Prompts.NoteSkill"/>）。
+        /// Tools of the notebook skill, shared by the manager and the note assistant (prompt: <see cref="Prompts.NoteSkill"/>).
+        /// </summary>
+        internal static IReadOnlyList<string> NoteSkillToolNames => AgentToolGroups.NoteSkill;
+
+        private List<AITool> NoteSkillTools() => new List<AITool>
         {
             AIFunctionFactory.Create((Func<string>)ReadCurrentNote, "read_current_note"),
             AIFunctionFactory.Create((Func<string, string>)ListNotes, "list_notes"),
             AIFunctionFactory.Create((Func<string, string>)ReadNote, "read_note"),
+            AIFunctionFactory.Create((Func<string, string, string, Task<string>>)CreateNote, "create_note"),
+            AIFunctionFactory.Create((Func<string, string, Task<string>>)AppendToNote, "append_to_note"),
+            AIFunctionFactory.Create((Func<string, string, Task<string>>)UpdateNote, "update_note"),
             AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string>)FormatNoteCard, "format_note_card"),
+            AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCard, "add_note_card"),
+            AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCardStyleSamples, "add_note_card_styles"),
         };
+
+        private List<AITool> NoteTools() => NoteSkillTools();
 
         private NoteSnapshot CurrentNote()
         {

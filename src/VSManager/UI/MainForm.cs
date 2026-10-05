@@ -125,6 +125,8 @@ namespace VSManager
 			_agent = new AgentService(this, () => _settings);
 			_mcp.Apply(_settings.McpEnabled, _settings.McpServersJson);
 			_agent.NotebookPromptSource = () => NotebookAgentPrompt.Load(new NotebookStore());
+			// 与笔记助手共用笔记本技能，含读取当前打开的笔记 / Shares the notebook skill with the note assistant, including reading the open note
+			_agent.CurrentNoteSource = CurrentNoteSnapshot;
 			_agentSupervisor = new AgentSupervisor(_agent, () => _settings);
 			_agentSupervisor.Notice += msg => SafeInvoke(() =>
 			{
@@ -197,6 +199,7 @@ namespace VSManager
 			Theme.DarkTitleBar(this);
 			// 全局快捷键 Ctrl+Alt+0：随时唤出主窗口 / Global hotkey Ctrl+Alt+0 shows the main window at any time
 			_showHotkeyOk = Native.RegisterHotKey(Handle, ShowHotkeyId, Native.MOD_CONTROL | Native.MOD_ALT | Native.MOD_NOREPEAT, 0x30);
+			RegisterSnipHotkey();
 		}
 
 		private const int ShowHotkeyId = 100;
@@ -244,6 +247,7 @@ namespace VSManager
 			_btnRestart.Click += (s, e) => _btnRestart.ContextMenuStrip.Show(_btnRestart, new Point(0, _btnRestart.Height));
 			_tips.SetToolTip(_btnRestart, "重启 AI 助手 / 重启 VSManager，以及自动重启与看门狗开关\nRestart the AI assistant / VSManager, and the auto-restart and watchdog switches");
 			_header.Controls.Add(_btnRestart);
+			BuildSnipButton();
 			_memGuard.Notify += msg => BeginInvoke(new Action(() =>
 			{
 				SetStatus("🧠 " + msg);
@@ -613,6 +617,11 @@ namespace VSManager
 			_btnHistory.Location = new Point(_btnPublish.Left - _btnHistory.Width - Dpi.S(8), _btnSettings.Top);
 			_btnMemory.Location = new Point(_btnHistory.Left - _btnMemory.Width - Dpi.S(8), _btnSettings.Top);
 			_btnRestart.Location = new Point(_btnMemory.Left - _btnRestart.Width - Dpi.S(8), _btnSettings.Top);
+			_btnSnip.Location = new Point(_btnRestart.Left - _btnSnip.Width - Dpi.S(8), _btnSettings.Top);
+			// 窗口较窄时不压在标题上（仍可用快捷键或托盘菜单截图）/ Hide on narrow windows so it never covers the title (the hotkey and tray menu still work)
+			int titleRight = Dpi.S(62) + Math.Max(TextRenderer.MeasureText("多 VS 管理工具", Theme.AppTitle).Width,
+				TextRenderer.MeasureText("Copilot 多实例控制台 · 对话 · 调试 · 布局", Theme.Small).Width) + Dpi.S(12);
+			_btnSnip.Visible = _btnSnip.Left >= titleRight;
 		}
 
 		/// <summary>当前 VS 列表的快照（编号与名称与主界面一致）。/ Snapshot of the VS list (numbers and names as in the main window).</summary>
@@ -738,7 +747,7 @@ namespace VSManager
 			var list = _instances;
 			int busy = list.Count(v => v.Copilot == CopilotState.Busy);
 			int debugging = list.Count(v => v.DebugMode == 2 || v.DebugMode == 3);
-			int x = _btnRestart.Left - Dpi.S(14);
+			int x = (_btnSnip.Visible ? _btnSnip.Left : _btnRestart.Left) - Dpi.S(14);
 			// 窗口较窄时跳过放不下的状态标签，避免压在标题上 / Skip chips that don't fit so they never cover the title
 			int minLeft = tx + Math.Max(TextRenderer.MeasureText(g, "多 VS 管理工具", Theme.AppTitle).Width,
 				TextRenderer.MeasureText(g, "Copilot 多实例控制台 · 对话 · 调试 · 布局", Theme.Small).Width) + Dpi.S(12);
@@ -1773,6 +1782,7 @@ namespace VSManager
 			}
 			m.AddGroup("管理工具 / VSManager");
 			m.Items.Add("显示主窗口" + (_showHotkeyOk ? "（Ctrl+Alt+0）" : ""), null, (s, e) => ShowMe());
+			m.Items.Add("截图 / Screenshot" + (SnipHotkeyText.Length > 0 ? "（" + SnipHotkeyText + "）" : ""), null, (s, e) => StartSnip(false, 250));
 			m.Items.Add("重启 VSManager… / Restart VSManager…", null, (s, e) => { ShowMe(); RestartApp(); });
 			m.Items.Add("退出", null, (s, e) => { _exiting = true; Close(); });
 		}
@@ -2776,6 +2786,7 @@ namespace VSManager
 			{
 				int id = m.WParam.ToInt32();
 				if (id == ShowHotkeyId) ShowMe();
+				else if (id == SnipHotkeyId) StartSnip(false);
 				else if (id >= 1 && id <= _list.Items.Count && _list.Items[id - 1] is VsInstance v)
 					ActivateVs(v);
 			}
@@ -2922,6 +2933,7 @@ namespace VSManager
 			CleanupVoice();
 			for (int i = 1; i <= 9; i++) Native.UnregisterHotKey(Handle, i);
 			Native.UnregisterHotKey(Handle, ShowHotkeyId);
+			UnregisterSnipHotkey();
 			_tray.Visible = false;
 			_tray.Dispose();
 			base.OnFormClosing(e);

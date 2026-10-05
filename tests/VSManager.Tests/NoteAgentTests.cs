@@ -25,6 +25,41 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void ManagerAndNoteAgent_ShareTheNotebookSkill()
+        {
+            var settings = new AppSettings { AgentEndpoint = "http://localhost:11434/v1", AgentModel = "test", AgentConfirm = false };
+            using (var note = NewNoteAgent(() => null))
+            using (var manager = new AgentService(new AgentDesktopTests.DesktopHost(), () => settings))
+            {
+                var noteNames = Tools(note).Select(t => t.Name).ToList();
+                var managerNames = Tools(manager).Select(t => t.Name).ToList();
+                CollectionAssert.AreEquivalent(AgentService.NoteSkillToolNames.ToList(), noteNames);
+                CollectionAssert.IsSubsetOf(AgentService.NoteSkillToolNames.ToList(), managerNames);
+                Assert.AreEqual(managerNames.Count, managerNames.Distinct().Count(), "工具名不重复 / Tool names are unique");
+                Assert.AreEqual(AgentService.NoteSkillToolNames.Count, AgentToolGroups.All.Single(g => g.Key == "notes").Tools.Intersect(AgentService.NoteSkillToolNames).Count());
+            }
+            foreach (bool en in new[] { false, true })
+            {
+                string skill = Prompts.NoteSkill(en);
+                StringAssert.Contains(Prompts.NoteAgentSystem(en, DateTime.Now, null), skill);
+                StringAssert.Contains(Prompts.AgentSystem(en, DateTime.Now, "", null), skill);
+                foreach (var name in AgentService.NoteSkillToolNames) StringAssert.Contains(skill, name);
+            }
+        }
+
+        [TestMethod]
+        public async Task ManagerReadCurrentNote_UsesTheNotebookSnapshot()
+        {
+            var settings = new AppSettings { AgentEndpoint = "http://localhost:11434/v1", AgentModel = "test", AgentConfirm = false };
+            using (var manager = new AgentService(new AgentDesktopTests.DesktopHost(), () => settings)
+                { CurrentNoteSource = () => new NoteSnapshot { Id = "n1", TitlePath = "Work / Plan", Text = "Ship the release" } })
+            {
+                var tool = Tools(manager).Single(t => t.Name == "read_current_note");
+                StringAssert.Contains((await tool.InvokeAsync(new AIFunctionArguments()))?.ToString(), "Ship the release");
+            }
+        }
+
+        [TestMethod]
         public void NoteProfile_RegistersOnlyNoteTools()
         {
             using (var agent = NewNoteAgent(() => null))

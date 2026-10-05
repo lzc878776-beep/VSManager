@@ -93,6 +93,45 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Move_ReordersSiblingsAndChangesParent_Persistently()
+        {
+            string a = _store.CreatePage("", "A");
+            string b = _store.CreatePage("", "B");
+            string c = _store.CreatePage("", "C");
+            string Names() => string.Join(",", new NotebookStore(_root).LoadTree().Select(x => x.Name));
+            Assert.AreEqual("A,B,C", Names());
+            Assert.IsTrue(_store.Move(c, "", a));
+            Assert.AreEqual("C,A,B", Names());
+            Assert.IsFalse(_store.Move(c, "", a), "已在该位置时不改动 / No change when already there");
+            Assert.IsTrue(_store.Move(c, ""));
+            Assert.AreEqual("A,B,C", Names());
+            _store.CreatePage("", "0 New");
+            Assert.AreEqual("A,B,C,0 New", Names(), "手动排序后新页面排在末尾 / New pages go last once a level is ordered manually");
+
+            string child = _store.CreatePage(a, "Child");
+            Assert.IsTrue(_store.Move(b, a, child));
+            CollectionAssert.AreEqual(new[] { "B", "Child" }, _store.LoadTree().Single(x => x.Name == "A").Children.Select(x => x.Name).ToArray());
+            Assert.AreEqual(a, _store.ParentOf(b));
+            Assert.IsTrue(_store.Move(b, ""));
+            Assert.AreEqual("", _store.ParentOf(b));
+        }
+
+        [TestMethod]
+        public void Move_RejectsCyclesDuplicatesAndMissingTargets()
+        {
+            string a = _store.CreatePage("", "A");
+            string child = _store.CreatePage(a, "Child");
+            string other = _store.CreatePage("", "Other");
+            _store.CreatePage(other, "A");
+            Assert.ThrowsException<IOException>(() => _store.Move(a, a));
+            Assert.ThrowsException<IOException>(() => _store.Move(a, child), "不能移到子页面下 / Cannot move under a subpage");
+            Assert.ThrowsException<IOException>(() => _store.Move(a, other), "同名同级 / Duplicate sibling title");
+            Assert.ThrowsException<IOException>(() => _store.Move(child, "", Guid.NewGuid().ToString("N")));
+            Assert.AreEqual(a, _store.ParentOf(child));
+            Assert.AreEqual(2, _store.LoadTree().Count);
+        }
+
+        [TestMethod]
         public void Ids_AndTitles_AreValidated()
         {
             foreach (var title in new[] { "", " a", "a ", "a\nb", new string('x', 121) })

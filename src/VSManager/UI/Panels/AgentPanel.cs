@@ -369,7 +369,7 @@ namespace VSManager
                     ? "尚未配置 AI 模型\n\n点击右上角「⚙ 模型设置」，选择 DeepSeek 并填写 API Key 后即可使用\n（在 platform.deepseek.com 创建 Key）"
                     : _noteMode
                     ? "我是笔记助手，可以阅读并整理你的笔记：\n\n· 总结这篇笔记\n· 找出所有提到发布的笔记\n· 把这篇改写成周报\n\nI am the note assistant: ask me to summarize, search or rewrite notes."
-                    : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案\n\n输入 @小维 明确把消息交给我，@ 加 VS 编号则指定目标 VS / Type @小维 to address me, or @ plus a VS number to target a VS");
+                    : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案\n\n不加 @ 或输入 @小维 时消息交给我，@ 加 VS 编号则指定目标 VS / Messages without @ or with @小维 come to me; @ plus a VS number targets a VS");
                 return;
             }
             _transcript.Render(_agent.Transcript, true);
@@ -402,6 +402,8 @@ namespace VSManager
                 _inputStatus.Text = _mentionStatus;
                 return;
             }
+            // 没有 @VS 标签时默认交给 @小维，不沿用之前 @ 过的 VS。/ Without an @VS chip the message defaults to @小维 instead of reusing a previously mentioned VS.
+            if (fromInput && !_noteMode) { SendToAssistant(text, files, true); return; }
             if (_agent == null) return;
             if (_agent.Running || (text.Length == 0 && files.Length == 0)) return;
             if (!_agent.Configured) { SettingsRequested?.Invoke(); return; }
@@ -450,9 +452,10 @@ namespace VSManager
         /// @小维：把消息交给 AI 总控助手按常规规则处理；其中的 VS 提及换成「#编号 名称」作为上下文，不直接入队。
         /// @小维: hands the message to the AI assistant under its normal rules; VS mentions inside become "#number name" context instead of direct enqueues.
         /// </summary>
-        private void SendToAssistant(string text, AttachmentRef[] files)
+        private void SendToAssistant(string text, AttachmentRef[] files, bool byDefault = false)
         {
             if (_agent == null) return;
+            if (byDefault && text.Length == 0 && files.Length == 0) return;
             if (!_agent.Configured) { SettingsRequested?.Invoke(); return; }
             if (_agent.Running) { _mentionStatus = AssistantBusy; _inputStatus.Text = _mentionStatus; return; }
             var live = _mentionTargets?.Invoke() ?? new VsMentionTarget[0];
@@ -462,7 +465,7 @@ namespace VSManager
             _input.Clear(); _pending.Clear(); RefreshChips();
             _mentionStatus = "已交给小维 / Handed to 小维";
             _inputStatus.Text = _mentionStatus;
-            _ = _agent.RunAsync(AssistantPrompt(body, names), shown, files);
+            _ = _agent.RunAsync(AssistantPrompt(body, names, byDefault), shown, files);
             FocusInput();
         }
 
@@ -488,11 +491,18 @@ namespace VSManager
             return sb.ToString().Trim();
         }
 
-        /// <summary>@小维 消息发给模型的文字。/ Model text for an @小维 message.</summary>
-        internal static string AssistantPrompt(string body, IList<string> names)
+        /// <summary>
+        /// @小维 消息发给模型的文字；byDefault 为 true 表示输入里没有任何 @ 标签、按默认交给小维。
+        /// Model text for an @小维 message; byDefault means the input had no @ chip and went to 小维 by default.
+        /// </summary>
+        internal static string AssistantPrompt(string body, IList<string> names, bool byDefault = false)
         {
             string text = body.Length == 0 ? "（用户只发送了附件 / The user only sent attachments）" : body;
-            string note = "\n\n[用户用 @小维 明确把这条消息交给你（AI 总控助手）处理，请直接回应或按常规规则调用工具 / The user addressed this message to you (the AI assistant) via @小维; answer it or use tools under your normal rules";
+            string note = byDefault
+                ? "\n\n[输入栏没有 @ 任何 VS，这条消息默认交给你（@小维，AI 总控助手）处理：请直接回应或按常规规则调用工具；不要沿用之前消息中 @ 过的 VS 作为默认目标，需要发布任务时按本条内容重新判断目标 VS / "
+                    + "The input had no @VS chip, so this message defaults to you (@小维, the AI assistant): answer it or use tools under your normal rules; do not reuse a VS mentioned in earlier messages as the default target, and if a task is needed choose the target VS afresh from this message]"
+                : "\n\n[用户用 @小维 明确把这条消息交给你（AI 总控助手）处理，请直接回应或按常规规则调用工具 / The user addressed this message to you (the AI assistant) via @小维; answer it or use tools under your normal rules";
+            if (byDefault) return text + note;
             if (names != null && names.Count > 0)
                 note += "；消息中提到的 VS：" + string.Join("、", names) + "，仅作为上下文，是否发布任务由你判断 / VS mentioned: " + string.Join(", ", names) + ", context only; you decide whether to publish tasks";
             return text + note + "]";

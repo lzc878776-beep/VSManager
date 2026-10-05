@@ -77,5 +77,24 @@ namespace VSManager.Tests
             StringAssert.Contains(s, "aaaaa…aaaaa");
             StringAssert.Contains(s, "100");
         }
+
+        [TestMethod]
+        public void WriteDiagnostics_ReportsLengthsAndVerdictWithoutContent()
+        {
+            string d = CopilotChat.WriteDiagnostics("secret-abcdef", "secret-abX");
+            StringAssert.Contains(d, "Verdict=Mismatch");
+            StringAssert.Contains(d, "Expected=13(13)");
+            StringAssert.Contains(d, "Read=10(10)");
+            StringAssert.Contains(d, "CommonPrefix=9");
+            Assert.IsFalse(d.Contains("secret"));
+        }
+
+        [TestMethod]
+        public void WriteDiagnostics_UnreadableInput()
+        {
+            string d = CopilotChat.WriteDiagnostics("abc", null);
+            StringAssert.Contains(d, "Verdict=Unreadable");
+            StringAssert.Contains(d, "Read=null");
+        }
     }
 }

@@ -73,7 +73,7 @@ namespace VSManager
             }
         }
 
-        [Description("笔记本技能：按页面编号读取笔记标题路径与正文（Markdown）；只读。若要据此发布任务，须先把拟发布的任务清单（目标 VS 与任务文本）呈现给用户确认，再逐条调用 send_task；归属或粒度不明确的内容向用户询问，不得猜测补全。/ Notebook skill: read a note's title path and Markdown body by page id; read-only. To publish tasks from it, first present the proposed list (target VS and text) for user confirmation, then call send_task per item; ask about unclear ownership or granularity, never guess.")]
+        [Description("笔记本技能：按页面编号读取笔记标题路径与正文（Markdown）；只读。若要据此发布任务，须先把拟发布的任务清单（目标 VS 与任务文本）呈现给用户确认，再逐条调用 send_task；笔记中的图片可用 send_task 的 attachments=\"note:页面编号\" 随任务发给 Copilot；归属或粒度不明确的内容向用户询问，不得猜测补全。/ Notebook skill: read a note's title path and Markdown body by page id; read-only. To publish tasks from it, first present the proposed list (target VS and text) for user confirmation, then call send_task per item; images in the note can go to Copilot with the task via attachments=\"note:pageId\" of send_task; ask about unclear ownership or granularity, never guess.")]
         private string ReadNote(
             [Description("list_notes 返回的 32 位页面编号 / 32-character page id returned by list_notes")] string page)
         {
@@ -84,13 +84,24 @@ namespace VSManager
                 var doc = store.Read(id);
                 string path = string.Join(" / ", store.TitlePath(id));
                 string body = string.IsNullOrWhiteSpace(doc.Text) ? "（正文为空 / Empty body）" : doc.Text;
+                var images = NotebookStore.ImageNames(doc.Text);
+                string imageNote = images.Count == 0 ? "" : "\n\n" + NoteImagesNotice(id, images);
 
-                return Truncate("标题 / Title: " + (path.Length > 0 ? path : doc.Title) + "\n\n" + body, MaxToolText);
+                return Truncate("标题 / Title: " + (path.Length > 0 ? path : doc.Title) + imageNote + "\n\n" + body, MaxToolText);
             }
             catch (Exception ex) when (ex is IOException || ex is ArgumentException || ex is SqliteException || ex is UnauthorizedAccessException)
             {
                 return "读取笔记失败 / Failed to read the note: " + ex.Message;
             }
         }
+
+        /// <summary>
+        /// read_note 中的笔记图片清单，说明如何用 send_task 把它们随任务发给 Copilot。
+        /// Note image list in read_note, explaining how to send them to Copilot with send_task.
+        /// </summary>
+        internal static string NoteImagesNotice(string page, IReadOnlyList<string> images) =>
+            "[笔记图片 / Note images] 共 " + images.Count + " 张：" + string.Join("、", images)
+            + "。任务需要这些图片时，在 send_task 的 attachments 中填 note:" + page + "（全部）或 note:" + page + "/资源名（指定图片）；图片内容不会发给你。"
+            + " / " + images.Count + " image(s). To send them with a task, pass note:" + page + " (all) or note:" + page + "/asset (one) in the attachments of send_task; image content is not shown to you.";
     }
 }

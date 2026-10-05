@@ -21,7 +21,7 @@ namespace VSManager
         private Label _sidebarTitle;
         private bool _initialized;
         private readonly NotebookStore _store;
-        private readonly TreeView _tree = new BufferedTreeView();
+        private readonly BufferedTreeView _tree = new BufferedTreeView();
         private readonly TextBox _search = new TextBox();
         private readonly TextBox _editor = new TextBox();
         private readonly NotebookPreview _preview = new NotebookPreview();
@@ -35,6 +35,9 @@ namespace VSManager
         private readonly ImageList _icons = new ImageList();
         private NotebookDocument _document, _pendingDocument, _previousDocument;
         private TreeNode _hoverNode;
+        // 拖拽排序：正在拖动的节点、悬停节点及开始悬停 / 上次滚动的时间。/ Drag reordering: the dragged node, the hovered node, and when hovering started / the last auto-scroll.
+        private TreeNode _dragNode, _dragHover;
+        private DateTime _dragHoverSince, _dragScrolled;
         private bool _loading, _dirty;
         // 是否在查看 / 编辑 Markdown 源码；平时直接在渲染后的页面上编辑。/ Whether the Markdown source is shown; normally editing happens directly on the rendered page.
         private bool _editing;
@@ -222,6 +225,12 @@ namespace VSManager
                 if (e.Node == _tree.SelectedNode) ContentRequested?.Invoke();
             };
             _tree.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter) { ContentRequested?.Invoke(); e.Handled = true; } };
+            _tree.AllowDrop = true;
+            _tree.ItemDrag += (s, e) => BeginTreeDrag(e.Item as TreeNode);
+            _tree.DragEnter += (s, e) => TreeDragOver(e);
+            _tree.DragOver += (s, e) => TreeDragOver(e);
+            _tree.DragLeave += (s, e) => _tree.SetDropLine(-1, 0);
+            _tree.DragDrop += (s, e) => TreeDragDrop(e);
             var menu = new GroupedContextMenuStrip();
             menu.AddGroup("新建 / Create");
             MenuItem(menu, "新建子页面 / New subpage", MenuGlyph.Note, "Ctrl+N", () => Create(true));
@@ -718,15 +727,151 @@ namespace VSManager
             return sb.ToString();
         }
 
-        /// <summary>开启原生双缓冲的目录树，重建或悬停时不闪烁。/ Tree view with native double buffering so rebuilds and hover do not flicker.</summary>
+        /// <summary>
+        /// 拖拽落点：移到 Parent 下、Before 之前（null 表示末尾），分割线画在 (X, Y)。
+        /// Drop target: move under Parent, before Before (null means last); the separator line is drawn at (X, Y).
+        /// </summary>
+        internal sealed class DropPlan
+        {
+            public string Parent;
+            public string Before;
+            public int X, Y;
+        }
+
+        /// <summary>
+        /// 根据鼠标在悬停行中的位置计算落点：上半行放到该页之前，下半行放到其后（已展开且有子页时放到第一个子页之前）；
+        /// 悬停在「笔记本」根节点上时放到最前。不能放到自身或子页面中，也不能放到 AI 提示词页旁。
+        /// Computes the drop target from the pointer's position in the hovered row: the upper half drops before that page, the lower half after it
+        /// (before its first child when it is expanded with subpages); hovering the "Notebooks" root drops first. Pages cannot be dropped into
+        /// themselves or their subpages, nor beside the AI instructions page.
+        /// </summary>
+        internal static DropPlan PlanDrop(TreeNode dragged, TreeNode target, int y, int iconWidth)
+        {
+            if (dragged == null || target == null || !(target.Tag is NotebookEntry entry)) return null;
+            for (var n = target; n != null; n = n.Parent) if (n == dragged) return null;
+            string Path(TreeNode n) => ((NotebookEntry)n.Tag).Path;
+            int Left(TreeNode n) => n.Bounds.X - iconWidth;
+            if (entry.Path.Length == 0)
+            {
+                var first = target.Nodes.Count > 0 ? target.Nodes[0] : null;
+                return new DropPlan { Parent = "", Before = first == null ? null : Path(first), Y = target.Bounds.Bottom, X = first != null ? Left(first) : Left(target) + target.TreeView.Indent };
+            }
+            if (target.Parent == null) return null;
+            string parent = Path(target.Parent);
+            if (y < target.Bounds.Top + target.Bounds.Height / 2)
+                return new DropPlan { Parent = parent, Before = entry.Path, Y = target.Bounds.Top, X = Left(target) };
+            if (target.IsExpanded && target.Nodes.Count > 0)
+                return new DropPlan { Parent = entry.Path, Before = Path(target.Nodes[0]), Y = target.Bounds.Bottom, X = Left(target.Nodes[0]) };
+            return new DropPlan { Parent = parent, Before = target.NextNode == null ? null : Path(target.NextNode), Y = target.Bounds.Bottom, X = Left(target) };
+        }
+
+        private void BeginTreeDrag(TreeNode node)
+        {
+            if (node?.Tag is not NotebookEntry entry || entry.Path.Length == 0 || node.Parent == null) return;
+            if (_search.Text.Length > 0) { SetStatus("搜索时不能拖动排序，请先清空搜索 / Clear the search before dragging to reorder"); return; }
+            _dragNode = node;
+            _dragHover = null;
+            try { _tree.DoDragDrop(node, DragDropEffects.Move); }
+            finally { _dragNode = null; _dragHover = null; _tree.SetDropLine(-1, 0); }
+        }
+
+        private DropPlan CurrentDrop(int screenX, int screenY)
+        {
+            var point = _tree.PointToClient(new Point(screenX, screenY));
+            return PlanDrop(_dragNode, _tree.GetNodeAt(point), point.Y, _icons.ImageSize.Width + Dpi.S(3));
+        }
+
+        private void TreeDragOver(DragEventArgs e)
+        {
+            if (_dragNode == null || _dragNode.TreeView != _tree || !e.Data.GetDataPresent(typeof(TreeNode))) { e.Effect = DragDropEffects.None; return; }
+            var point = _tree.PointToClient(new Point(e.X, e.Y));
+            // 靠近上下边缘时自动滚动；在折叠的父页上停留片刻后自动展开。/ Auto-scroll near the top and bottom edges; expand a collapsed parent after hovering briefly.
+            int edge = _tree.ItemHeight / 2;
+            if ((point.Y < edge || point.Y > _tree.ClientSize.Height - edge) && (DateTime.UtcNow - _dragScrolled).TotalMilliseconds > 90)
+            {
+                _dragScrolled = DateTime.UtcNow;
+                _tree.ScrollLine(point.Y < edge);
+            }
+            var hover = _tree.GetNodeAt(point);
+            if (hover != _dragHover) { _dragHover = hover; _dragHoverSince = DateTime.UtcNow; }
+            else if (hover != null && !hover.IsExpanded && hover.Nodes.Count > 0 && hover != _dragNode && (DateTime.UtcNow - _dragHoverSince).TotalMilliseconds > 700)
+                hover.Expand();
+            var plan = CurrentDrop(e.X, e.Y);
+            e.Effect = plan == null ? DragDropEffects.None : DragDropEffects.Move;
+            if (plan == null) _tree.SetDropLine(-1, 0);
+            else _tree.SetDropLine(plan.Y, plan.X);
+        }
+
+        private void TreeDragDrop(DragEventArgs e)
+        {
+            var plan = _dragNode == null || _dragNode.TreeView != _tree ? null : CurrentDrop(e.X, e.Y);
+            _tree.SetDropLine(-1, 0);
+            if (plan == null) return;
+            string id = ((NotebookEntry)_dragNode.Tag).Path;
+            if (!TrySave()) return;
+            try
+            {
+                if (!_store.Move(id, plan.Parent, plan.Before)) return;
+                RefreshTree(Selected?.Path, true);
+                SetStatus("已调整笔记顺序 / Note order updated");
+            }
+            catch (Exception ex) when (IsFileError(ex)) { Report(ex); }
+        }
+
+        /// <summary>开启原生双缓冲的目录树，重建或悬停时不闪烁；拖拽排序时在落点画分割线。/ Tree view with native double buffering so rebuilds and hover do not flicker; draws a separator line at the drop target while dragging.</summary>
         private sealed class BufferedTreeView : TreeView
         {
             [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+            private int _dropY = -1, _dropX;
+
             protected override void OnHandleCreated(EventArgs e)
             {
                 base.OnHandleCreated(e);
                 // 设置扩展样式：双缓冲 / TVM_SETEXTENDEDSTYLE + TVS_EX_DOUBLEBUFFER
                 SendMessage(Handle, 0x112C, (IntPtr)0x0004, (IntPtr)0x0004);
+            }
+
+            /// <summary>设置分割线位置；y &lt; 0 表示隐藏。/ Sets the separator line position; y &lt; 0 hides it.</summary>
+            public void SetDropLine(int y, int x)
+            {
+                if (y == _dropY && (y < 0 || x == _dropX)) return;
+                InvalidateLine(_dropY);
+                _dropY = y;
+                _dropX = x;
+                InvalidateLine(_dropY);
+            }
+
+            /// <summary>向上或向下滚动一行。/ Scrolls one line up or down.</summary>
+            public void ScrollLine(bool up)
+            {
+                InvalidateLine(_dropY);
+                _dropY = -1;
+                // WM_VSCROLL + SB_LINEUP / SB_LINEDOWN
+                SendMessage(Handle, 0x0115, (IntPtr)(up ? 0 : 1), IntPtr.Zero);
+            }
+
+            private void InvalidateLine(int y)
+            {
+                if (y < 0) return;
+                int pad = Dpi.S(6);
+                Invalidate(new Rectangle(0, y - pad, ClientSize.Width, pad * 2));
+            }
+
+            protected override void WndProc(ref Message m)
+            {
+                base.WndProc(ref m);
+                // WM_PAINT 之后叠加分割线：圆点标出层级缩进，横线标出插入位置。/ Overlay the separator after WM_PAINT: the dot marks the indent level, the line marks the insertion point.
+                if (m.Msg != 0x000F || _dropY < 0 || !IsHandleCreated) return;
+                using var g = CreateGraphics();
+                int r = Dpi.S(3);
+                int y = Math.Max(r + 1, Math.Min(ClientSize.Height - r - 2, _dropY));
+                int x = Math.Max(r + 1, _dropX);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                using (var pen = new Pen(Theme.Accent, Dpi.S(2)))
+                {
+                    g.DrawLine(pen, x + r, y, ClientSize.Width - Dpi.S(6), y);
+                    g.DrawEllipse(pen, x - r, y - r, r * 2, r * 2);
+                }
             }
         }
 

@@ -265,6 +265,46 @@ namespace VSManager.Tests
             }
         }
 
+        [TestMethod]
+        public void Notebook_DragPlan_ShowsSeparatorAtTargetAndReordersTree()
+        {
+            RunUi((form, store) =>
+            {
+                string other = store.CreatePage("", "Other");
+                var refresh = typeof(NotebookWorkspace).GetMethod("RefreshTree", BindingFlags.NonPublic | BindingFlags.Instance);
+                refresh.Invoke(form.Workspace, new object[] { null, false });
+                var tree = Field<TreeView>(form, "_tree");
+                var root = tree.Nodes[0];
+                TreeNode Find(string title) => root.Nodes.Cast<TreeNode>().Single(n => n.Text == title);
+                string Id(TreeNode n) => ((NotebookEntry)n.Tag).Path;
+                var project = Find("Project");
+                var otherNode = Find("Other");
+                project.Collapse();
+                Assert.AreSame(otherNode, root.Nodes[0]);
+
+                var before = NotebookWorkspace.PlanDrop(otherNode, project, project.Bounds.Top + 1, 0);
+                Assert.AreEqual("", before.Parent);
+                Assert.AreEqual(Id(project), before.Before);
+                Assert.AreEqual(project.Bounds.Top, before.Y, "分割线在目标行上沿 / Separator on the target row's top edge");
+                var after = NotebookWorkspace.PlanDrop(otherNode, project, project.Bounds.Bottom - 1, 0);
+                Assert.IsNull(after.Before);
+                Assert.AreEqual(project.Bounds.Bottom, after.Y, "分割线在目标行下沿 / Separator on the target row's bottom edge");
+                project.Expand();
+                var inside = NotebookWorkspace.PlanDrop(otherNode, project, project.Bounds.Bottom - 1, 0);
+                Assert.AreEqual(Id(project), inside.Parent, "展开的父页下半行放入其子页最前 / Lower half of an expanded parent drops before its first child");
+                Assert.AreEqual(Id(project.Nodes[0]), inside.Before);
+                Assert.IsTrue(inside.X > before.X, "子级分割线更靠右 / Child-level separator is indented");
+                Assert.IsNull(NotebookWorkspace.PlanDrop(project, project.Nodes[0], project.Nodes[0].Bounds.Top, 0), "不能拖到自己的子页面 / Cannot drop into own subpage");
+                Assert.IsNull(NotebookWorkspace.PlanDrop(project, project, project.Bounds.Top, 0));
+                var first = NotebookWorkspace.PlanDrop(project, root, root.Bounds.Bottom - 1, 0);
+                Assert.AreEqual(Id(otherNode), first.Before, "拖到根节点放在最前 / Dropping on the root goes first");
+
+                Assert.IsTrue(store.Move(other, after.Parent, after.Before));
+                refresh.Invoke(form.Workspace, new object[] { null, false });
+                CollectionAssert.AreEqual(new[] { "Project", "Other" }, tree.Nodes[0].Nodes.Cast<TreeNode>().Select(n => n.Text).ToArray());
+            });
+        }
+
         private static T Field<T>(object value, string name)
         {
             if (value is NotebookForm form) value = form.Workspace;

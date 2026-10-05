@@ -61,6 +61,10 @@ namespace VSManager.Tests
             StringAssert.Contains(withVs, "#3 A");
             StringAssert.Contains(withVs, "context only");
             StringAssert.Contains(AgentPanel.AssistantPrompt("", new string[0]), "only sent attachments");
+            string byDefault = AgentPanel.AssistantPrompt("各 VS 在做什么", new string[0], true);
+            StringAssert.StartsWith(byDefault, "各 VS 在做什么");
+            StringAssert.Contains(byDefault, "@小维");
+            StringAssert.Contains(byDefault, "do not reuse a VS mentioned in earlier messages");
         }
 
         [TestMethod]

@@ -1034,7 +1034,7 @@ namespace VSManager
                 blocked = BlockingDialogMessage(vs);
                 if (blocked != null) return blocked;
                 IntPtr target = FocusHwnd(host);
-                T("后台：输入框已聚焦，焦点窗口=0x" + target.ToString("X"));
+                T("后台：输入框已聚焦，焦点窗口=0x" + target.ToString("X") + "；" + FocusDiagnostics(host, target, edit));
                 blocked = GuardQueueInput(vs, pane, edit);
                 if (blocked != null) return blocked;
                 var cur = GetEditText(edit);
@@ -1056,11 +1056,13 @@ namespace VSManager
                 if (blocked != null) return blocked;
                 blocked = GuardQueueInput(vs, pane, edit, writing: true);
                 if (blocked != null) return blocked;
+                T("后台：写入前 / Before writing " + text.Length + " 字 / chars；" + FocusDiagnostics(host, target, edit));
                 foreach (char c in text) PostMessageW(target, WM_CHAR, (IntPtr)c, (IntPtr)1);
                 if (!WaitText(edit, t => PasteVerifier.IsConfirmed(PasteVerifier.Classify(text, null, t)), Math.Max(ConfirmTimeoutMs, 2500 + text.Length * 3)))
                 {
                     blocked = BlockingDialogMessage(vs);
                     if (blocked != null) return blocked;
+                    T("后台：写入校验失败 / Write check failed：" + WriteDiagnostics(text, GetEditText(edit)) + "；" + FocusDiagnostics(host, target, edit));
                     T(_queueGuard != null ? "后台：写入后内容不匹配，保留输入 / Background input mismatch; preserved"
                         : "后台：写入后输入框内容「" + Short(GetEditText(edit)) + "」与消息不一致");
                     return "未能把消息完整写入 Copilot 输入框，已取消发送（内容保留在 VS 输入框中）";
@@ -1089,6 +1091,47 @@ namespace VSManager
                     Msg(host, WM_ACTIVATE, 0);
                 }
             }
+        }
+
+        /// <summary>
+        /// 写入失败的诊断（只含长度与判定，不含消息内容，队列模式下也可记录）。
+        /// Diagnostics for a failed write (lengths and verdict only, no message content, so it is safe in queue mode).
+        /// </summary>
+        internal static string WriteDiagnostics(string want, string current)
+        {
+            var verdict = PasteVerifier.Classify(want, null, current);
+            string w = PasteVerifier.Normalize(want), c = PasteVerifier.Normalize(current);
+            int common = 0;
+            while (common < w.Length && common < c.Length && w[common] == c[common]) common++;
+            return "判定 / Verdict=" + verdict
+                + "; 期望长度 / Expected=" + (want?.Length ?? 0) + "(" + w.Length + ")"
+                + "; 读取长度 / Read=" + (current == null ? "null" : current.Length + "(" + c.Length + ")")
+                + "; 相同前缀 / CommonPrefix=" + common;
+        }
+
+        /// <summary>
+        /// 焦点诊断：UIA 焦点、目标 VS 线程当前焦点窗口及类名、写入目标窗口类名与前台窗口，用于判断按键是否发到了别的窗口（如设计器）。
+        /// Focus diagnostics: UIA focus, the VS thread's current focus window and class, the write target's class and the foreground
+        /// window, to tell whether keystrokes went to another window (such as a designer).
+        /// </summary>
+        private static string FocusDiagnostics(IntPtr host, IntPtr target, AutomationElement edit)
+        {
+            IntPtr now = FocusHwnd(host);
+            IntPtr fg = Native.GetForegroundWindow();
+            Native.GetWindowThreadProcessId(fg, out uint fgPid);
+            return "UIA 焦点 / UIA focus=" + HasFocus(edit)
+                + "; host=0x" + host.ToString("X") + "(" + WindowClass(host) + ")"
+                + "; 写入目标 / Target=0x" + target.ToString("X") + "(" + WindowClass(target) + ")"
+                + "; 当前焦点 / Focus now=0x" + now.ToString("X") + "(" + WindowClass(now) + ")"
+                + (now != target ? " ≠Target" : "")
+                + "; 前台 / Foreground=0x" + fg.ToString("X") + "(" + WindowClass(fg) + ", pid=" + fgPid + ")";
+        }
+
+        private static string WindowClass(IntPtr h)
+        {
+            if (h == IntPtr.Zero) return "-";
+            var sb = new StringBuilder(256);
+            return Native.GetClassName(h, sb, sb.Capacity) > 0 ? sb.ToString() : "?";
         }
 
         private static bool WaitSent(AutomationElement pane, AutomationElement edit, int ms)

@@ -233,6 +233,65 @@ namespace VSManager
             });
         }
 
+        /// <summary>
+        /// 移动页面以调整顺序：放到 <paramref name="parent"/> 下（空表示根）、<paramref name="beforeId"/> 之前（null 表示末尾），并按新顺序重排同级的 sort。
+        /// 不能移到自身或子页面下，新位置不能有同名同级页面。返回顺序或父页面是否有变化。
+        /// Moves a page to reorder it: under <paramref name="parent"/> (empty means root), before <paramref name="beforeId"/> (null means last),
+        /// renumbering the siblings' sort values. It cannot move under itself or a subpage, and the destination must not hold a sibling with the same title.
+        /// Returns whether the order or parent changed.
+        /// </summary>
+        public bool Move(string id, string parent, string beforeId = null)
+        {
+            ValidateId(id);
+            string p = ParentOrNull(parent);
+            if (beforeId != null) ValidateId(beforeId);
+            if (beforeId == id) return false;
+            return Run(c =>
+            {
+                using var tx = c.BeginTransaction();
+                string title;
+                string oldParent;
+                using (var cmd = Command(c, "SELECT title, parent_id FROM pages WHERE id=@id AND deleted_at IS NULL", tx, ("@id", id)))
+                using (var r = cmd.ExecuteReader())
+                {
+                    if (!r.Read()) throw new IOException("页面不存在或已移入废纸篓。 / Page not found or moved to trash.");
+                    title = r.GetString(0);
+                    oldParent = r.IsDBNull(1) ? null : r.GetString(1);
+                }
+                if (p != null)
+                {
+                    if (Scalar(c, "SELECT 1 FROM pages WHERE id=@id AND deleted_at IS NULL", tx, ("@id", p)) == null)
+                        throw new IOException("父页面不存在。 / Parent page not found.");
+                    string current = p;
+                    for (int i = 0; i < 64 && current != null; i++)
+                    {
+                        if (current == id) throw new IOException("不能把页面移到它自身或子页面下。 / A page cannot be moved under itself or one of its subpages.");
+                        current = Scalar(c, "SELECT parent_id FROM pages WHERE id=@id", tx, ("@id", current)) as string;
+                    }
+                }
+                if (ChildId(c, tx, p, title, id) != null) throw new IOException("目标位置已有同名页面。 / A sibling page with this title already exists at the destination.");
+
+                var siblings = new List<(string Id, string Title, int Sort)>();
+                using (var cmd = Command(c, "SELECT id, title, sort FROM pages WHERE parent_id IS @p AND deleted_at IS NULL", tx, ("@p", p)))
+                using (var r = cmd.ExecuteReader())
+                    while (r.Read()) siblings.Add((r.GetString(0), r.GetString(1), r.GetInt32(2)));
+                // 与 LoadTree 相同的排序，保证按界面看到的顺序插入。/ Same ordering as LoadTree so the insert matches what the tree shows.
+                var order = siblings.OrderBy(s => s.Sort).ThenBy(s => s.Title, StringComparer.CurrentCultureIgnoreCase).Select(s => s.Id).ToList();
+                var before = new List<string>(order);
+                order.Remove(id);
+                int index = beforeId == null ? order.Count : order.IndexOf(beforeId);
+                if (index < 0) throw new IOException("目标位置的页面不存在。 / The page at the destination was not found.");
+                order.Insert(index, id);
+                if (oldParent == p && order.SequenceEqual(before)) return false;
+
+                Exec(c, "UPDATE pages SET parent_id=@p WHERE id=@id", tx, ("@p", p), ("@id", id));
+                for (int i = 0; i < order.Count; i++)
+                    Exec(c, "UPDATE pages SET sort=@s WHERE id=@id", tx, ("@s", i + 1), ("@id", order[i]));
+                tx.Commit();
+                return true;
+            });
+        }
+
         /// <summary>把页面及其子页面移入废纸篓（数据库内标记，可恢复）。/ Moves a page and its subpages to the trash (marked in the database, recoverable).</summary>
         public string Trash(string id)
         {
@@ -280,6 +339,36 @@ namespace VSManager
                 using (var cmd = Command(c, "SELECT mime, data FROM assets WHERE name=@n", null, ("@n", name)))
                 using (var r = cmd.ExecuteReader())
                     return r.Read() ? "data:" + r.GetString(0) + ";base64," + Convert.ToBase64String((byte[])r.GetValue(1)) : null;
+            });
+        }
+
+        private static readonly Regex ImageReference = new Regex(@"attachments/([0-9A-Za-z]+\.[A-Za-z]+)", RegexOptions.CultureInvariant);
+
+        /// <summary>
+        /// 正文中引用的笔记图片资源名（按出现顺序去重，只含支持的图片格式）。
+        /// Names of the notebook images referenced by a body (deduplicated in order, supported image formats only).
+        /// </summary>
+        internal static IReadOnlyList<string> ImageNames(string text)
+        {
+            var names = new List<string>();
+            foreach (Match m in ImageReference.Matches(text ?? ""))
+            {
+                string name = m.Groups[1].Value;
+                if (IsImage(System.IO.Path.GetExtension(name).ToLowerInvariant()) && !names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                    names.Add(name);
+            }
+            return names;
+        }
+
+        /// <summary>按资源名读取图片原始字节；不存在时返回 null。/ Reads an image's raw bytes by asset name; null when missing.</summary>
+        public byte[] ImageBytes(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || !Regex.IsMatch(name, @"^[0-9A-Za-z]+\.[A-Za-z]+$", RegexOptions.CultureInvariant)
+                || !IsImage(System.IO.Path.GetExtension(name).ToLowerInvariant())) return null;
+            return Run(c =>
+            {
+                using (var cmd = Command(c, "SELECT data FROM assets WHERE name=@n", null, ("@n", name)))
+                    return cmd.ExecuteScalar() as byte[];
             });
         }
 
@@ -448,7 +537,9 @@ namespace VSManager
         {
             string id = Guid.NewGuid().ToString("N");
             string now = Now();
-            Exec(c, "INSERT INTO pages(id, parent_id, title, body, sort, created, updated, version) VALUES(@id, @p, @t, @b, 0, @n, @n, 1)", tx,
+            // 同级已手动排过序（sort > 0）时新页面排在末尾，否则仍按标题排序。/ When the level was ordered manually (sort > 0) a new page goes last; otherwise titles still decide the order.
+            Exec(c, @"INSERT INTO pages(id, parent_id, title, body, sort, created, updated, version) VALUES(@id, @p, @t, @b,
+                (SELECT CASE WHEN IFNULL(MAX(sort), 0) > 0 THEN MAX(sort) + 1 ELSE 0 END FROM pages WHERE parent_id IS @p AND deleted_at IS NULL), @n, @n, 1)", tx,
                 ("@id", id), ("@p", parent), ("@t", title), ("@b", body), ("@n", now));
             return id;
         }

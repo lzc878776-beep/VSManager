@@ -337,14 +337,6 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<string, string, string, bool, int, int, int, CancellationToken, Task<string>>)SearchFileContents, "search_file_contents"),
                 AIFunctionFactory.Create((Func<string, int, int, CancellationToken, Task<string>>)ReadFile, "read_file"),
                 AIFunctionFactory.Create((Func<string, int, CancellationToken, Task<string>>)ListDirectory, "list_directory"),
-                AIFunctionFactory.Create((Func<string, string>)ListNotes, "list_notes"),
-                AIFunctionFactory.Create((Func<string, string>)ReadNote, "read_note"),
-                AIFunctionFactory.Create((Func<string, string, string, Task<string>>)CreateNote, "create_note"),
-                AIFunctionFactory.Create((Func<string, string, Task<string>>)AppendToNote, "append_to_note"),
-                AIFunctionFactory.Create((Func<string, string, Task<string>>)UpdateNote, "update_note"),
-                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string>)FormatNoteCard, "format_note_card"),
-                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCard, "add_note_card"),
-                AIFunctionFactory.Create((Func<string, string, string, string, string, string, string, string, string, string, string, Task<string>>)AddNoteCardStyleSamples, "add_note_card_styles"),
                 AIFunctionFactory.Create((Func<string, CancellationToken, Task<string>>)PreviewNotionPlan, "preview_notion_plan"),
                 AIFunctionFactory.Create((Func<string, string, CancellationToken, Task<string>>)DispatchNotionPlan, "dispatch_notion_plan"),
                 AIFunctionFactory.Create((Func<string, string, Task<string>>)SetCadDebugDrawing, "set_cad_debug_drawing"),
@@ -357,6 +349,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 AIFunctionFactory.Create((Func<Task<string>>)ReconnectMcpServers, "reconnect_mcp_servers"),
                 AIFunctionFactory.Create((Func<string, string>)LoadTools, new AIFunctionFactoryOptions { Name = AgentToolGroups.LoaderName, Description = LoadToolsDescription() }),
             };
+            // 笔记本技能与笔记助手共用同一套工具 / The notebook skill shares one tool set with the note assistant
+            _tools.InsertRange(_tools.FindIndex(t => t.Name == "preview_notion_plan"), NoteSkillTools());
         }
 
         public string ModelName => (_settings().AgentModel ?? "").Trim();
@@ -457,7 +451,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             _history.Clear();
             ResetToolGroups();
             _notebookPromptLoaded = false;
-            lock (_attachments) _attachments.Clear();
+            lock (_attachments) { _attachments.Clear(); _noteImages.Clear(); }
             Transcript.Messages.Clear();
             if (had) Record("notice", NewConversationMarker, reset: true);
             Changed?.Invoke();
@@ -1122,7 +1116,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             [Description("VS 编号（如 \"1\"）、名称，或登记的解决方案别名")] string vs,
             [Description("仅梳理语言的中文任务描述，单段不换行；保持原意与全部明确约束，不新增要求、验收标准、技术方案或范围，不把疑问改成命令；意图不完整先确认。Chinese task text with language cleanup only, one paragraph without line breaks; preserve intent and every explicit constraint, add no requirements, acceptance criteria, technical solutions or scope, and never turn questions into commands; clarify incomplete intent first.")] string task,
             [Description("先为任务总结的中文题目，概括要做的事，不超过 20 字、单行、不加标点结尾，用于任务记录；不必写项目名，保存时自动补全为「项目名 · 事项」。A short Chinese title summarizing the task, at most 20 characters, one line, for task records; the project name is prefixed automatically as \"Project · item\".")] string title = null,
-            [Description("可选：随任务发送的用户附件编号，逗号分隔；\"last\" 表示用户最近一条消息的全部附件。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional: ids of user attachments to send with the task, comma-separated; \"last\" means all attachments of the user's latest message. Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null,
+            [Description("可选：随任务发送的附件，逗号分隔：用户附件编号；\"last\" 表示用户最近一条消息的全部附件；\"note:页面编号\" 表示该笔记中的全部图片，\"note:页面编号/资源名\" 表示其中一张（read_note 会列出）。图片会粘贴到目标 Copilot，文本文件内联到正文，其他文件发送路径。Optional, comma-separated: user attachment ids; \"last\" means all attachments of the user's latest message; \"note:pageId\" means every image in that note and \"note:pageId/asset\" one of them (listed by read_note). Images are pasted into the target Copilot, text files inlined, other files sent as paths.")] string attachments = null,
             [Description("目标 VS 正被失败 / 待验证任务阻塞时默认不入队，并提示改用 retry_task_with_info 向阻塞任务补充信息；仅当这是与阻塞任务无关、愿意排在其后的新任务时设为 true。When the target VS is blocked by a failed / awaiting-verification task the task is not queued by default and you are told to supplement the blocker via retry_task_with_info; set true only for an unrelated task that may wait behind it.")] bool queue_behind_blocked = false)
         {
             var files = ResolveTaskAttachments(attachments, out string attachmentError);

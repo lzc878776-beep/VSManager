@@ -31,6 +31,16 @@ namespace VSManager
 
         private const RegexOptions Opt = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
 
+        /// <summary>
+        /// 笔记本技能的工具名：总控助手与笔记助手共用（须声明在 <see cref="All"/> 之前）。
+        /// Tool names of the notebook skill, shared by the manager and the note assistant (must be declared before <see cref="All"/>).
+        /// </summary>
+        public static readonly string[] NoteSkill =
+        {
+            "read_current_note", "list_notes", "read_note", "create_note", "append_to_note", "update_note",
+            "format_note_card", "add_note_card", "add_note_card_styles"
+        };
+
         /// <summary>全部可按需加载的分组（未在任何组中的工具属于核心）。/ All on-demand groups (tools not in any group are core).</summary>
         public static readonly IReadOnlyList<Group> All = new[]
         {
@@ -61,7 +71,7 @@ namespace VSManager
             new Group
             {
                 Key = "notes", Title = "笔记与 Notion 计划 / Notes and Notion plans",
-                Tools = new[] { "list_notes", "read_note", "create_note", "append_to_note", "update_note", "format_note_card", "add_note_card", "add_note_card_styles", "preview_notion_plan", "dispatch_notion_plan" },
+                Tools = NoteSkill.Concat(new[] { "preview_notion_plan", "dispatch_notion_plan" }).ToArray(),
                 Trigger = new Regex(@"笔记|记事|卡片|计划|notion|notebook|\bnotes?\b|\bcards?\b|\bplans?\b", Opt),
             },
             new Group

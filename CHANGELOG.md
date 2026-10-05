@@ -6,6 +6,8 @@ All notable changes to VSManager are documented here. The format is based on [Ke
 ## [未发布 / Unreleased]
 
 ### 新增 / Added
+- 截图器：主窗口顶部新增「✂ 截图」按钮（截图时暂时隐藏本窗口）、托盘菜单「截图」与全局快捷键 `Ctrl+Alt+Shift+S`；冻结并调暗各屏幕后拖动框选，松开完成、Esc / 右键取消，结果复制到剪贴板供 AI 助手、对话输入框或笔记粘贴，不保存文件，日志写入 `snip.log`。
+  Screenshot tool: a new "✂ 截图" button at the top of the main window (the window hides itself while capturing), a tray menu entry and the global hotkey `Ctrl+Alt+Shift+S`; every screen is frozen and dimmed, drag to select, release to finish, Esc / right-click to cancel; the image goes to the clipboard for pasting into the AI assistant, chat input or notebook, no file is saved, and events are logged in `snip.log`.
 - 新增只读工具 `read_agent_chat`：按轮列出 AI 对话（时间、脱敏的消息摘要、该轮实际调用的工具名），并列出本进程与历次启动读回的执行计划及「执行计划恢复」通知是否发出；`plan.log` 每次启动都记录读回情况（含 0 个）与进程号，单独发出的恢复通知也写入日志。系统提示词加入「对话核对」说明。
   New read-only tool `read_agent_chat`: lists AI chat rounds (time, redacted message summary, tools actually called) and the execution plans read back by this and earlier startups, with whether the "Plan resumed" notice was sent; `plan.log` now records every startup (even with 0 plans) with its process id, and separately sent resume notices are logged too. The system prompt gains a "Chat checks" note.
 - 执行计划缓存：新增 `create_plan` / `update_plan_step` / `read_plan` / `complete_plan` 工具与系统提示词规则 20，复杂流程自动建计划并持久化到 `%APPDATA%\VSManager\agent-plans.json`，重启后自动读回并通知 AI 接着执行，全部完成才释放；`read_restart_handoff` 同时显示常驻的计划文件状态，日志写入 `plan.log`。

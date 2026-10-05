@@ -33,6 +33,8 @@ namespace VSManager
         /// <summary>本次对话中用户提供的附件（按编号）。/ Attachments provided by the user in this conversation (by id).</summary>
         private readonly Dictionary<string, AttachmentRef> _attachments = new Dictionary<string, AttachmentRef>(StringComparer.OrdinalIgnoreCase);
         private string[] _lastAttachmentIds = new string[0];
+        /// <summary>本次对话中已复制为附件的笔记图片（页面编号/资源名 → 附件）。/ Note images already copied as attachments in this conversation (pageId/asset → attachment).</summary>
+        private readonly Dictionary<string, AttachmentRef> _noteImages = new Dictionary<string, AttachmentRef>(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>当前设置（界面读取附件上限等）。/ Current settings (the UI reads attachment limits from it).</summary>
         public AppSettings CurrentSettings => _settings();
@@ -88,35 +90,135 @@ namespace VSManager
         }
 
         /// <summary>
-        /// 解析 send_task 的附件参数：空 = 无附件；"last" / "all" = 用户最近一条消息的附件；否则为逗号分隔的编号。
-        /// Parses the attachments argument of send_task: empty = none; "last" / "all" = attachments of the latest user message;
-        /// otherwise comma-separated ids.
+        /// 解析 send_task 的附件参数：空 = 无附件；逗号分隔的项可以是附件编号、"last" / "all"（用户最近一条消息的附件）、
+        /// "note:页面编号"（该笔记正文中的全部图片）或 "note:页面编号/资源名"（该笔记中的指定图片）。
+        /// Parses the attachments argument of send_task: empty = none; comma-separated items may be attachment ids, "last" / "all"
+        /// (attachments of the latest user message), "note:pageId" (every image in that note's body) or "note:pageId/asset"
+        /// (one image of that note).
         /// </summary>
         internal AttachmentRef[] ResolveTaskAttachments(string spec, out string error)
         {
             error = null;
             spec = (spec ?? "").Trim();
             if (spec.Length == 0 || spec.Equals("none", StringComparison.OrdinalIgnoreCase)) return new AttachmentRef[0];
-            lock (_attachments)
+            int max = AttachmentPolicy.ClampMaxCount(_settings().AttachmentMaxCount);
+            var list = new List<AttachmentRef>();
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            void Add(AttachmentRef a) { if (seen.Add(a.Id)) list.Add(a.Clone()); }
+            foreach (var item in spec.Split(new[] { ',', '，', ';', '；', ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim()))
             {
-                IEnumerable<string> ids = spec.Equals("last", StringComparison.OrdinalIgnoreCase) || spec.Equals("all", StringComparison.OrdinalIgnoreCase)
-                    ? _lastAttachmentIds
-                    : spec.Split(new[] { ',', '，', ';', '；', ' ' }, StringSplitOptions.RemoveEmptyEntries).Select(s => s.Trim());
-                var list = new List<AttachmentRef>();
-                foreach (var id in ids.Distinct(StringComparer.OrdinalIgnoreCase))
+                if (item.StartsWith(NoteImagePrefix, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!_attachments.TryGetValue(id, out var a))
+                    var images = ResolveNoteImages(item.Substring(NoteImagePrefix.Length), max, out error);
+                    if (error != null) return new AttachmentRef[0];
+                    foreach (var a in images) Add(a);
+                    continue;
+                }
+                lock (_attachments)
+                {
+                    bool last = item.Equals("last", StringComparison.OrdinalIgnoreCase) || item.Equals("all", StringComparison.OrdinalIgnoreCase);
+                    if (last && _lastAttachmentIds.Length == 0)
                     {
-                        error = $"找不到附件「{id}」：只能引用用户在本次对话中提供的附件 / Attachment \"{id}\" not found: only attachments the user provided in this conversation can be used";
+                        error = "用户最近一条消息没有附件 / The latest user message has no attachments";
                         return new AttachmentRef[0];
                     }
-                    list.Add(a.Clone());
+                    foreach (var id in last ? _lastAttachmentIds : new[] { item })
+                    {
+                        if (!_attachments.TryGetValue(id, out var a))
+                        {
+                            error = $"找不到附件「{id}」：只能引用用户在本次对话中提供的附件或笔记图片（note:页面编号）/ Attachment \"{id}\" not found: only attachments the user provided in this conversation or note images (note:pageId) can be used";
+                            return new AttachmentRef[0];
+                        }
+                        Add(a);
+                    }
                 }
-                if (list.Count == 0) error = "用户最近一条消息没有附件 / The latest user message has no attachments";
-                int max = AttachmentPolicy.ClampMaxCount(_settings().AttachmentMaxCount);
-                if (list.Count > max) error = $"单个任务最多 {max} 个附件 / At most {max} attachments per task";
-                return error == null ? list.ToArray() : new AttachmentRef[0];
             }
+            if (list.Count == 0) error = "没有可发送的附件 / No attachments to send";
+            else if (list.Count > max) error = $"单个任务最多 {max} 个附件（当前 {list.Count} 个）/ At most {max} attachments per task ({list.Count} given)";
+            return error == null ? list.ToArray() : new AttachmentRef[0];
+        }
+
+        /// <summary>send_task 附件参数中引用笔记图片的前缀。/ Prefix that references note images in the send_task attachments argument.</summary>
+        internal const string NoteImagePrefix = "note:";
+
+        /// <summary>
+        /// 把笔记正文中的图片复制为任务附件（%APPDATA%\VSManager\attachments），同一图片在本次对话中只复制一次。
+        /// 只能引用该页面正文实际引用的图片。
+        /// Copies images referenced by a note's body into task attachments (%APPDATA%\VSManager\attachments); each image is copied
+        /// once per conversation. Only images actually referenced by that page's body can be used.
+        /// </summary>
+        private List<AttachmentRef> ResolveNoteImages(string target, int max, out string error)
+        {
+            error = null;
+            var result = new List<AttachmentRef>();
+            string page = target.Trim(), only = null;
+            int slash = page.IndexOf('/');
+            if (slash >= 0)
+            {
+                only = page.Substring(slash + 1).Trim();
+                if (only.StartsWith("attachments/", StringComparison.OrdinalIgnoreCase)) only = only.Substring("attachments/".Length);
+                page = page.Substring(0, slash).Trim();
+            }
+            page = page.ToLowerInvariant();
+            try
+            {
+                var store = NotebookStoreFactory();
+                var doc = store.Read(page);
+                var names = NotebookStore.ImageNames(doc.Text);
+                if (only != null)
+                {
+                    string hit = names.FirstOrDefault(n => n.Equals(only, StringComparison.OrdinalIgnoreCase));
+                    if (hit == null)
+                    {
+                        error = $"笔记 {page} 中没有图片「{only}」/ Note {page} has no image \"{only}\"";
+                        return result;
+                    }
+                    names = new[] { hit };
+                }
+                if (names.Count == 0)
+                {
+                    error = $"笔记「{doc.Title}」中没有图片 / Note \"{doc.Title}\" has no images";
+                    return result;
+                }
+                if (names.Count > max)
+                {
+                    error = $"笔记「{doc.Title}」有 {names.Count} 张图片，超过单个任务 {max} 个附件的上限；请用 note:{page}/资源名 选择其中几张 / Note \"{doc.Title}\" has {names.Count} images, over the {max}-attachment limit; pick some with note:{page}/asset";
+                    return result;
+                }
+                for (int i = 0; i < names.Count; i++)
+                {
+                    string key = page + "/" + names[i];
+                    AttachmentRef cached;
+                    lock (_attachments) _noteImages.TryGetValue(key, out cached);
+                    if (cached != null && AttachmentStore.FullPath(cached) is string path && System.IO.File.Exists(path)) { result.Add(cached); continue; }
+                    byte[] bytes = store.ImageBytes(names[i]);
+                    if (bytes == null)
+                    {
+                        error = $"笔记图片「{names[i]}」已不存在 / Note image \"{names[i]}\" no longer exists";
+                        return result;
+                    }
+                    string name = NoteImageName(doc.Title, i + 1, names.Count, AttachmentPolicy.NormalizeExt(names[i]));
+                    var a = AttachmentStore.SaveBytes(bytes, name, 0, max, _settings().AttachmentMaxFileMB);
+                    lock (_attachments) { _noteImages[key] = a; _attachments[a.Id] = a.Clone(); }
+                    Log($"笔记图片转为任务附件 / Note image attached：note {page} · {names[i]} → {a.Id}（{AttachmentPolicy.FormatSize(a.Size)}）");
+                    result.Add(a);
+                }
+                return result;
+            }
+            catch (Exception ex) when (ex is System.IO.IOException || ex is ArgumentException || ex is Microsoft.Data.Sqlite.SqliteException || ex is UnauthorizedAccessException)
+            {
+                error = "读取笔记图片失败 / Failed to read note images: " + ex.Message;
+                return result;
+            }
+        }
+
+        /// <summary>笔记图片附件的显示名，例如「登录页-图1.png」。/ Display name of a note image attachment, e.g. "登录页-图1.png".</summary>
+        internal static string NoteImageName(string title, int index, int count, string ext)
+        {
+            string safe = new string((title ?? "").Where(c => !System.IO.Path.GetInvalidFileNameChars().Contains(c)).ToArray()).Trim();
+            if (safe.Length > 40) safe = safe.Substring(0, 40);
+            if (safe.Length == 0) safe = "note";
+            return safe + (count > 1 ? "-图" + index : "") + ext;
         }
 
         /// <summary>任务附件提示，例如「本任务包含 2 张图片、1 个文件」。/ Task attachment notice, e.g. "this task includes 2 images and 1 file".</summary>

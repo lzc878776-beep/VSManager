@@ -528,6 +528,68 @@ namespace VSManager.Tests
             Assert.IsTrue((await Invoke("read_note", new AIFunctionArguments { ["page"] = "..\\x" })).StartsWith("读取笔记失败"));
         }
 
+        private (NotebookStore store, string page, string first, string second) NoteWithImages()
+        {
+            var store = UseNotebook();
+            string page = store.CreatePage("", "登录页");
+            string first = store.ImportImage(page, new byte[] { 1, 2, 3 }, ".png");
+            string second = store.ImportImage(page, new byte[] { 4, 5, 6, 7 }, ".jpg");
+            string unused = store.ImportImage(page, new byte[] { 9 }, ".png");
+            store.Save(store.Read(page), "截图 ![a](" + first + ")\n再看 ![b](" + second + ") 和 ![a](" + first + ")");
+            return (store, page, first.Substring("attachments/".Length), second.Substring("attachments/".Length));
+        }
+
+        [TestMethod]
+        public async Task ReadNote_ListsImagesWithSendTaskHint()
+        {
+            var (_, page, first, second) = NoteWithImages();
+            string result = await Invoke("read_note", new AIFunctionArguments { ["page"] = page });
+            StringAssert.Contains(result, "共 2 张");
+            StringAssert.Contains(result, first);
+            StringAssert.Contains(result, second);
+            StringAssert.Contains(result, "note:" + page);
+        }
+
+        [TestMethod]
+        public void ResolveTaskAttachments_NoteImages_CopiesReferencedImagesOnce()
+        {
+            var (_, page, first, _) = NoteWithImages();
+            var files = _agent.ResolveTaskAttachments("note:" + page, out string error);
+            Assert.IsNull(error);
+            Assert.AreEqual(2, files.Length);
+            Assert.IsTrue(files.All(a => a.IsImage && File.Exists(AttachmentStore.FullPath(a))));
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, File.ReadAllBytes(AttachmentStore.FullPath(files[0])));
+            Assert.AreEqual("登录页-图1.png", files[0].Name);
+
+            var again = _agent.ResolveTaskAttachments("note:" + page.ToUpperInvariant() + "/" + first, out error);
+            Assert.IsNull(error);
+            Assert.AreEqual(1, again.Length);
+            Assert.AreEqual(files[0].Id, again[0].Id, "同一图片只复制一次 / Copied once per conversation");
+        }
+
+        [TestMethod]
+        public void ResolveTaskAttachments_NoteImageNotReferenced_IsRejected()
+        {
+            var (store, page, _, _) = NoteWithImages();
+            string other = store.CreatePage("", "其他", "无图");
+            _agent.ResolveTaskAttachments("note:" + page + "/ffffffff.png", out string error);
+            StringAssert.Contains(error, "没有图片");
+            _agent.ResolveTaskAttachments("note:" + other, out error);
+            StringAssert.Contains(error, "没有图片");
+            _agent.ResolveTaskAttachments("note:..\\x", out error);
+            StringAssert.Contains(error, "读取笔记图片失败");
+        }
+
+        [TestMethod]
+        public void ResolveTaskAttachments_NoteImagesOverLimit_IsRejected()
+        {
+            _settings.AttachmentMaxCount = 1;
+            var (_, page, _, _) = NoteWithImages();
+            var files = _agent.ResolveTaskAttachments("note:" + page, out string error);
+            Assert.AreEqual(0, files.Length);
+            StringAssert.Contains(error, "超过单个任务 1 个附件");
+        }
+
         [TestMethod]
         public async Task CreateNote_CreatesPageUnderParent_AndNotifiesHost()
         {

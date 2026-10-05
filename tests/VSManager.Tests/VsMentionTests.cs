@@ -902,6 +902,34 @@ namespace VSManager.Tests
 
                 [TestMethod]
                 [TestCategory(TestKind.Ui)]
+                public void AgentUi_NoVsMention_DefaultsToAssistant()
+                {
+                    Sta(() =>
+                    {
+                        using (var data = new TempDataFolder())
+                        using (var panel = new AgentPanel())
+                        {
+                            var settings = new AppSettings { AgentEndpoint = "http://127.0.0.1:1/v1", AgentModel = "test" };
+                            var agent = new AgentService(null, () => settings);
+                            panel.Bind(agent);
+                            var v = Vs(); var session = new VsMentionSession();
+                            panel.BindMentions(session, () => new[] { Target(v, 3) });
+                            session.Select(Target(v, 3));
+                            var input = Field<TextBox>(panel, "_input");
+                            int calls = 0;
+                            panel.MentionRequested = (text, files) => { calls++; return new MentionSubmission(new QueuedTask(), "已接纳 / Accepted"); };
+                            input.Text = "各 VS 在做什么";
+                            Key(panel, Keys.Enter);
+                            Assert.AreEqual(0, calls, "无 @VS 不入队 / No @VS never enqueues");
+                            Assert.AreEqual("", input.Text);
+                            Assert.AreEqual("各 VS 在做什么", agent.Transcript.Messages.First().Parts.First().Text);
+                            StringAssert.Contains(Field<Label>(panel, "_inputStatus").Text, "小维");
+                        }
+                    });
+                }
+
+                [TestMethod]
+                [TestCategory(TestKind.Ui)]
                 public void AgentUi_AssistantCandidateIsListedLast()
                 {
                     Sta(() =>
