@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
@@ -118,13 +118,13 @@ namespace VSManager.Tests
                                 touched.SetValue(null, false);
                                 try
                                 {
-                                    var result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false });
+                                    var result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false, false });
                                     Assert.AreEqual(expected != ManualChatObservation.Idle, ManualChatProtection.IsWait(result));
                                     settings.WaitForManualChat = false;
-                                    result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false });
+                                    result = (string)guard.Invoke(chat, new object[] { target, pane, edit, false, false });
                                     Assert.AreEqual(expected != ManualChatObservation.Idle, ManualChatProtection.IsWait(result));
                                     callback.SetValue(null, (Func<bool>)(() => false));
-                                    Assert.IsTrue(ManualChatProtection.IsWait((string)guard.Invoke(chat, new object[] { target, pane, edit, false })));
+                                    Assert.IsTrue(ManualChatProtection.IsWait((string)guard.Invoke(chat, new object[] { target, pane, edit, false, false })));
                                     Assert.IsFalse((bool)touched.GetValue(null));
                                     target.Pid = int.MaxValue;
                                     Assert.AreEqual(ManualChatObservation.Unknown, observe.Invoke(chat, new object[] { target, pane, edit }));
@@ -151,7 +151,7 @@ namespace VSManager.Tests
         [DataRow("images-exact", true)]
         [DataRow("images-extra", false)]
         [DataRow("images-missing", false)]
-        [DataRow("images-replaced", false)]
+        [DataRow("images-replaced", true)]
         [DataRow("images-unreadable", false)]
         [DataRow("text-unreadable", false)]
         [TestCategory(TestKind.Ui)]
@@ -160,22 +160,24 @@ namespace VSManager.Tests
             RunAttachmentUi((window, input, list, target, pane, edit) =>
             {
                 var chat = new CopilotChat(() => new AppSettings());
-                var read = typeof(CopilotChat).GetMethod("TryAttachmentIds", BindingFlags.Static | BindingFlags.NonPublic);
+                var read = typeof(CopilotChat).GetMethod("TryAttachmentCount", BindingFlags.Static | BindingFlags.NonPublic);
                 var guard = typeof(CopilotChat).GetMethod("GuardQueueSubmit", BindingFlags.Instance | BindingFlags.NonPublic);
                 var callback = typeof(CopilotChat).GetField("_queueGuard", BindingFlags.Static | BindingFlags.NonPublic);
                 var touched = typeof(CopilotChat).GetField("_queueTouched", BindingFlags.Static | BindingFlags.NonPublic);
-                HashSet<string> Read(AutomationElement element)
+                int Read(AutomationElement element)
                 {
                     object[] args = { element, null };
                     Assert.IsTrue((bool)read.Invoke(null, args));
-                    return (HashSet<string>)args[1];
+                    return (int)args[1];
                 }
-                var owned = new HashSet<string>();
+                // 只按数量比对（多张图片共用一个 UIA 元素）：数量不变的替换无法识别，仅数量变化会拦下。
+                // Counts only (several images share one UIA element): a same-count replacement cannot be told apart; count changes are blocked.
+                int owned = 0;
                 if (scenario.StartsWith("images-", StringComparison.Ordinal))
                 {
                     window.Dispatcher.Invoke(() => { list.Items.Add("own-1"); list.Items.Add("own-2"); window.UpdateLayout(); });
                     owned = Read(pane);
-                    Assert.AreEqual(2, owned.Count);
+                    Assert.AreEqual(2, owned);
                 }
                 window.Dispatcher.Invoke(() =>
                 {
@@ -191,13 +193,13 @@ namespace VSManager.Tests
                     pane = pane.GetUpdatedCache(request);
                     object[] args = { pane, null };
                     Assert.IsFalse((bool)read.Invoke(null, args));
-                    Assert.IsNull(args[1]);
+                    Assert.AreEqual(0, args[1]);
                 }
                 else
                 {
                     int expectedCount = scenario == "text-foreign" ? 1 : scenario == "images-extra" ? 3 :
                         scenario == "images-missing" ? 1 : scenario.StartsWith("images-", StringComparison.Ordinal) ? 2 : 0;
-                    Assert.AreEqual(expectedCount, Read(pane).Count);
+                    Assert.AreEqual(expectedCount, Read(pane));
                 }
                 callback.SetValue(null, (Func<bool>)(() => true));
                 touched.SetValue(null, true);
@@ -216,7 +218,7 @@ namespace VSManager.Tests
                         Assert.AreEqual(1, task.Attempts);
                         Assert.IsTrue((bool)touched.GetValue(null));
                         var inputGuard = typeof(CopilotChat).GetMethod("GuardQueueInput", BindingFlags.Instance | BindingFlags.NonPublic);
-                        StringAssert.StartsWith((string)inputGuard.Invoke(chat, new object[] { target, pane, edit, true }),
+                        StringAssert.StartsWith((string)inputGuard.Invoke(chat, new object[] { target, pane, edit, true, false }),
                             ManualChatProtection.UncertainPrefix);
                     }
                     Assert.AreEqual("queued prompt", window.Dispatcher.Invoke(() => input.Text));
@@ -233,12 +235,12 @@ namespace VSManager.Tests
         {
             RunAttachmentUi((window, input, list, target, pane, edit) =>
             {
-                var read = typeof(CopilotChat).GetMethod("TryAttachmentIds", BindingFlags.Static | BindingFlags.NonPublic);
+                var read = typeof(CopilotChat).GetMethod("TryAttachmentCount", BindingFlags.Static | BindingFlags.NonPublic);
                 int Count()
                 {
                     object[] args = { pane, null };
                     Assert.IsTrue((bool)read.Invoke(null, args));
-                    return ((HashSet<string>)args[1]).Count;
+                    return (int)args[1];
                 }
                 window.Dispatcher.Invoke(() =>
                 {
@@ -255,6 +257,43 @@ namespace VSManager.Tests
                 Assert.AreEqual(0, Count());
                 window.Dispatcher.Invoke(() => { list.Items.Add("截图.png"); window.UpdateLayout(); });
                 Assert.AreEqual(1, Count());
+            });
+        }
+
+        /// <summary>
+        /// Copilot 把每张粘贴的图片都命名为「图像」且彼此相等，WPF 只暴露一个 UIA 元素；计数必须仍是真实张数。
+        /// Copilot names every pasted image "图像" and treats them as equal, so WPF exposes one UIA element; the count must still be the real number.
+        /// </summary>
+        [TestMethod]
+        [TestCategory(TestKind.Ui)]
+        public void SyntheticUi_EqualImageChips_AreCountedIndividually()
+        {
+            RunAttachmentUi((window, input, list, target, pane, edit) =>
+            {
+                var read = typeof(CopilotChat).GetMethod("TryAttachmentCount", BindingFlags.Static | BindingFlags.NonPublic);
+                int Count()
+                {
+                    object[] args = { pane, null };
+                    Assert.IsTrue((bool)read.Invoke(null, args));
+                    return (int)args[1];
+                }
+                window.Dispatcher.Invoke(() =>
+                {
+                    var add = new System.Windows.Controls.Button { Content = "添加引用" };
+                    AutomationProperties.SetAutomationId(add, "PART_AttachmentsButton");
+                    var host = new System.Windows.Controls.StackPanel();
+                    host.Children.Add(add);
+                    list.Items.Add(host);
+                    list.Items.Add("活动文档");
+                    list.Items.Add("图像");
+                    window.UpdateLayout();
+                });
+                Assert.AreEqual(1, Count());
+                for (int expected = 2; expected <= 3; expected++)
+                {
+                    window.Dispatcher.Invoke(() => { list.Items.Add("图像"); window.UpdateLayout(); });
+                    Assert.AreEqual(expected, Count());
+                }
             });
         }
 

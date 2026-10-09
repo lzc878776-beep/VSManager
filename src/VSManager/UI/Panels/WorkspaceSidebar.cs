@@ -7,20 +7,27 @@ namespace VSManager
 {
     internal sealed class WorkspaceSidebar : UserControl
     {
-        private const int AgentRow = 0, VsHeaderRow = 1, VsBodyRow = 2, NotesHeaderRow = 3, NotesBodyRow = 4, FillerRow = 5;
+        private const int AgentRow = 0, VsHeaderRow = 1, VsBodyRow = 2, NotesHeaderRow = 3, NotesBodyRow = 4, EvalHeaderRow = 5, EvalBodyRow = 6, FillerRow = 7, RowCount = 8;
         private readonly TableLayoutPanel _rows = new TableLayoutPanel();
-        private readonly Control _vsBody, _notionBody;
-        private readonly SidebarButton _vsToggle, _notionToggle;
+        private readonly Control _vsBody, _notionBody, _evalBody;
+        private readonly SidebarButton _vsToggle, _notionToggle, _evalToggle;
         private readonly Func<int> _vsPreferredHeight;
-        private readonly int _agentHeight;
+        private readonly int _agentHeight, _evalHeight;
         private bool _agentVisible = true;
         internal bool VsCollapsed { get; private set; }
         internal bool NotionCollapsed { get; private set; }
+        internal bool EvalCollapsed { get; private set; }
         internal event Action NotebookRequested;
+        /// <summary>点击「Agent 自循环」标题。/ The "Agent self-loop" title was clicked.</summary>
+        internal event Action EvalRequested;
+        /// <summary>折叠状态变化（用于保存设置）。/ Collapse state changed (for saving settings).</summary>
+        internal event Action<bool> EvalCollapsedChanged;
 
         /// <param name="vsPreferredHeight">VS 列表内容所需高度；提供后列表按内容收缩，折叠笔记本时标题紧随其后。
         /// / Height the VS list content needs; when set, the list shrinks to fit so a collapsed notebook header follows it.</param>
-        public WorkspaceSidebar(Control vsBody, Control agent, Control notionBody, Label count, Control refresh, Func<int> vsPreferredHeight = null)
+        /// <param name="evalBody">可选的「Agent 自循环」区内容（固定高度，放在笔记本之后）；为 null 时不显示该区。
+        /// / Optional "Agent self-loop" section body (fixed height, placed after the notebooks); hidden when null.</param>
+        public WorkspaceSidebar(Control vsBody, Control agent, Control notionBody, Label count, Control refresh, Func<int> vsPreferredHeight = null, Control evalBody = null)
         {
             BackColor = Theme.Sidebar;
             ForeColor = Theme.Text;
@@ -32,12 +39,12 @@ namespace VSManager
             _agentHeight = agent.Height;
             _rows.Dock = DockStyle.Fill;
             _rows.ColumnCount = 1;
-            _rows.RowCount = 6;
+            _rows.RowCount = RowCount;
             _rows.Margin = Padding.Empty;
             _rows.AutoScroll = true;
             _rows.BackColor = Theme.Sidebar;
             _rows.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 6; i++) _rows.RowStyles.Add(new RowStyle());
+            for (int i = 0; i < RowCount; i++) _rows.RowStyles.Add(new RowStyle());
             var vsHeader = CreateHeader("VS 线程 / VS", Theme.Accent, () => SetVsCollapsed(!VsCollapsed), out _vsToggle, out var vsContent);
             _vsToggle.AccessibleName = "折叠 VS 线程 / Collapse VS";
             _vsToggle.Click += (s, e) => SetVsCollapsed(!VsCollapsed);
@@ -65,6 +72,16 @@ namespace VSManager
             Add(vsBody, VsBodyRow);
             Add(notionHeader, NotesHeaderRow);
             Add(notionBody, NotesBodyRow);
+            if (evalBody != null)
+            {
+                _evalBody = evalBody;
+                _evalHeight = evalBody.Height;
+                var evalHeader = CreateHeader("Agent 自循环 / Agent loop", Theme.Warning, () => EvalRequested?.Invoke(), out _evalToggle, out _);
+                _evalToggle.AccessibleName = "折叠 Agent 自循环 / Collapse Agent loop";
+                _evalToggle.Click += (s, e) => SetEvalCollapsed(!EvalCollapsed);
+                Add(evalHeader, EvalHeaderRow);
+                Add(evalBody, EvalBodyRow);
+            }
             Controls.Add(_rows);
             Resize += (s, e) => UpdateRows();
             UpdateRows();
@@ -123,6 +140,18 @@ namespace VSManager
             UpdateRows();
         }
 
+        internal void SetEvalCollapsed(bool collapsed)
+        {
+            if (_evalBody == null) return;
+            bool changed = EvalCollapsed != collapsed;
+            EvalCollapsed = collapsed;
+            _evalToggle.Text = collapsed ? "▸" : "▾";
+            _evalToggle.AccessibleName = collapsed ? "展开 Agent 自循环 / Expand Agent loop" : "折叠 Agent 自循环 / Collapse Agent loop";
+            _evalBody.Visible = !collapsed;
+            UpdateRows();
+            if (changed) EvalCollapsedChanged?.Invoke(collapsed);
+        }
+
         internal void SetAgentVisible(bool visible)
         {
             _agentVisible = visible;
@@ -134,10 +163,15 @@ namespace VSManager
         private void UpdateRows()
         {
             int header = Dpi.S(48), agent = _agentVisible ? _agentHeight : 0, minVs = Dpi.S(120);
-            var styles = new (SizeType Type, float Height)[6];
+            // 「Agent 自循环」区固定高度，计入 agent 一并从可用高度中扣除 / The fixed-height "Agent loop" section is deducted together with the agent card
+            int eval = _evalBody == null ? 0 : header + (EvalCollapsed ? 0 : _evalHeight);
+            var styles = new (SizeType Type, float Height)[RowCount];
             styles[AgentRow] = (SizeType.Absolute, agent);
             styles[VsHeaderRow] = (SizeType.Absolute, header);
             styles[NotesHeaderRow] = (SizeType.Absolute, header);
+            styles[EvalHeaderRow] = (SizeType.Absolute, _evalBody == null ? 0 : header);
+            styles[EvalBodyRow] = (SizeType.Absolute, _evalBody == null || EvalCollapsed ? 0 : _evalHeight);
+            agent += eval;
             styles[NotesBodyRow] = NotionCollapsed ? (SizeType.Absolute, 0f) : (SizeType.Percent, 65f);
             bool fitVs = _vsPreferredHeight != null;
             if (VsCollapsed) styles[VsBodyRow] = (SizeType.Absolute, 0f);

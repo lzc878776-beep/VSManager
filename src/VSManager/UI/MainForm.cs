@@ -283,15 +283,15 @@ namespace VSManager
 			_list.EmptyText = "未发现正在运行的 Visual Studio\r\n启动 VS 后会自动出现在这里";
 			_list.DrawItem += List_DrawItem;
 			_list.SelectedIndexChanged += (s, e) => BeginInvoke(new Action(OnSelectionChanged));
-			_list.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left && _settings.ClickToActivate && ItemAt(e.Location) is VsInstance v) ActivateVs(v); };
-			_list.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left && ItemAt(e.Location) is VsInstance v) ActivateVs(v); };
+			_list.MouseClick += (s, e) => { if (e.Button == MouseButtons.Left && _settings.ClickToActivate && ItemAt(e.Location) is VsInstance v) ActivateVs(v, false); };
+			_list.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left && ItemAt(e.Location) is VsInstance v) ActivateVs(v, false); };
 			_list.MouseDown += (s, e) => NoteUserNavigation("用户在 VS 列表中选择 / user picked in the VS list");
 			_list.KeyDown += (s, e) =>
 			{
 				if (e.KeyCode == Keys.Up || e.KeyCode == Keys.Down || e.KeyCode == Keys.Home || e.KeyCode == Keys.End || e.KeyCode == Keys.PageUp || e.KeyCode == Keys.PageDown)
 					NoteUserNavigation("用户用键盘在 VS 列表中选择 / user moved in the VS list with the keyboard");
 				if (e.KeyCode == Keys.F2) RenameSelected();
-				else if (e.KeyCode == Keys.Enter && Selected != null) ActivateVs(Selected);
+				else if (e.KeyCode == Keys.Enter && Selected != null) ActivateVs(Selected, false);
 			};
 			_list.Resize += (s, e) => _list.Invalidate();
 			_list.ContextMenuStrip = BuildListMenu();
@@ -324,6 +324,7 @@ namespace VSManager
 			var vsBody = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Sidebar };
 			vsBody.Controls.Add(_list);
 			vsBody.Controls.Add(sideHint);
+			BuildVsSessionBar(vsBody);
 			BuildWorkspaceSidebar(vsBody, btnRefresh);
 			UpdateAgentVisibility();
 
@@ -412,6 +413,7 @@ namespace VSManager
 			Controls.Add(_chat);
 			Controls.Add(_agentPanel);
 			Controls.Add(_notebookHost);
+			Controls.Add(_evalPanel);
 			Controls.Add(testSplitter);
 			Controls.Add(_testPanel);
 			Controls.Add(_taskPanel);
@@ -419,7 +421,7 @@ namespace VSManager
 			Controls.Add(_sidebar);
 			Controls.Add(_header);
 			Controls.Add(statusBar);
-			_workspaceNavigation = new WorkspaceNavigation(_chat, _agentPanel, _notebookHost, SaveNotebook);
+			_workspaceNavigation = new WorkspaceNavigation(_chat, _agentPanel, _notebookHost, SaveNotebook, _evalPanel);
 
 			// ---- 托盘 ----
 			_tray.Icon = Icon ?? SystemIcons.Application;
@@ -459,6 +461,8 @@ namespace VSManager
 			});
 			ctx.Items.Add("登记此解决方案 / Register this solution", null, (s, e) => RegisterSelectedSolution());
 			ctx.Items.Add("解决方案登记… / Solution registry…", null, (s, e) => OpenSolutionRegistry(this));
+			ctx.Items.Add("记录当前 VS 与布局 / Record current VS and layout", null, async (s, e) => await RecordVsSessionAsync());
+			ctx.Items.Add("一键打开记录的 VS / Open recorded VS", null, async (s, e) => await OpenVsSessionAsync());
 			ctx.AddGroup("VS 对话与布局 / VS chat and layout");
 			ctx.Items.Add("打开 Copilot 对话助手", null, (s, e) => OpenPane());
 			ctx.Items.Add("Copilot 切换为工具窗模式（全部 VS）", null, (s, e) => DockAllPanes());
@@ -1085,7 +1089,7 @@ namespace VSManager
 		private void OnSelectionChanged()
 		{
 			var v = Selected;
-			if (v != null && (_agentMode || _notebookMode) && !ShowAgent(false))
+			if (v != null && (_agentMode || _notebookMode || _evalMode) && !ShowAgent(false))
 			{
 				_list.ClearSelected();
 				return;
@@ -1780,6 +1784,8 @@ namespace VSManager
 				var v = vs;
 				m.Items.Add($"{NameOf(v)}   [{StateText(v)}]", null, (s, e) => ActivateVs(v));
 			}
+			m.Items.Add("记录当前 VS 与布局 / Record current VS and layout", null, async (s, e) => await RecordVsSessionAsync());
+			m.Items.Add("一键打开记录的 VS / Open recorded VS", null, async (s, e) => await OpenVsSessionAsync());
 			m.AddGroup("管理工具 / VSManager");
 			m.Items.Add("显示主窗口" + (_showHotkeyOk ? "（Ctrl+Alt+0）" : ""), null, (s, e) => ShowMe());
 			m.Items.Add("截图 / Screenshot" + (SnipHotkeyText.Length > 0 ? "（" + SnipHotkeyText + "）" : ""), null, (s, e) => StartSnip(false, 250));
@@ -2065,7 +2071,7 @@ namespace VSManager
 				RegisterHotkeys();
 				PruneInstanceAliases(list);
 			}
-			if (!_agentMode && !_notebookMode && _list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
+			if (!_agentMode && !_notebookMode && !_evalMode && _list.SelectedIndex < 0 && _list.Items.Count > 0) _list.SelectedIndex = 0;
 			if (_list.Items.Count == 0 && _chatSvc.Target != null) OnSelectionChanged();
 			_sideCount.Text = list.Count.ToString();
 			_list.Invalidate();
@@ -2153,12 +2159,16 @@ namespace VSManager
 			Native.Activate(v.MainHwnd);
 		}
 
-		private void ActivateVs(VsInstance v)
+		/// <summary>
+		/// 激活 VS；<paramref name="arrange"/> 为 false 时只切换到前台，不按设置移屏、最大化或移动工具栏（侧边栏列表单击 / 双击 / 回车）。
+		/// Activates a VS; when <paramref name="arrange"/> is false it only switches to it, without the configured move / maximize / tool-window move (sidebar list click / double-click / Enter).
+		/// </summary>
+		private void ActivateVs(VsInstance v, bool arrange = true)
 		{
 			if (v == null || !Native.IsWindow(v.MainHwnd)) { RefreshInstances(); return; }
-			if (_settings.ActivateMoveMain) MoveMain(v, false);
+			if (arrange && _settings.ActivateMoveMain) MoveMain(v, false);
 			Native.Activate(v.MainHwnd);
-			if (_settings.ActivateMoveTools) MoveTools(v);
+			if (arrange && _settings.ActivateMoveTools) MoveTools(v);
 			SetStatus($"已激活「{NameOf(v)}」");
 		}
 
@@ -2877,7 +2887,7 @@ namespace VSManager
 		protected override void OnResize(EventArgs e)
 		{
 			base.OnResize(e);
-			if (WindowState == FormWindowState.Minimized && _settings.MinimizeToTray) Hide();
+			// 最小化时保留任务栏图标，只有关闭按钮才隐藏到托盘 / Minimizing keeps the taskbar button; only the close button hides to the tray
 			UpdateChatVisibility();
 		}
 
@@ -2902,7 +2912,7 @@ namespace VSManager
 			{
 				e.Cancel = true;
 				Hide();
-				_tray.ShowBalloonTip(2000, "多 VS 管理工具", "已最小化到托盘，继续监听 Copilot。右键托盘图标可退出。", ToolTipIcon.Info);
+				_tray.ShowBalloonTip(2000, "多 VS 管理工具", "已隐藏到托盘，继续监听 Copilot。右键托盘图标可退出。", ToolTipIcon.Info);
 				return;
 			}
 			if (e.Cancel || !SaveNotebook())

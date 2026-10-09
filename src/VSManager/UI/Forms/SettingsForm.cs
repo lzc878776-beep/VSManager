@@ -147,9 +147,9 @@ namespace VSManager
             var winCard = ToggleCard("窗口与切换", "激活 VS 的行为与本工具窗口选项", new[]
             {
                 Toggle("单击列表即激活 VS", "关闭时单击仅选中，双击激活", _s.ClickToActivate, v => _s.ClickToActivate = v),
-                Toggle("激活时移到主屏并最大化", null, _s.ActivateMoveMain, v => _s.ActivateMoveMain = v),
+                Toggle("激活时移到主屏并最大化（侧边栏列表双击只切换）/ Move to main screen and maximize on activation (sidebar list double-click only switches)", null, _s.ActivateMoveMain, v => _s.ActivateMoveMain = v),
                 Toggle("激活时同时移动输出/错误栏", null, _s.ActivateMoveTools, v => _s.ActivateMoveTools = v),
-                Toggle("关闭 / 最小化到托盘", null, _s.MinimizeToTray, v => _s.MinimizeToTray = v),
+                Toggle("关闭到托盘（最小化保留任务栏图标）/ Close to tray (minimizing keeps the taskbar icon)", null, _s.MinimizeToTray, v => _s.MinimizeToTray = v),
                 Toggle("本工具窗口置顶", null, _s.TopMost, v => _s.TopMost = v),
             });
 

@@ -32,5 +32,25 @@ namespace VSManager
             if (current > expected) return ImagePasteState.Unexpected;
             return ImagePasteState.Pending;
         }
+
+        /// <summary>
+        /// 计算附件区的用户附件数。Copilot 把所有粘贴的图片都命名为「图像」且彼此相等，WPF 只为它们生成一个 UI 自动化元素
+        /// （同一个 RuntimeId），所以第 2 张起的图片在 UI 自动化树中不可见；列表项的 SizeOfSet（列表实际项数）不受影响，
+        /// 用它减去可见的非用户项（「添加引用」按钮、活动文档）即为真实附件数。读不到 SizeOfSet 时退回可见数量。
+        /// Counts user attachments in the attachment list. Copilot names every pasted image "图像"/"Image" and treats them as
+        /// equal, so WPF exposes a single UI Automation element (one RuntimeId) for all of them and images from the 2nd one on
+        /// are invisible in the UIA tree. The list items' SizeOfSet (the real item count) is unaffected: subtracting the visible
+        /// non-user items (the "add reference" button, the active document) gives the real attachment count. Falls back to the
+        /// visible count when SizeOfSet is unavailable.
+        /// </summary>
+        /// <param name="visibleUser">UI 自动化树中可见的用户附件数。/ User attachments visible in the UIA tree.</param>
+        /// <param name="visibleOther">可见的非用户项数。/ Visible non-user items.</param>
+        /// <param name="setSize">列表项报告的 SizeOfSet，读不到时为 null。/ SizeOfSet reported by a list item; null when unavailable.</param>
+        public static int CountAttachments(int visibleUser, int visibleOther, int? setSize)
+        {
+            int user = Math.Max(0, visibleUser), other = Math.Max(0, visibleOther);
+            if (setSize == null || setSize.Value < user + other) return user;
+            return setSize.Value - other;
+        }
     }
 }

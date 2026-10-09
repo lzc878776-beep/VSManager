@@ -67,13 +67,13 @@ namespace VSManager
                 bool focused = HasFocus(edit);
                 bool? composing = focused ? InputComposition(target) : false;
                 bool draft = ManualChatProtection.HasDraft(text);
-                bool attachmentsReadable = TryAttachmentIds(pane, out var attachments);
+                bool attachmentsReadable = TryAttachmentCount(pane, out int attachments);
                 var observation = composing != false ? ManualChatObservation.Unknown
                     : ManualChatProtection.Classify(false, text != null && attachmentsReadable,
-                        draft || (attachmentsReadable && attachments.Count > 0), focused);
+                        draft || (attachmentsReadable && attachments > 0), focused);
                 return InputDiagnostic(target, observation,
                     $"原始长度 / RawLength={text?.Length ?? -1}; 规范化长度 / NormalizedLength={(text == null ? -1 : ManualChatProtection.NormalizeInput(text).Length)}; " +
-                    $"可读取 / Readable={text != null}; 附件数 / Attachments={(attachmentsReadable ? attachments.Count : -1)}; 合成 / IME={composing?.ToString() ?? "Unknown"}; 焦点 / Focus={focused}");
+                    $"可读取 / Readable={text != null}; 附件数 / Attachments={(attachmentsReadable ? attachments : -1)}; 合成 / IME={composing?.ToString() ?? "Unknown"}; 焦点 / Focus={focused}");
             }
             catch (Exception ex) { return InputDiagnostic(target, ManualChatObservation.Unknown, "输入探测异常类别 / Input probe error type=" + ex.GetType().Name); }
         }
@@ -111,28 +111,28 @@ namespace VSManager
             finally { _queueGuard = null; _queueTouched = false; }
         }
 
-        private static bool TryAttachmentIds(AutomationElement pane, out HashSet<string> attachments)
+        private static bool TryAttachmentCount(AutomationElement pane, out int attachments)
         {
-            attachments = null;
+            attachments = 0;
             try
             {
                 if (pane == null || pane.Current.ProcessId <= 0) return false;
                 // 原始树成功读取但无附件列表表示空；读取失败不能冒充空集合。/ A successful raw-tree read with no attachment list means empty; a failed read must not masquerade as empty.
                 using (var cache = new CacheRequest { TreeFilter = Automation.RawViewCondition }.Activate())
-                    attachments = AttachmentIds(pane);
+                    attachments = AttachmentCount(pane);
                 return true;
             }
             catch { return false; }
         }
 
         private string GuardQueueSubmit(VsInstance target, AutomationElement pane, AutomationElement edit,
-            string expected, IEnumerable<string> expectedAttachments)
+            string expected, int expectedAttachments)
         {
             if (_queueGuard == null) return null;
-            // 文字必须无附件，图片必须恰为本次确认加入的数量（附件列表重新渲染时 RuntimeId 会变，按数量比对）；未知状态也保留草稿。
-            // Text requires no attachments; images require exactly the count this send confirmed (RuntimeIds change when the list re-renders, so compare counts); unknown state also preserves the draft.
-            if (!_queueGuard() || !TryAttachmentIds(pane, out var attachments)
-                || expectedAttachments == null || attachments.Count != expectedAttachments.Count()
+            // 文字必须无附件，图片必须恰为本次确认加入的数量（多张图片在 UI 自动化中共用一个元素，只能按数量比对）；未知状态也保留草稿。
+            // Text requires no attachments; images require exactly the count this send confirmed (several images share one UIA element, so only counts can be compared); unknown state also preserves the draft.
+            if (!_queueGuard() || !TryAttachmentCount(pane, out int attachments)
+                || attachments != expectedAttachments
                 || HasCancel(pane) || InputComposition(target) != false
                 || !PasteVerifier.IsConfirmed(PasteVerifier.Classify(expected, null, GetEditText(edit))))
                 return ManualChatProtection.UncertainPrefix + "目标、输入或附件在写入后发生变化或无法确认，请检查草稿 / Target, input or attachments changed or cannot be confirmed after writing; inspect the draft";

@@ -3,28 +3,31 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-    internal enum WorkspacePage { VisualStudio, Agent, Notebook }
+    internal enum WorkspacePage { VisualStudio, Agent, Notebook, AgentEval }
 
     internal sealed class WorkspaceNavigation
     {
-        private readonly Control _vs, _agent, _notebook;
+        private readonly Control _vs, _agent, _notebook, _eval;
         private readonly Func<bool> _saveNotebook;
         public WorkspacePage Current { get; private set; }
 
-        public WorkspaceNavigation(Control vs, Control agent, Control notebook, Func<bool> saveNotebook)
+        /// <param name="eval">「Agent 自循环」问题汇总页（可选）。/ The "Agent loop" question page (optional).</param>
+        public WorkspaceNavigation(Control vs, Control agent, Control notebook, Func<bool> saveNotebook, Control eval = null)
         {
             _vs = vs;
             _agent = agent;
             _notebook = notebook;
+            _eval = eval;
             _saveNotebook = saveNotebook;
             Select(WorkspacePage.VisualStudio);
         }
 
         public bool Select(WorkspacePage page)
         {
+            if (page == WorkspacePage.AgentEval && _eval == null) return false;
             if (Current == WorkspacePage.Notebook && page != Current && !_saveNotebook()) return false;
             Current = page;
-            var active = page == WorkspacePage.VisualStudio ? _vs : page == WorkspacePage.Agent ? _agent : _notebook;
+            var active = page == WorkspacePage.VisualStudio ? _vs : page == WorkspacePage.Agent ? _agent : page == WorkspacePage.Notebook ? _notebook : _eval;
             // 先显示并置顶新页面、再隐藏旧页面，并合并为一次布局：切换过程中不会露出空白底色或让侧栏重新布局而闪烁。
             // Show and raise the new page before hiding the old ones, in a single layout pass, so switching never exposes the bare background or relayouts the sidebar.
             var parent = active.Parent;
@@ -33,8 +36,8 @@ namespace VSManager
             {
                 active.Visible = true;
                 if (parent == null || parent.Controls.GetChildIndex(active) != 0) active.BringToFront();
-                foreach (var other in new[] { _vs, _agent, _notebook })
-                    if (other != active) other.Visible = false;
+                foreach (var other in new[] { _vs, _agent, _notebook, _eval })
+                    if (other != null && other != active) other.Visible = false;
             }
             finally { parent?.ResumeLayout(true); }
             return true;

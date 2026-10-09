@@ -70,6 +70,12 @@ namespace VSManager
         public event Action<string> AttachmentClicked;
 
         /// <summary>
+        /// 可选：按消息给出助手标签（如在「AI 助手」后显示进程名称）；返回空时使用 <see cref="AssistantLabel"/>。
+        /// Optional per-message assistant label (e.g. the process name after "AI 助手"); an empty result falls back to <see cref="AssistantLabel"/>.
+        /// </summary>
+        public Func<ChatMessage, string> AssistantLabelFor { get; set; }
+
+        /// <summary>
         /// 重置视图后滚动到顶部而不是底部（用于倒序显示的历史记录）。
         /// Scroll to the top instead of the bottom after a reset (used for newest-first history).
         /// </summary>
@@ -120,12 +126,18 @@ namespace VSManager
                 {
                     if (message == null) continue;
                     var parts = message.Parts?.ToArray() ?? Array.Empty<ChatPart>();
+                    string label = null;
+                    if (message.Role != ChatRole.User && AssistantLabelFor != null)
+                    {
+                        try { label = AssistantLabelFor(message); } catch { label = null; }
+                        if (string.IsNullOrEmpty(label)) label = null;
+                    }
                     var old = state.Messages.Count < previous.Messages.Count ? previous.Messages[state.Messages.Count] : null;
-                    if (SameSource(old, message.Role == ChatRole.User, parts, showSteps))
+                    if (SameSource(old, message.Role == ChatRole.User, parts, showSteps) && old.Label == label)
                         state.Messages.Add(old);
                     else
                     {
-                        var source = new SourceMessage { User = message.Role == ChatRole.User };
+                        var source = new SourceMessage { User = message.Role == ChatRole.User, Label = label };
                         foreach (var part in parts)
                             if (part != null && (!part.IsStep || showSteps))
                                 source.Parts.Add(new SourcePart { Step = part.IsStep, Text = part.Text ?? "" });
@@ -447,7 +459,7 @@ namespace VSManager
                 {
                     var source = state.Messages[i];
                     if (!reset && bot == _sentBot && i < sent.Messages.Count && SameMessage(sent.Messages[i], source)) continue;
-                    messages.Add(new { index = i, user = source.User, html = RenderMessage(source) });
+                    messages.Add(new { index = i, user = source.User, html = RenderMessage(source), label = source.Label ?? "" });
                 }
             }
             return _json.Serialize(new
@@ -507,7 +519,7 @@ namespace VSManager
         private static bool SameMessage(SourceMessage a, SourceMessage b)
         {
             if (ReferenceEquals(a, b)) return true;
-            if (a.User != b.User || a.Parts.Count != b.Parts.Count) return false;
+            if (a.User != b.User || a.Label != b.Label || a.Parts.Count != b.Parts.Count) return false;
             for (int i = 0; i < a.Parts.Count; i++)
                 if (a.Parts[i].Step != b.Parts[i].Step || a.Parts[i].Text != b.Parts[i].Text) return false;
             return true;
@@ -701,6 +713,8 @@ namespace VSManager
         private sealed class SourceMessage
         {
             public bool User;
+            /// <summary>本条助手消息的标签；null 时用通用标签。/ Label of this assistant message; null uses the shared label.</summary>
+            public string Label;
             public readonly List<SourcePart> Parts = new List<SourcePart>();
         }
 

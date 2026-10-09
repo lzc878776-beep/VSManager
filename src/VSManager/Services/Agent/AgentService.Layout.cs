@@ -14,6 +14,36 @@ namespace VSManager
         Task<string> RestoreWorkspaceLayout();
     }
 
+    /// <summary>确保停在 AI 总控页的结果。/ Result of making sure the AI assistant page is shown.</summary>
+    public enum AgentPageSwitch
+    {
+        /// <summary>本来就在 AI 总控页。/ Already on the AI assistant page.</summary>
+        AlreadyOn,
+        /// <summary>已从其他页面切到 AI 总控页。/ Switched to the AI assistant page from another page.</summary>
+        Switched,
+        /// <summary>AI 总控页未启用，无法切换。/ The AI assistant page is disabled.</summary>
+        Disabled,
+        /// <summary>切换失败（例如笔记未保存）。/ Switching failed (e.g. an unsaved note).</summary>
+        Failed,
+    }
+
+    /// <summary>
+    /// 可选宿主能力：一键布局前把 VSManager 主窗口切到 AI 总控页（已在则不动），可从后台线程调用。
+    /// Optional host capability: switches the VSManager main window to the AI assistant page before a one-click layout (no-op when already there); accepts background-thread calls.
+    /// </summary>
+    public interface IAgentPageHost
+    {
+        Task<AgentPageSwitch> EnsureAgentPage();
+    }
+
+    /// <summary>可选的 VS 会话记录能力（记录当前 VS 与布局、一键打开），可从后台线程调用。/ Optional VS session capability (record current VS and layout, open them in one click); accepts background-thread calls.</summary>
+    public interface IAgentVsSessionHost
+    {
+        Task<string> RecordVsSession();
+        Task<string> OpenVsSession();
+        Task<string> DescribeVsSession();
+    }
+
     public sealed partial class AgentService
     {
         [Description("读取显示器数量、编号、分辨率、桌面位置、工作区、主屏、当前前台窗口及各 VS 所在屏幕；只读，不改变布局。/ Reads numbered display geometry, work areas, primary/current screens and VS locations without changing layout.")]
@@ -23,7 +53,7 @@ namespace VSManager
             return (await host.GetDisplays()).Describe();
         }
 
-        [Description("自动布局 VS 主窗口及工具窗格（默认全部包含，可逐项关闭）。按各屏尺寸与主屏属性（不是编号）分配：主窗口集中在主屏（与 VSManager 同屏），资源管理器同屏相邻；Copilot 集中在尺寸足够大的非主屏中最大的一块，过小的屏幕不放对话；自动模式下输出与错误列表优先剩余屏幕，否则与 Copilot 上下分布；没有合适副屏时与主窗口左右分区。空间不足时请用 place_workspace_windows 自行调整。不保存或关闭文件，不最小化 VS，可还原。/ Arranges main VS windows and tool panes (all included by default, each optional), assigning screens by size and the primary flag rather than numbers: main windows share the primary screen (with VSManager) with their adjacent Solution Explorers; Copilot chats use the largest sufficiently large non-primary screen and never a too-small one; auto mode prefers a remaining screen for Output and Error List, otherwise stacked below Copilot; without a suitable secondary screen the chats split the main screen. Adapt with place_workspace_windows if space is insufficient. Never saves/closes files or minimizes VS; restorable.")]
+        [Description("自动布局 VS 主窗口及工具窗格（默认全部包含，可逐项关闭）。按各屏尺寸与主屏属性（不是编号）分配：主窗口集中在主屏（与 VSManager 同屏），资源管理器同屏相邻；Copilot 集中在尺寸足够大的非主屏中最大的一块，过小的屏幕不放对话；自动模式下输出与错误列表优先剩余屏幕，否则与 Copilot 上下分布；没有合适副屏时与主窗口左右分区。空间不足时请用 place_workspace_windows 自行调整。执行前 VSManager 不在 AI 总控页时自动切过去，结果首行说明是否切换。不保存或关闭文件，不最小化 VS，可还原。/ Arranges main VS windows and tool panes (all included by default, each optional), assigning screens by size and the primary flag rather than numbers: main windows share the primary screen (with VSManager) with their adjacent Solution Explorers; Copilot chats use the largest sufficiently large non-primary screen and never a too-small one; auto mode prefers a remaining screen for Output and Error List, otherwise stacked below Copilot; without a suitable secondary screen the chats split the main screen. Adapt with place_workspace_windows if space is insufficient. Switches VSManager to the AI assistant page first when it is elsewhere; the first result line says whether it switched. Never saves/closes files or minimizes VS; restorable.")]
         private async Task<string> ArrangeWorkspace(
             [Description("VS 编号或名称，多个用逗号分隔，留空为全部 / Comma-separated VS numbers or names; empty means all")] string vs = "",
             [Description("主窗口与解决方案资源管理器屏幕编号，0 自动 / Main-window and Solution Explorer screen number; 0 selects automatically")] int mainScreen = 0,
@@ -48,18 +78,41 @@ namespace VSManager
             try { plan = WorkspaceLayoutPlan.Create(snapshot, targets, targets.Select(_host.NameOf).ToList(), mainScreen, paneScreen, includeOutput, includeErrorList, includeSolutionExplorer); }
             catch (ArgumentException ex) { return ex.Message; }
             if (_settings().AgentConfirm && !await ConfirmAsync("自动布局 VS 工作区 / Arrange VS workspace",
-                plan.Describe() + "\n将浮动所选工具窗格；不保存或关闭文件，可还原 / Selected tool panes will float; files remain untouched; layout can be restored."))
+                plan.Describe() + "\n" + LayoutConfirmNote))
                 return "用户拒绝了该操作 / User cancelled the operation";
-            return Truncate(await host.ArrangeWorkspace(plan, snapshot.Signature), MaxToolText);
+            string page = await EnsureAgentPageNote();
+            return Truncate(page + await host.ArrangeWorkspace(plan, snapshot.Signature), MaxToolText);
+        }
+
+        /// <summary>布局审批说明：包含窗格浮动与切到 AI 总控页。/ Layout approval note: panes float and the AI assistant page is shown.</summary>
+        private const string LayoutConfirmNote = "将浮动所选工具窗格；VSManager 不在 AI 总控页时会先切过去；不保存或关闭文件，可还原 / Selected tool panes will float; VSManager switches to the AI assistant page first if needed; files remain untouched; layout can be restored.";
+
+        /// <summary>
+        /// 一键布局执行前（已通过审批）确保主窗口停在 AI 总控页，返回放在结果开头的一行说明；宿主不支持时返回空串。切换失败不阻止布局。
+        /// Before a one-click layout runs (after approval) makes sure the main window shows the AI assistant page and returns a leading result line; empty when the host lacks the capability. A failed switch does not block the layout.
+        /// </summary>
+        private async Task<string> EnsureAgentPageNote()
+        {
+            if (!(_host is IAgentPageHost host)) return "";
+            AgentPageSwitch result;
+            try { result = await host.EnsureAgentPage().ConfigureAwait(false); }
+            catch (Exception ex) { return "页面：未能切到 AI 总控页（" + ex.Message + "），布局照常执行 / Page: could not switch to the AI assistant page (" + ex.Message + "); layout continues.\n"; }
+            switch (result)
+            {
+                case AgentPageSwitch.Switched: return "页面：已自动切到 AI 总控页 / Page: switched to the AI assistant page.\n";
+                case AgentPageSwitch.AlreadyOn: return "页面：已在 AI 总控页，未切换 / Page: already on the AI assistant page; no switch.\n";
+                case AgentPageSwitch.Disabled: return "页面：AI 总控页未启用，未切换，布局照常执行 / Page: the AI assistant page is disabled; no switch, layout continues.\n";
+                default: return "页面：未能切到 AI 总控页（可能有未保存的笔记），布局照常执行；如需修复请把问题作为任务发给 VSManager / Page: could not switch to the AI assistant page (possibly an unsaved note); layout continues. To fix it, send the issue as a task to VSManager.\n";
+            }
         }
 
         [Description("按你自己设计的位置摆放 VS 主窗口与 Copilot / 输出 / 错误列表 / 解决方案资源管理器窗格。先 get_displays 了解各屏尺寸、方向与相对位置，再为每个 VS 选择屏幕和位置。"
             + WorkspaceLayoutPlan.ScreenPolicyZh + " / " + WorkspaceLayoutPlan.ScreenPolicyEn + " "
             + "layout 为 JSON 数组，每项 {\"vs\":\"1\",\"main\":{\"screen\":1,\"x\":0,\"y\":0,\"w\":65,\"h\":100},\"copilot\":{...},\"output\":{...},\"errorList\":{...},\"solutionExplorer\":{...}}；"
-            + "x/y/w/h 为该屏工作区百分比（0–100），main 必填，其余窗格省略则不移动；尚未创建的内置窗格会被创建，还原时恢复隐藏。重叠或过小只警告不拒绝。不保存或关闭文件，不最小化 VS，可用 restore_workspace_layout 还原。"
+            + "x/y/w/h 为该屏工作区百分比（0–100），main 必填，其余窗格省略则不移动；尚未创建的内置窗格会被创建，还原时恢复隐藏。重叠或过小只警告不拒绝。执行前 VSManager 不在 AI 总控页时自动切过去，结果首行说明是否切换。不保存或关闭文件，不最小化 VS，可用 restore_workspace_layout 还原。"
             + " / Places VS main windows and Copilot/Output/Error List/Solution Explorer panes where you decide. Call get_displays first (sizes, orientation, relative positions), then choose a screen and position per VS. "
             + "layout is a JSON array of {\"vs\":\"1\",\"main\":{\"screen\":1,\"x\":0,\"y\":0,\"w\":65,\"h\":100},\"copilot\":{...},\"output\":{...},\"errorList\":{...},\"solutionExplorer\":{...}}; "
-            + "x/y/w/h are percentages (0–100) of that screen's work area; main is required, omitted panes are not moved; built-in panes not yet created are created and hidden again on restore. Overlaps and small sizes only warn. Never saves/closes files or minimizes VS; restorable.")]
+            + "x/y/w/h are percentages (0–100) of that screen's work area; main is required, omitted panes are not moved; built-in panes not yet created are created and hidden again on restore. Overlaps and small sizes only warn. Switches VSManager to the AI assistant page first when it is elsewhere; the first result line says whether it switched. Never saves/closes files or minimizes VS; restorable.")]
         private async Task<string> PlaceWorkspace(
             [Description("布局 JSON，见工具说明 / Layout JSON, see the tool description")] string layout)
         {
@@ -130,8 +183,8 @@ namespace VSManager
             return "[" + string.Join(",", items) + "]";
         }
 
-        [Description("按窗口布局记忆一键布局：检测当前屏幕状态与 VS 个数，找到匹配的记录后直接应用（可用 restore_workspace_layout 还原）。没有匹配时返回屏幕信息，请按屏幕尺寸设计布局并用 save_layout_memory 保存。"
-            + " / One-click layout from memory: detects the current display state and VS count and applies the matching record (restorable with restore_workspace_layout). Without a match it returns display info; design a layout for the screens and store it with save_layout_memory.")]
+        [Description("按窗口布局记忆一键布局：检测当前屏幕状态与 VS 个数，找到匹配的记录后直接应用（可用 restore_workspace_layout 还原）；应用前 VSManager 不在 AI 总控页时自动切过去，结果首行说明是否切换。没有匹配时返回屏幕信息，请按屏幕尺寸设计布局并用 save_layout_memory 保存。"
+            + " / One-click layout from memory: detects the current display state and VS count and applies the matching record (restorable with restore_workspace_layout), switching VSManager to the AI assistant page first when it is elsewhere (the first result line says whether it switched). Without a match it returns display info; design a layout for the screens and store it with save_layout_memory.")]
         private async Task<string> ApplyLayoutMemory()
         {
             if (!(_host is IAgentWorkspaceLayoutHost host)) return "宿主不支持工作区布局 / Host does not support workspace layout";
@@ -190,10 +243,28 @@ namespace VSManager
             WorkspaceLayoutPlan plan;
             try { plan = WorkspaceLayoutPlan.CreateCustom(snapshot, items); }
             catch (ArgumentException ex) { return ex.Message; }
-            if (_settings().AgentConfirm && !await ConfirmAsync(title,
-                plan.Describe() + "\n将浮动所选工具窗格；不保存或关闭文件，可还原 / Selected tool panes will float; files remain untouched; layout can be restored."))
+            if (_settings().AgentConfirm && !await ConfirmAsync(title, plan.Describe() + "\n" + LayoutConfirmNote))
                 return "用户拒绝了该操作 / User cancelled the operation";
-            return Truncate(await host.ArrangeWorkspace(plan, snapshot.Signature), MaxToolText);
+            string page = await EnsureAgentPageNote();
+            return Truncate(page + await host.ArrangeWorkspace(plan, snapshot.Signature), MaxToolText);
+        }
+
+        [Description("记录当前打开的全部 VS（解决方案路径）以及各自主窗口与浮动窗格（Copilot / 输出 / 错误列表 / 解决方案资源管理器）的位置，覆盖上一次记录；只读，不移动窗口。用户说「记录 / 记住当前的 VS」时调用。"
+            + " / Records every open VS (solution path) with its main-window and floating-pane (Copilot / Output / Error List / Solution Explorer) positions, replacing the previous record; read-only, moves nothing. Use when the user asks to record / remember the current VS.")]
+        private async Task<string> RecordVsSession()
+        {
+            if (!(_host is IAgentVsSessionHost host)) return "宿主不支持 VS 记录 / Host does not support VS session records";
+            return Truncate(await host.RecordVsSession() + "\n" + await host.DescribeVsSession(), MaxToolText);
+        }
+
+        [Description("一键打开 VS：打开 record_vs_session 记录中尚未打开的解决方案，等待就绪后按记录恢复主窗口与浮动窗格位置（屏幕配置变化时只打开不移动）；已打开的只恢复布局，可用 restore_workspace_layout 还原。"
+            + " / Opens the solutions from the record_vs_session record that are not open yet, waits until ready and restores the recorded main-window and floating-pane positions (only opens when the displays changed); already open VS only get the layout; restorable with restore_workspace_layout.")]
+        private async Task<string> OpenVsSession()
+        {
+            if (!(_host is IAgentVsSessionHost host)) return "宿主不支持 VS 记录 / Host does not support VS session records";
+            if (_settings().AgentConfirm && !await ConfirmAsync("一键打开记录的 VS / Open recorded VS", await host.DescribeVsSession()))
+                return "用户拒绝了该操作 / User cancelled the operation";
+            return Truncate(await host.OpenVsSession(), MaxToolText);
         }
 
         [Description("还原 arrange_workspace_layout / place_workspace_windows 之前的 VS 主窗口与 Copilot、输出、错误列表、解决方案资源管理器窗格状态。/ Restores main VS windows and Copilot/Output/Error List/Solution Explorer states saved by arrange_workspace_layout / place_workspace_windows.")]

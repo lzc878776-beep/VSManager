@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Automation;
@@ -79,13 +80,13 @@ namespace VSManager
             var cache = new CacheRequest { TreeFilter = Automation.RawViewCondition };
             using (cache.Activate())
             {
-                HashSet<string> before;
+                int before;
                 if (_queueGuard != null)
                 {
-                    if (!TryAttachmentIds(pane, out before) || before.Count != 0)
+                    if (!TryAttachmentCount(pane, out before) || before != 0)
                         return ManualChatProtection.WaitPrefix + "附件不为空或无法确认 / Attachments are not empty or cannot be confirmed";
                 }
-                else before = AttachmentIds(pane);
+                else before = AttachmentCount(pane);
 
                 string prompt = string.IsNullOrWhiteSpace(text) ? "请分析这些图片。" : text;
                 if (GetClipboardSequenceNumber() != clipboardVersion) return "剪贴板已被其他操作更改，已取消图片发送";
@@ -128,93 +129,85 @@ namespace VSManager
                 if (!WaitText(edit, value => PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, value)), ConfirmTimeoutMs))
                     return "未能确认文字已粘贴，未发送（请检查 VS 草稿后重试）";
 
-                // 附件按数量确认：附件列表重新渲染时 UI 自动化的 RuntimeId 可能变化，按 ID 比对会把本程序刚粘贴的图片误判为「被改动」。
-                // Attachments are confirmed by count: UI Automation RuntimeIds may change when the chip list re-renders, so an ID
-                // comparison would mistake the images this program just pasted for "changed" ones.
-                int baseline = before.Count;
+                // 附件按数量确认（见 ImagePasteCheck.CountAttachments：多张图片在 UI 自动化树里只显示为一项，须用 SizeOfSet 计数）。
+                // Attachments are confirmed by count (see ImagePasteCheck.CountAttachments: several images show up as a single UIA
+                // item, so they must be counted through SizeOfSet).
+                int baseline = before;
                 int confirmedCount = 0;
-                var addedIds = new HashSet<string>();
                 for (int index = 0; index < images.Count; index++)
                 {
                     var image = images[index];
+                    string progress = $"（已加入 {confirmedCount}/{images.Count} 张，已粘贴的附件保留在 VS 草稿中，请检查后重试 / {confirmedCount}/{images.Count} images attached; pasted ones stay in the VS draft, inspect it before retrying）";
                     if (!Refocus(vs, edit) || GetClipboardSequenceNumber() != clipboardVersion)
-                        return "焦点或剪贴板已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
-                    using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
-                    clipboardVersion = GetClipboardSequenceNumber();
-                    // 剪贴板监听程序收到变更后会短暂占用剪贴板；此时按 Ctrl+V，VS 读不到图片，这一张会被静默丢弃。
-                    // Clipboard listeners briefly hold the clipboard after a change; a Ctrl+V at that moment reads nothing and the image is silently dropped.
-                    bool released = DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
-                    if (GetClipboardSequenceNumber() != clipboardVersion)
-                    {
-                        using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
-                        clipboardVersion = GetClipboardSequenceNumber();
-                        released = DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
-                    }
-                    T($"图片 / image {index + 1}/{images.Count}：已写入剪贴板 / clipboard written，剪贴板空闲 / released={released}，当前附件 / attachments={baseline + confirmedCount}");
-                    if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（请检查 VS 草稿后重试）";
-                    blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
+                        return "焦点或剪贴板已改变，未发送" + progress;
+                    bool released = WriteImage(image, ref clipboardVersion);
+                    if (!Refocus(vs, edit)) return "输入焦点已改变，未发送" + progress;
+                    // 粘贴前先确认附件数仍是已确认的数量，不能在数量不明时再粘 / Before pasting, confirm the count is still the confirmed one; never paste blind
+                    string countError = ReadAttachmentCount(pane, out int current);
+                    if (countError != null) return countError;
+                    T($"图片 / image {index + 1}/{images.Count}：已写入剪贴板 / clipboard written，剪贴板空闲 / released={released}，当前附件 / attachments={current}");
+                    if (current != baseline + confirmedCount)
+                        return UnexpectedCount(baseline + confirmedCount, current, progress);
+                    blocked = GuardQueueSubmit(vs, pane, edit, prompt, current);
                     if (blocked != null) return blocked;
                     Combo(VK_CONTROL, VK_V);
                     var started = DateTime.UtcNow;
                     var until = started.AddMilliseconds(ImageConfirmTimeoutMs);
-                    bool repasted = false;
                     int repastes = 0;
                     var lastPaste = started;
                     var state = ImagePasteState.Pending;
-                    HashSet<string> current = null;
                     do
                     {
                         Thread.Sleep(100);
-                        if (_queueGuard != null)
-                        {
-                            if (!TryAttachmentIds(pane, out current))
-                                return ManualChatProtection.UncertainPrefix + "无法读取附件，请检查草稿 / Cannot read attachments; inspect the draft";
-                        }
-                        else current = AttachmentIds(pane);
-                        state = ImagePasteCheck.Evaluate(baseline, confirmedCount, current.Count);
+                        countError = ReadAttachmentCount(pane, out current);
+                        if (countError != null) return countError;
+                        state = ImagePasteCheck.Evaluate(baseline, confirmedCount, current);
                         if (state != ImagePasteState.Pending) break;
-                        // 一直没有新附件：这次粘贴没被 VS 接收（未加入任何内容），重新写入并再粘贴。
-                        // Still no new attachment: VS did not take this paste (nothing was added), so write and paste again.
-                        // 多图时 VS 可能还在处理上一张而忽略这次粘贴：每次补粘前重新写入图片（新的剪贴板版本），最多补粘 MaxRepastes 次。
-                        // With several images VS may still be busy with the previous one and ignore this paste: rewrite the image
-                        // (fresh clipboard version) before each re-paste, up to MaxRepastes times.
-                        if (repastes < MaxRepastes && DateTime.UtcNow - lastPaste >= TimeSpan.FromMilliseconds(RepasteAfterMs) && current.Count == baseline + confirmedCount)
+                        // 附件数没有递增：不直接重按 Ctrl+V，先清空剪贴板再重写这张图片，让 VS 读到全新的剪贴板内容；
+                        // 重写后再确认一次附件数——上一次粘贴可能在等待期间才落地，此时再粘会重复加入。
+                        // The count did not grow: instead of pressing Ctrl+V again, clear the clipboard and rewrite this image so VS
+                        // reads fresh clipboard content; re-check the count after rewriting, since the previous paste may land meanwhile
+                        // and pasting again would add a duplicate.
+                        if (repastes < MaxRepastes && DateTime.UtcNow - lastPaste >= TimeSpan.FromMilliseconds(RepasteAfterMs))
                         {
-                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
-                            using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
-                            clipboardVersion = GetClipboardSequenceNumber();
+                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送" + progress;
+                            DirectClipboard.Clear();
                             DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
-                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送（已粘贴的附件保留在 VS，请检查后重试）";
+                            WriteImage(image, ref clipboardVersion);
+                            countError = ReadAttachmentCount(pane, out current);
+                            if (countError != null) return countError;
+                            state = ImagePasteCheck.Evaluate(baseline, confirmedCount, current);
+                            if (state != ImagePasteState.Pending) break;
+                            if (!Refocus(vs, edit)) return "输入焦点已改变，未发送" + progress;
                             repastes++;
-                            T($"图片 / image {index + 1}/{images.Count}：{RepasteAfterMs} ms 内未出现附件，第 {repastes} 次重新粘贴 / no attachment yet, re-paste #{repastes}");
+                            T($"图片 / image {index + 1}/{images.Count}：{RepasteAfterMs} ms 内附件数未递增（仍为 {current}），已清空并重写剪贴板，第 {repastes} 次重新粘贴 / count did not grow (still {current}); clipboard cleared and rewritten, re-paste #{repastes}");
                             Combo(VK_CONTROL, VK_V);
                             lastPaste = DateTime.UtcNow;
-                            repasted = true;
                         }
                     } while (DateTime.UtcNow < until && ForegroundIs(vs));
                     if (state == ImagePasteState.Unexpected)
-                        return (_queueGuard != null ? ManualChatProtection.UncertainPrefix : "") + $"附件数量异常（期望 {baseline + confirmedCount + 1}，实际 {current?.Count}），请检查草稿 / Unexpected attachment count; inspect the draft";
+                        return UnexpectedCount(baseline + confirmedCount + 1, current, progress);
                     if (state != ImagePasteState.Confirmed)
                     {
-                        T($"图片 / image {index + 1}/{images.Count}：未能确认附件 / not confirmed，附件 / attachments={current?.Count}，前台 / foreground={ForegroundIs(vs)}");
-                        return $"未能确认第 {index + 1}/{images.Count} 张图片附件已加入，未发送。请确认该 VS / 模型支持图片，并检查 VS 草稿后重试";
+                        double waited = (DateTime.UtcNow - started).TotalSeconds;
+                        T($"图片 / image {index + 1}/{images.Count}：{waited:0.#} 秒内附件数未增长，中止 / attachment count stalled for {waited:0.#} s, aborting，附件 / attachments={current}，补粘 / re-pastes={repastes}，前台 / foreground={ForegroundIs(vs)}");
+                        return $"第 {index + 1}/{images.Count} 张图片在 {waited:0.#} 秒内未能加入（附件数停在 {current}，补粘 {repastes} 次），已中止，未发送不完整的消息" + progress
+                            + "。请确认该 VS / 模型支持图片 / Image could not be attached; aborted without sending an incomplete message";
                     }
-                    confirmedCount = current.Count - baseline;
-                    addedIds = new HashSet<string>(current.Except(before));
-                    T($"图片 / image {index + 1}/{images.Count}：已确认 / confirmed，附件 / attachments={current.Count}" + (repasted ? "（补粘 / after re-paste）" : ""));
-                    if (!ForegroundIs(vs)) return "前台窗口已改变，未发送（请检查 VS 草稿后重试）";
+                    confirmedCount = current - baseline;
+                    T($"图片 / image {index + 1}/{images.Count}：已确认 / confirmed，附件 / attachments={current}" + (repastes > 0 ? $"（补粘 {repastes} 次 / after {repastes} re-paste(s)）" : ""));
+                    if (!ForegroundIs(vs)) return "前台窗口已改变，未发送" + progress;
                     // 等 Copilot 处理完刚加入的图片再粘下一张 / Let Copilot finish the image just added before pasting the next one
                     Thread.Sleep(ImageSettleMs);
-                    if (!Refocus(vs, edit)) return "无法重新聚焦输入框，未发送（请检查 VS 草稿后重试）";
+                    if (!Refocus(vs, edit)) return "无法重新聚焦输入框，未发送" + progress;
                 }
 
-                var finalIds = AttachmentIds(pane);
-                if (!Refocus(vs, edit) || finalIds.Count != baseline + confirmedCount ||
+                int finalCount = AttachmentCount(pane);
+                if (!Refocus(vs, edit) || finalCount != baseline + confirmedCount ||
                     !PasteVerifier.IsConfirmed(PasteVerifier.Classify(prompt, null, GetEditText(edit))))
                     return "发送前输入内容或附件发生变化，已取消发送（请检查 VS 草稿）";
-                addedIds = new HashSet<string>(finalIds.Except(before));
 
-                blocked = GuardQueueSubmit(vs, pane, edit, prompt, addedIds);
+                blocked = GuardQueueSubmit(vs, pane, edit, prompt, finalCount);
                 if (blocked != null) return blocked;
                 // 只提交一次，延迟确认不能触发重复发送。/ Submit once; delayed acknowledgement must not cause duplicate prompts.
                 Stage(SendStage.Submit);
@@ -225,7 +218,7 @@ namespace VSManager
                     bool cancel = HasCancel(pane);
                     string remaining = GetEditText(edit);
                     if (cancel || (ManualChatProtection.IsEmptyInput(remaining) &&
-                        AttachmentIds(pane).Count <= baseline))
+                        AttachmentCount(pane) <= baseline))
                         return "已发送文字和图片（已短暂切换到 VS）";
                     Thread.Sleep(100);
                 } while (DateTime.UtcNow < sentUntil);
@@ -278,18 +271,80 @@ namespace VSManager
 
         private string PrePasteFocusFailure(string error) => PrePasteFocusResult(error, _queueGuard != null);
 
-        private static HashSet<string> AttachmentIds(AutomationElement pane)
+        /// <summary>
+        /// 写入图片并等剪贴板监听程序释放；期间剪贴板被改写则再写一次。返回是否确认已释放。
+        /// 剪贴板监听程序收到变更后会短暂占用剪贴板；此时按 Ctrl+V，VS 读不到图片，这一张会被静默丢弃。
+        /// Writes the image and waits for clipboard listeners to release it, writing once more if the clipboard was replaced
+        /// meanwhile. Returns whether release was confirmed. Listeners briefly hold the clipboard after a change; a Ctrl+V at that
+        /// moment reads nothing and the image is silently dropped.
+        /// </summary>
+        private static bool WriteImage(ChatImage image, ref uint clipboardVersion)
         {
-            var result = new HashSet<string>();
+            using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
+            clipboardVersion = GetClipboardSequenceNumber();
+            bool released = DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
+            if (GetClipboardSequenceNumber() == clipboardVersion) return released;
+            using (var bitmap = image.OpenBitmap()) DirectClipboard.SetImage(bitmap);
+            clipboardVersion = GetClipboardSequenceNumber();
+            return DirectClipboard.WaitReleased(ClipboardSettleMs, ClipboardReleaseTimeoutMs);
+        }
+
+        /// <summary>读取附件数；队列发送读取失败时返回待核实的错误。/ Reads the attachment count; for queued sends a failed read returns an uncertain-result error.</summary>
+        private string ReadAttachmentCount(AutomationElement pane, out int count)
+        {
+            if (_queueGuard == null) { count = AttachmentCount(pane); return null; }
+            return TryAttachmentCount(pane, out count) ? null
+                : ManualChatProtection.UncertainPrefix + "无法读取附件，请检查草稿 / Cannot read attachments; inspect the draft";
+        }
+
+        private string UnexpectedCount(int expected, int actual, string progress) =>
+            (_queueGuard != null ? ManualChatProtection.UncertainPrefix : "") +
+            $"附件数量异常（期望 {expected}，实际 {actual}），已中止，未发送" + progress + " / Unexpected attachment count; aborted without sending";
+
+        /// <summary>
+        /// 附件区的用户附件数（不含「添加引用」按钮与活动文档）。多张粘贴的图片只显示为一个 UI 自动化元素，
+        /// 因此用列表项的 SizeOfSet 计数，见 <see cref="ImagePasteCheck.CountAttachments"/>。
+        /// User attachments in the attachment list (excluding the add-reference button and the active document). Several pasted
+        /// images show up as one UIA element, so the list items' SizeOfSet is used; see <see cref="ImagePasteCheck.CountAttachments"/>.
+        /// </summary>
+        private static int AttachmentCount(AutomationElement pane)
+        {
             var list = PaneChild(pane, "PART_AttachmentsList");
-            if (list == null) return result;
+            if (list == null) return 0;
+            var user = new HashSet<string>();
+            var other = new HashSet<string>();
+            int? setSize = null;
             foreach (AutomationElement item in list.FindAll(TreeScope.Children,
                 new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ListItem)))
             {
                 bool addButton = item.FindFirst(TreeScope.Descendants, IdCond("PART_AttachmentsButton")) != null;
-                if (IsUserAttachment(item.Current.Name, addButton)) result.Add(string.Join(".", item.GetRuntimeId()));
+                string id = string.Join(".", item.GetRuntimeId());
+                (IsUserAttachment(item.Current.Name, addButton) ? user : other).Add(id);
+                if (setSize == null) setSize = SizeOfSet(item);
             }
-            return result;
+            return ImagePasteCheck.CountAttachments(user.Count, other.Count, setSize);
+        }
+
+        private const int UIA_SizeOfSetPropertyId = 30153;
+        [DllImport("UIAutomationCore.dll")] private static extern int UiaGetPropertyValue(SafeHandle node, int propertyId, out object value);
+        private static readonly FieldInfo AutomationNodeField = typeof(AutomationElement).GetField("_hnode", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        /// <summary>
+        /// 读取 UIA 的 SizeOfSet（WPF 列表项返回列表实际项数）。托管 UI 自动化客户端不认识该属性，只能通过元素的 UIA 节点调用
+        /// UiaGetPropertyValue；任何失败都返回 null，由调用方退回可见数量。
+        /// Reads UIA SizeOfSet (WPF list items report the real item count). The managed UIA client does not know this property,
+        /// so UiaGetPropertyValue is called on the element's UIA node; any failure returns null and callers fall back to the visible count.
+        /// </summary>
+        private static int? SizeOfSet(AutomationElement item)
+        {
+            try
+            {
+                if (AutomationNodeField?.GetValue(item) is SafeHandle node && !node.IsInvalid && !node.IsClosed
+                    && UiaGetPropertyValue(node, UIA_SizeOfSetPropertyId, out object value) >= 0 && value is int size && size > 0)
+                    return size;
+            }
+            catch (Exception ex) { T("附件：读取 SizeOfSet 失败 / attachments: SizeOfSet read failed " + ex.GetType().Name); }
+            return null;
         }
 
         private static readonly HashSet<string> ImplicitAttachmentNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)

@@ -41,6 +41,29 @@ namespace VSManager
             lock (Gate) return Engine.Restore(live);
         }
 
+        /// <summary>
+        /// 只读记录一个 VS 的主窗口与浮动窗格位置（物理坐标），不创建、不移动任何窗口；读不到的窗格省略。
+        /// Read-only capture of one VS's main window and floating pane bounds (physical coordinates); creates and moves nothing, unreadable panes are omitted.
+        /// </summary>
+        public static VsSessionEntry Capture(VsInstance vs, string name, string keyword)
+        {
+            RequireSta();
+            lock (Gate) return Reader.CaptureSession(vs, name, keyword);
+        }
+
+        /// <summary>按记录把主窗口最大化（先由 Arrange 放到目标屏）。/ Maximizes the main window as recorded (after Arrange moved it to the target screen).</summary>
+        public static bool Maximize(VsInstance vs)
+        {
+            var hwnd = vs?.MainHwnd ?? IntPtr.Zero;
+            if (hwnd == IntPtr.Zero || !Native.IsWindow(hwnd)) return false;
+            Native.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid != vs.Pid) return false;
+            Native.ShowWindow(hwnd, Native.SW_MAXIMIZE);
+            return Native.IsZoomed(hwnd);
+        }
+
+        private static readonly WindowsWorkspaceBackend Reader = new WindowsWorkspaceBackend();
+
         private static void RequireSta()
         {
             if (Thread.CurrentThread.GetApartmentState() != ApartmentState.STA)
@@ -328,6 +351,68 @@ namespace VSManager
                     throw new InvalidOperationException("浮动窗格已最小化，跳过 / minimized floating pane skipped");
             }
             return snapshot;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MonitorInfo { public int cbSize; public Native.RECT rcMonitor, rcWork; public uint dwFlags; }
+        [DllImport("user32.dll")] private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint flags);
+        [DllImport("user32.dll")] private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo info);
+
+        /// <summary>
+        /// 记录主窗口（最大化时记为所在屏工作区）与可见浮动窗格的物理位置；停靠、隐藏或尚未创建的窗格不记录。
+        /// Records the main window (the screen's work area when maximized) and visible floating panes in physical coordinates; docked, hidden or uncreated panes are skipped.
+        /// </summary>
+        internal VsSessionEntry CaptureSession(VsInstance vs, string name, string keyword)
+        {
+            var entry = new VsSessionEntry { SolutionPath = vs?.SolutionPath, Name = name };
+            var hwnd = vs?.MainHwnd ?? IntPtr.Zero;
+            if (hwnd == IntPtr.Zero || !Native.IsWindow(hwnd) || !Native.IsWindowVisible(hwnd) || Native.IsIconic(hwnd)) return entry;
+            Native.GetWindowThreadProcessId(hwnd, out uint pid);
+            if (pid != vs.Pid) return entry;
+            using (new PhysicalCoordinates())
+            {
+                if (Native.IsZoomed(hwnd))
+                {
+                    var info = new MonitorInfo { cbSize = Marshal.SizeOf(typeof(MonitorInfo)) };
+                    if (GetMonitorInfo(MonitorFromWindow(hwnd, 2), ref info))
+                    {
+                        entry.Maximized = true;
+                        entry.Main = VsSessionRect.From(Rectangle.FromLTRB(info.rcWork.Left, info.rcWork.Top, info.rcWork.Right, info.rcWork.Bottom));
+                    }
+                }
+                else if (Native.GetWindowRect(hwnd, out var r))
+                    entry.Main = VsSessionRect.From(Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom));
+            }
+            if (vs.Dte == null) return entry;
+            foreach (WorkspacePane pane in Enum.GetValues(typeof(WorkspacePane)))
+            {
+                VsSessionRect bounds = null;
+                // VS 忙碌时 COM 调用可能暂时被拒绝，稍候重试 / COM calls may be rejected briefly while VS is busy; retry after a short wait
+                for (int attempt = 0; attempt < 3; attempt++)
+                {
+                    try { bounds = VsSessionRect.From(FloatingBounds(vs, pane, keyword)); break; }
+                    catch (Exception ex) when (WorkspaceLayoutEngine.Expected(ex)) { Thread.Sleep(300); }
+                }
+                switch (pane)
+                {
+                    case WorkspacePane.Copilot: entry.Copilot = bounds; break;
+                    case WorkspacePane.Output: entry.Output = bounds; break;
+                    case WorkspacePane.ErrorList: entry.ErrorList = bounds; break;
+                    case WorkspacePane.SolutionExplorer: entry.SolutionExplorer = bounds; break;
+                }
+            }
+            return entry;
+        }
+
+        private Rectangle FloatingBounds(VsInstance vs, WorkspacePane pane, string keyword)
+        {
+            Validate(vs);
+            dynamic window = Find(vs, pane, keyword, null);
+            if (window == null || !(bool)window.IsFloating || !(bool)window.Visible) return Rectangle.Empty;
+            IntPtr host = FindHost(vs, window, (string)window.ObjectKind);
+            using (new PhysicalCoordinates())
+                return !Native.IsIconic(host) && Native.IsWindowVisible(host) && Native.GetWindowRect(host, out Native.RECT r)
+                    ? Rectangle.FromLTRB(r.Left, r.Top, r.Right, r.Bottom) : Rectangle.Empty;
         }
 
         public void PlaceMain(VsInstance vs, Rectangle bounds) => Move(vs, vs.MainHwnd, bounds, null, null);

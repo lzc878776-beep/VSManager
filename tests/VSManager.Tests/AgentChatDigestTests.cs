@@ -41,10 +41,8 @@ namespace VSManager.Tests
 
         private void WriteChat(params AgentChatRecord[] records)
         {
-            var old = AgentChatLog.FilePath;
-            AgentChatLog.FilePath = _chat;
-            try { foreach (var r in records) AgentChatLog.Append(r); }
-            finally { AgentChatLog.FilePath = old; }
+            using (AgentChatLog.OverrideFilePath(_chat))
+                foreach (var r in records) AgentChatLog.Append(r);
         }
 
         private static readonly DateTime T0 = new DateTime(2026, 9, 29, 8, 0, 0);

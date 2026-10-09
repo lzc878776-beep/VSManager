@@ -18,14 +18,13 @@ namespace VSManager.Tests
         private AppSettings _settings;
         private VisionClient _vision;
         private AgentService _agent;
-        private string _oldChatPath;
+        private IDisposable _chatPath;
 
         [TestInitialize]
         public void Init()
         {
             _data = new TempDataFolder();
-            _oldChatPath = AgentChatLog.FilePath;
-            AgentChatLog.FilePath = _data.File(AgentChatLog.FileName);
+            _chatPath = AgentChatLog.OverrideFilePath(_data.File(AgentChatLog.FileName));
             _host = new DesktopHost();
             _host.Instances.Add(new VsInstance { Pid = 42, SolutionPath = _data.Path, Key = "test" });
             _settings = new AppSettings { AgentEndpoint = "http://localhost:11434/v1", AgentModel = "test-vision", AgentConfirm = false };
@@ -38,7 +37,7 @@ namespace VSManager.Tests
         public void Cleanup()
         {
             _agent.Dispose();
-            AgentChatLog.FilePath = _oldChatPath;
+            _chatPath.Dispose();
             if (Directory.Exists(_data.File("Project\\.git"))) WorktreeTests.MakeFixtureWritable(_data.Path);
             _data.Dispose();
         }
@@ -1235,8 +1234,18 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost, IAgentCadDebugHost, IAgentMcpHost, IAgentCadActionHost, IAgentVerifyHost
+        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost, IAgentCadDebugHost, IAgentMcpHost, IAgentCadActionHost, IAgentVerifyHost, IAgentPageHost
         {
+            // 一键布局前切到 AI 总控页的模拟结果与调用记录 / Simulated result and call record of switching to the AI page before a layout
+            internal AgentPageSwitch PageResult = AgentPageSwitch.AlreadyOn;
+            internal int PageChecks;
+            internal bool PageCheckedBeforeLayout;
+            public Task<AgentPageSwitch> EnsureAgentPage()
+            {
+                PageChecks++;
+                PageCheckedBeforeLayout = LayoutPlan == null;
+                return Task.FromResult(PageResult);
+            }
             internal readonly Dictionary<int, List<int>> Debugged = new Dictionary<int, List<int>>();
             public Task<IList<int>> DebuggedProcessIds(VsInstance v) => Task.FromResult<IList<int>>(v != null && Debugged.TryGetValue(v.Pid, out var l) ? l : new List<int>());
             internal readonly List<CadAgent.CadSequenceResult> CadShown = new List<CadAgent.CadSequenceResult>();

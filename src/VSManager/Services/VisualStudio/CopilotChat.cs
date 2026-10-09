@@ -21,6 +21,13 @@ namespace VSManager
     {
         public ChatRole Role;
         public List<ChatPart> Parts = new List<ChatPart>();
+        /// <summary>
+        /// AI 助手对话：产生该消息的 VSManager 进程标识（见 AgentChatLog.ProcessKey）；null 表示当前进程。
+        /// AI assistant chat: key of the VSManager process that produced the message (see AgentChatLog.ProcessKey); null means the current process.
+        /// </summary>
+        public string Process;
+        /// <summary>产生该消息的进程名称；null 表示当前进程。/ Name of the process that produced the message; null means the current process.</summary>
+        public string ProcessName;
     }
 
     public class ChatTranscript
@@ -1071,7 +1078,7 @@ namespace VSManager
                 if (blocked != null) return blocked;
                 if (!HasFocus(edit)) { T("后台：写入后输入框失去焦点"); return "Copilot 输入框失去焦点，已取消发送（内容保留在 VS 输入框中）"; }
 
-                blocked = GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
+                blocked = GuardQueueSubmit(vs, pane, edit, text, 0);
                 if (blocked != null) return blocked;
                 Stage(SendStage.Submit);
                 T("后台：内容已写入，发送 Enter");
@@ -1342,7 +1349,7 @@ namespace VSManager
                       "input text unreadable, but the watermark is hidden, the clipboard is right and the input has focus: sending, delivery confirmation decides");
 
                 Stage(SendStage.Submit);
-                string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text, Array.Empty<string>());
+                string beforeSubmit = BlockingDialogMessage(vs) ?? GuardQueueSubmit(vs, pane, edit, text, 0);
                 if (beforeSubmit != null) return beforeSubmit;
                 if (!ForegroundIs(vs) || !HasFocus(edit))
                 {

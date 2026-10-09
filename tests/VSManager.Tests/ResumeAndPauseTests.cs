@@ -12,20 +12,19 @@ namespace VSManager.Tests
     public class ResumeAndPauseTests
     {
         private TempDataFolder _data;
-        private string _oldChatPath;
+        private IDisposable _chatPath;
 
         [TestInitialize]
         public void Init()
         {
             _data = new TempDataFolder();
-            _oldChatPath = AgentChatLog.FilePath;
-            AgentChatLog.FilePath = _data.File(AgentChatLog.FileName);
+            _chatPath = AgentChatLog.OverrideFilePath(_data.File(AgentChatLog.FileName));
         }
 
         [TestCleanup]
         public void Cleanup()
         {
-            AgentChatLog.FilePath = _oldChatPath;
+            _chatPath.Dispose();
             _data.Dispose();
         }
 

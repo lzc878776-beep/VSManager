@@ -74,7 +74,7 @@ namespace VSManager
 
         private void AddToTranscript(AgentChatRecord r)
         {
-            var m = new ChatMessage { Role = r.IsUser ? ChatRole.User : ChatRole.Assistant };
+            var m = new ChatMessage { Role = r.IsUser ? ChatRole.User : ChatRole.Assistant, Process = r.ProcessKey, ProcessName = r.ProcessName };
             if (!string.IsNullOrWhiteSpace(r.Text)) m.Parts.Add(new ChatPart { Text = r.Text });
             if (r.Role == AgentChatLog.RoleAssistant)
             {

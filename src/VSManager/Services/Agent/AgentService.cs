@@ -289,6 +289,10 @@ namespace VSManager
                 AIFunctionFactory.Create((Func<Task<string>>)ApplyLayoutMemory, "apply_layout_memory"),
                 AIFunctionFactory.Create((Func<Task<string>>)ListLayoutMemories, "list_layout_memories"),
                 AIFunctionFactory.Create((Func<int, Task<string>>)DeleteLayoutMemory, "delete_layout_memory"),
+                AIFunctionFactory.Create((Func<Task<string>>)RecordVsSession, "record_vs_session"),
+                AIFunctionFactory.Create((Func<Task<string>>)OpenVsSession, "open_vs_session"),
+                AIFunctionFactory.Create((Func<string, bool, Task<string>>)FindAgentEvalFolder, "find_agent_eval_folder"),
+                AIFunctionFactory.Create((Func<string, int, Task<string>>)ListAgentEvalIssues, "list_agent_eval_issues"),
 AIFunctionFactory.Create((Func<int, string, bool, string, Task<string>>)ArrangeCopilotPanes, "arrange_copilot_panes"),
 AIFunctionFactory.Create((Func<Task<string>>)RestoreCopilotLayout, "restore_copilot_layout"),
 AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"),
@@ -929,13 +933,17 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 case "activate_vs": return "切换到" + target;
                 case "dock_copilot_panes": return "把 Copilot 切换为工具窗模式";
                 case "get_displays": return "读取显示器数量、尺寸与当前屏幕 / Read displays and current screen";
-                case "arrange_workspace_layout": return "自动布局 VS 主窗口、Copilot 与附属窗格 / Arrange VS workspace";
-                case "place_workspace_windows": return "按 AI 设计摆放 VS 窗口与窗格 / Place VS windows as designed by the AI";
+                case "arrange_workspace_layout": return "自动布局 VS 主窗口、Copilot 与附属窗格（必要时切到 AI 总控页） / Arrange VS workspace (switching to the AI page if needed)";
+                case "place_workspace_windows": return "按 AI 设计摆放 VS 窗口与窗格（必要时切到 AI 总控页） / Place VS windows as designed by the AI (switching to the AI page if needed)";
                 case "restore_workspace_layout": return "还原 VS 工作区布局 / Restore VS workspace layout";
                 case "save_layout_memory": return "保存窗口布局记忆 / Save window layout memory";
-                case "apply_layout_memory": return "按布局记忆一键布局 / Apply remembered layout";
+                case "apply_layout_memory": return "按布局记忆一键布局（必要时切到 AI 总控页） / Apply remembered layout (switching to the AI page if needed)";
                 case "list_layout_memories": return "查看窗口布局记忆 / List window layout memories";
                 case "delete_layout_memory": return "删除窗口布局记忆 / Delete window layout memory";
+                case "record_vs_session": return "记录当前 VS 与布局 / Record current VS and layout";
+                case "open_vs_session": return "一键打开记录的 VS / Open recorded VS";
+                case "find_agent_eval_folder": return "读取代码自动选择评测目录 / Find the evaluation folder from code";
+                case "list_agent_eval_issues": return "查看 Agent 自循环的全部问题 / List all agent self-loop issues";
                 case "arrange_copilot_panes":
                 {
                     string scr = Arg("screen");

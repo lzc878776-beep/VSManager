@@ -386,9 +386,15 @@ namespace VSManager
         /// <summary>该失败任务是否因「已重新排队」而在界面隐藏。/ Whether this failed task is hidden in the UI as "requeued".</summary>
         private bool IsResentHidden(QueuedTask t) => TaskHideList.IsHidden(_hiddenMarks?.Invoke(), t);
 
-        /// <summary>该手动对话是否已被隐藏：只针对清除时已完成（非生成中 / 已停止 / 中断）的对话。</summary>
+        /// <summary>
+        /// 该手动对话是否已被「清除已完成」隐藏：清除时点之前已结束、且不是用户停止的对话。「已中断」只出现在重启后从归档恢复的条目上，
+        /// 同样按结束时间判断，避免清除时正在生成、重启后变成「已中断」的旧对话重新显示。
+        /// Whether this manual chat is hidden by "Clear completed": it ended before the clear and was not stopped by the user.
+        /// "Interrupted" only appears on entries restored from the archive after a restart and is judged by its end time as well,
+        /// so old chats that turned "interrupted" across a restart do not show up again.
+        /// </summary>
         public static bool IsCleared(ExternalChat c, DateTime? clearedAt) =>
-            clearedAt.HasValue && c != null && !c.Generating && !c.Stopped && !c.Interrupted && (c.Finished ?? c.Started) <= clearedAt.Value;
+            clearedAt.HasValue && c != null && !c.Generating && !c.Stopped && (c.Finished ?? c.Started) <= clearedAt.Value;
 
         /// <summary>外部对话条目变化后调用。</summary>
         public void RefreshItems() => Reload();
@@ -515,7 +521,7 @@ namespace VSManager
             _list.ClearFeedback();
             _list.EndUpdate();
             _btnClear.Enabled = items.Any(x => x is QueuedTask t ? t.Status == QueueStatus.Done && !IsCleared(t, cleared)
-                : x is ExternalChat c && !c.Generating && !c.Stopped && !c.Interrupted && !IsCleared(c, cleared));
+                : x is ExternalChat c && !c.Generating && !c.Stopped && !IsCleared(c, cleared));
             _btnRemoveInvalid.Enabled = _queue.Items.Any(TaskQueue.IsInvalid) || ext.Any(c => c.IsInvalid);
             _top.Invalidate();
             UpdateDetail();

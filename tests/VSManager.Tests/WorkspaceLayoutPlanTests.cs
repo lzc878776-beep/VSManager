@@ -436,5 +436,79 @@ namespace VSManager.Tests
                     Assert.IsTrue(step.Contains(" / "), step);
                 }
         }
+
+        /// <summary>
+        /// 一键布局在执行前（审批之后）切到 AI 总控页，结果首行说明是否切换；切换失败不阻止布局。
+        /// One-click layouts switch to the AI page right before applying (after approval); the first result line says whether it switched; a failed switch does not block the layout.
+        /// </summary>
+        [DataTestMethod]
+        [DataRow("arrange_workspace_layout")]
+        [DataRow("place_workspace_windows")]
+        [DataRow("apply_layout_memory")]
+        public async Task LayoutTools_SwitchToAgentPageBeforeApplying(string tool)
+        {
+            const string layout = "[{\"vs\":\"1\",\"main\":[1,0,0,100,100]}]";
+            foreach (var page in new[] { AgentPageSwitch.Switched, AgentPageSwitch.AlreadyOn, AgentPageSwitch.Disabled, AgentPageSwitch.Failed })
+            {
+                var host = new AgentDesktopTests.DesktopHost { Displays = WorkspaceLayoutPlanTests.Screens(2), ConfirmResult = true, PageResult = page };
+                host.Instances.Add(new VsInstance { Pid = 100, Key = "one" });
+                var settings = new AppSettings { AgentConfirm = true, LayoutMemories = new List<AliasEntry>() };
+                settings.LayoutMemories.Add(new AliasEntry { Key = AgentService.LayoutMemoryKey(host.Displays.Signature, 1), Alias = layout });
+                using (var agent = new AgentService(host, () => settings))
+                {
+                    var args = tool == "place_workspace_windows" ? new AIFunctionArguments { ["layout"] = layout } : null;
+                    string result = await Task.Run(() => Invoke(agent, tool, args));
+                    Assert.AreEqual(1, host.PageChecks, result);
+                    Assert.IsTrue(host.PageCheckedBeforeLayout, result);
+                    Assert.IsNotNull(host.LayoutPlan, result);
+                    Assert.IsTrue(result.StartsWith("页面：") && result.Contains(" / Page: "), result);
+                    StringAssert.Contains(result, "Layout completed");
+                    StringAssert.Contains(result, page == AgentPageSwitch.Switched ? "switched to the AI assistant page"
+                        : page == AgentPageSwitch.AlreadyOn ? "already on the AI assistant page"
+                        : page == AgentPageSwitch.Disabled ? "disabled" : "send the issue as a task to VSManager");
+                }
+            }
+        }
+
+        /// <summary>审批被拒、参数无效或没有布局记忆时不切页面。/ No page switch when approval is denied, arguments are invalid or no layout memory matches.</summary>
+        [TestMethod]
+        public async Task LayoutTools_DoNotSwitchPageWhenNothingIsApplied()
+        {
+            var host = new AgentDesktopTests.DesktopHost { Displays = WorkspaceLayoutPlanTests.Screens(2), ConfirmResult = false, PageResult = AgentPageSwitch.Switched };
+            host.Instances.Add(new VsInstance { Pid = 100, Key = "one" });
+            using (var agent = new AgentService(host, () => new AppSettings { AgentConfirm = true }))
+            {
+                StringAssert.Contains(await Invoke(agent, "arrange_workspace_layout"), "cancelled");
+                StringAssert.Contains(await Invoke(agent, "place_workspace_windows", new AIFunctionArguments { ["layout"] = "[{\"vs\":\"1\",\"main\":[1,0,0,100,100]}]" }), "cancelled");
+                await Invoke(agent, "place_workspace_windows", new AIFunctionArguments { ["layout"] = "not json" });
+                await Invoke(agent, "arrange_workspace_layout", new AIFunctionArguments { ["vs"] = "99" });
+                StringAssert.Contains(await Invoke(agent, "apply_layout_memory"), "save_layout_memory");
+                await Invoke(agent, "restore_workspace_layout");
+                await Invoke(agent, "get_displays");
+                Assert.AreEqual(0, host.PageChecks);
+                Assert.IsNull(host.LayoutPlan);
+            }
+        }
+
+        /// <summary>系统提示词与工具说明（中英）都说明一键布局会切到 AI 总控页。/ The system prompt and tool descriptions (zh and en) explain the AI page switch.</summary>
+        [TestMethod]
+        public void PromptAndDescriptions_MentionAgentPageSwitch()
+        {
+            StringAssert.Contains(Prompts.AgentSystem(false, DateTime.Today, "", ""), "真正执行布局前会自动把 VSManager 切到 AI 总控页");
+            StringAssert.Contains(Prompts.AgentSystem(true, DateTime.Today, "", ""), "automatically switch VSManager to the AI assistant page");
+            using (var agent = new AgentService(new AgentDesktopTests.DesktopHost(), () => new AppSettings()))
+            {
+                var tools = ((IEnumerable<AITool>)typeof(AgentService).GetField("_tools", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(agent)).OfType<AIFunction>().ToList();
+                foreach (var name in new[] { "arrange_workspace_layout", "place_workspace_windows", "apply_layout_memory" })
+                {
+                    string description = tools.Single(t => t.Name == name).Description;
+                    StringAssert.Contains(description, "AI 总控页");
+                    StringAssert.Contains(description, "AI assistant page");
+                    string step = (string)typeof(AgentService).GetMethod("DescribeCall", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .Invoke(agent, new object[] { new FunctionCallContent("step", name, new Dictionary<string, object>()) });
+                    StringAssert.Contains(step, "AI 总控页");
+                }
+            }
+        }
     }
 }

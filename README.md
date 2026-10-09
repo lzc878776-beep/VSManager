@@ -28,6 +28,8 @@ VSManager 是一个 Windows 桌面工具（WinForms / .NET Framework 4.8），�
 - **任务归属与项目摘要**：任务题目自动补全为「项目名 · 事项」（项目名取解决方案名），在任务清单与通知中显示；任务通知、失败反馈与 send_task 结果末尾自动附上「[项目上下文]」（项目名、职责描述、该 VS 最近 3 条任务结果），多项目并行时 AI 总控助手不必从长对话中翻找归属。不改变排队与调度规则。在此基础上的会话层隔离（`AgentSessionIsolation`，默认开启）让 AI 总控助手的模型上下文按项目分开：某项目的通知与对话不会出现在其他项目的轮次中，避免结论、文件路径与错误信息互相串扰。
   Session-level isolation on top of this (`AgentSessionIsolation`, on by default) splits the AI assistant's model context per project: one project's notices and conversation never appear in another project's rounds, so conclusions, file paths and errors do not leak across projects.
 - **解决方案登记与 VS 开关**：按常用名称（别名 / 同义词，支持模糊匹配）登记解决方案，AI 助手可据此打开 / 关闭 VS；目标 VS 未打开时任务自动暂存，获得自动启动资格或本次会话手动开始后，打开目标才会自动推送。
+- **VS 会话记录与一键打开**：侧边栏 VS 列表上方「📌 记录 VS」记录当前打开的解决方案及主窗口与浮动窗格位置，「▶ 一键打开 VS」打开其中尚未打开的解决方案，就绪后按记录恢复布局（右键 / 托盘菜单与 AI 工具 `record_vs_session` / `open_vs_session` 同样可用）。
+- **Agent 自循环反馈**：侧边栏「Agent 自循环 / Agent loop」区读取外部 Agent 评测脚本的运行目录（每次运行一个子目录，含 `result.json`、`cases.json`、`transcript.md`、`logs\`），以柱状条显示最近各次运行的通过率（绿＝全部通过、红＝有失败、灰＝无结果、黄＝运行中）；点击后主界面切换到问题汇总页（与 VS 对话、AI 总控助手、笔记本同一区域，点击左侧其他项即切回），顶部可切换两种视图：「汇总（不重复问题）」（默认）把不重复的问题汇总到一张大表，每个问题一行（编号 + 问题概述 + 简短结果（绿色「✓ 通过」/ 红色「✗ 失败」，曾有相反结果时附「· 曾失败 / · 曾通过」）+ 历次测试（按旧→新以 ✓ / ✗ 排列，并显示通过数 / 总数，如「✗✓✓✓ 3/4」）+ 首次 / 最近测试时间）；「按批次」列出测试过的全部问题，一个批次（一次评测运行）一条分割行并记录时间，批次按时间新→旧、批次内按问题编号排列（每行：编号 + 问题概述 + 本次结果 + 总体结果 + 时间 + 耗时；同一问题先失败、之后的测试通过即算通过；选中分割行显示该批次概况），选中某个问题即在下方显示它的全部测试记录（每次的具体提问、回答与未通过原因）。只读，有新结果时自动刷新；评测目录由 AI 技能读取代码自动选择：在已打开 / 已登记解决方案所在仓库中查找写出 `result.json` / `cases.json` 的评测脚本与代码，解析其中由环境变量拼出的运行目录，选择最近有运行的文件夹（启动或首次打开时未设置会自动查找，找不到时再手动选择文件夹），保存在 `AgentEvalDir`（以 `%LOCALAPPDATA%` 等环境变量形式保存）。读取全部运行，问题汇总不省略任何一条；AI 总控助手可用 `find_agent_eval_folder` 选择目录、`list_agent_eval_issues` 查看全部问题（可按 仍失败 / 未再运行 / 已恢复 筛选）。
 - **语音**：可选接入豆包语音，任务完成后播报摘要（中文 / English 可选，AI 助手回复语言随之切换）；原 VS 输入栏的按住说话入口已移除。
 - **Web 远程控制与 AI Skill**：在局域网内用手机浏览器操作（需访问令牌）；可把控制 API 安装为 Copilot CLI / Claude Code 等的 Skill（含 VS 截图）。
 - **历史归档**：任务流水、助手对话、各 VS 对话与发送日志按天写入 JSONL，默认永久保留。
@@ -190,9 +192,10 @@ VSManager/
 | 窗口与布局 | `MainScreen` / `ToolScreen` | 空 | 主界面 / 工具窗口所在屏幕（空＝自动） |
 | | `Layout` | `上下` | 工具窗口布局方式 |
 | | `ActivateMoveMain` / `ActivateMoveTools` | true / false | 激活 VS 时是否移动主界面 / 工具窗口 |
-| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | 置顶、最小化到托盘、全局热键 |
+| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | 置顶、关闭到托盘（最小化保留任务栏图标）、全局热键 |
 | | `ClickToActivate` | false | 单击列表即激活 VS |
 | | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | 界面尺寸记忆（0＝默认） |
+| | `AgentEvalDir` / `AgentEvalCollapsed` | 空 / false | Agent 自循环反馈读取的评测运行目录（可含环境变量）与侧边栏区是否折叠 / Agent self-loop run folder and collapsed state |
 | | `TaskListGroupByVs` / `TaskListGroupSort` / `TaskListCollapsedGroups` | true / `activity` / 空 | 任务清单分组、组排序（`activity` / `number` / `manual`）、折叠状态，见[任务清单分组](#任务清单分组) / Task grouping, group ordering and collapsed state |
 | | `AutoStartAiTasks` / `AutoStartAllTasks` | true / false | 默认新发布 AI 自动；全部模式优先且包含恢复任务。关闭只影响后续入队 / Newly submitted AI automatic by default; all mode overrides and includes restored tasks. Disabling affects later admissions |
 | | `TaskListManualOrder` / `TaskListItemOrder` / `TaskListGroupOrder` | false / 空 / 空 | 手动条目显示排序开关、条目及分组顺序；不影响调度 / Manual entry display ordering and saved entry/group order; dispatch unchanged |
@@ -277,7 +280,8 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 | `%APPDATA%\VSManager\settings.json` | 配置（含加密的 Key 与 Web 令牌） |
 | `%APPDATA%\VSManager\tasks.json` | 任务清单 |
 | `%APPDATA%\VSManager\solutions.json` | 解决方案登记表（含本机路径，仅存本机） |
-| `%APPDATA%\VSManager\agent-chat.jsonl` | AI 助手对话记录（每行一条 JSON，仅存本机） |
+| `%APPDATA%\VSManager\vs-session.json` | 「📌 记录 VS」的 VS 会话记录（解决方案路径与窗口位置，仅存本机） |
+| `%APPDATA%\VSManager\agent-chat.jsonl` | AI 助手对话记录（每行一条 JSON，仅存本机；每条记有写入它的 VSManager 进程 PID 与启动时间，AI 助手面板与「对话记录」窗口可用进程下拉框只看某个进程或「全部进程」，助手消息的「AI 助手」标题后显示进程名称，如「AI 助手 · VSManager · PID 1234」） |
 | `%APPDATA%\VSManager\logs\` | 程序日志 |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | 发布自检的自定义词表 |
 | `<ArchiveRoot>\tasks\`、`chat\`、`logs\` | 历史归档 |
@@ -759,6 +763,8 @@ VSManager is a Windows desktop tool (WinForms / .NET Framework 4.8) for managing
 - **Task list**: newly submitted AI tasks auto-start after saving by default; manual/restored tasks await **Start**, unless Settings explicitly enables all-automatic mode. Dispatch respects IDs and target readiness; manual Copilot chats are listed as well.
 - **Task ownership and project summary**: task titles are completed as "Project · item" (the solution name) and shown in the task list and notifications; task notifications, failure feedback and send_task results end with a [项目上下文 / Project context] block (project name, responsibility, latest 3 task outcomes of that VS), so the AI assistant does not have to dig ownership out of a long conversation when several projects run in parallel. Queueing and dispatch rules are unchanged.
 - **Solution registry & VS open/close**: register solutions under everyday names (aliases / synonyms with fuzzy matching) so the AI assistant can open and close Visual Studio by name; tasks for a closed solution are parked, and dispatch once it opens with automatic eligibility or manual Start in this session.
+- **VS session record & one-click open**: "📌 记录 VS" above the sidebar VS list records the open solutions with their main-window and floating-pane positions; "▶ 一键打开 VS" opens the ones not yet open and restores the recorded layout once ready (also in the context / tray menus and as AI tools `record_vs_session` / `open_vs_session`).
+- **Agent self-loop feedback**: the sidebar "Agent 自循环 / Agent loop" section reads the run folder of an external agent evaluation script (one sub-folder per run with `result.json`, `cases.json`, `transcript.md`, `logs\`) and draws pass-rate bars for the recent runs (green all passed, red failures, grey no result, amber running); clicking it switches the main area to the question page (the same area as the VS chat, AI assistant and notebook; click another sidebar item to switch back), with two views switched at the top: "Summary" (default) puts the unique questions in one table, one row per question (number + summary + short result (green "✓ 通过" / red "✗ 失败", with "· 曾失败 / · 曾通过" when an earlier test had the opposite result) + test history oldest → newest as ✓ / ✗ with passes / total, e.g. "✗✓✓✓ 3/4" + first / latest test time); "By batch" lists every tested question with one separator row per batch (evaluation run) showing its time, batches newest first and questions by number within a batch (each row: number + summary + result in this batch + overall result + time + duration; a question that failed first and passed in a later test counts as passed; selecting a separator shows the batch overview), and selecting a question shows all of its test records (the exact prompt, answer and failure reason of each test) below. Read-only; refreshes automatically when new results appear. The evaluation folder is selected automatically by an AI skill that reads code: it searches the repositories of open / registered solutions for evaluation scripts and code writing `result.json` / `cases.json`, resolves the run folders built from environment variables and picks the folder with the latest runs (searched automatically at startup or on first open when unset, with a manual folder picker only when nothing is found), stored in `AgentEvalDir` (with environment variables such as `%LOCALAPPDATA%`). All runs are read and the issue summary omits nothing; the AI assistant can select the folder with `find_agent_eval_folder` and list every issue with `list_agent_eval_issues` (filterable by failing / not rerun / resolved).
 - **Voice**: optional Doubao speech service for spoken summaries when tasks finish (Chinese / English selectable; the AI assistant reply language follows it); the old VS composer's push-to-talk control has been removed.
 - **Web remote & AI skill**: control everything from a phone browser on the LAN (access token required); the control API can be installed as a skill for Copilot CLI / Claude Code and similar agents (including VS screenshots).
 - **History archive**: task history, assistant chats, per-instance chats and send logs are written to daily JSONL files and kept forever by default.
@@ -887,9 +893,10 @@ See [`settings.example.json`](settings.example.json) for all fields and defaults
 | Window & layout | `MainScreen` / `ToolScreen` | empty | Screen for the main window / tool windows (empty = auto) |
 | | `Layout` | `上下` (stacked) | Tool-window layout |
 | | `ActivateMoveMain` / `ActivateMoveTools` | true / false | Move the main window / tool windows when activating a VS |
-| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | Always on top, minimize to tray, global hotkeys |
+| | `TopMost` / `MinimizeToTray` / `Hotkeys` | false / true / true | Always on top, close to tray (minimizing keeps the taskbar icon), global hotkeys |
 | | `ClickToActivate` | false | A single click in the list activates the VS |
 | | `SidebarWidth` / `AgentHeight` / `TaskPanelCollapsed` | 0 / 0 / false | Remembered UI sizes (0 = default) |
+| | `AgentEvalDir` / `AgentEvalCollapsed` | empty / false | Agent self-loop feedback run folder (environment variables allowed) and whether its sidebar section is collapsed |
 | | `TaskListGroupByVs` / `TaskListGroupSort` / `TaskListCollapsedGroups` | true / `activity` / empty | Group the task list by VS, group order (`activity` or `number`), collapsed groups. See [Task list groups](#task-list-groups) |
 | Copilot monitoring & sending | `MonitorCopilot` / `PollMs` | true / 1500 | Monitor Copilot state and polling interval (ms) |
 | | `Sound` / `Popup` | true / true | Sound and tray balloon on completion |
@@ -973,7 +980,8 @@ setx VSMANAGER_ARCHIVE_ROOT "%USERPROFILE%\Documents\VSManagerArchive"
 | `%APPDATA%\VSManager\settings.json` | Settings (including encrypted keys and the web token) |
 | `%APPDATA%\VSManager\tasks.json` | Task list |
 | `%APPDATA%\VSManager\solutions.json` | Solution registry (contains local paths, local only) |
-| `%APPDATA%\VSManager\agent-chat.jsonl` | AI assistant chat history (one JSON object per line, local only) |
+| `%APPDATA%\VSManager\vs-session.json` | VS session record from "📌 记录 VS" (solution paths and window positions, local only) |
+| `%APPDATA%\VSManager\agent-chat.jsonl` | AI assistant chat history (one JSON object per line, local only; each record carries the PID and start time of the VSManager process that wrote it, and the process dropdown in the AI assistant panel and the chat history window shows one process or "All processes"; assistant messages show the process name after the "AI 助手" title, e.g. "AI 助手 · VSManager · PID 1234") |
 | `%APPDATA%\VSManager\logs\` | Application logs |
 | `%APPDATA%\VSManager\publish-scan-terms.txt` | Custom terms for the publish scan |
 | `<ArchiveRoot>\tasks\`, `chat\`, `logs\` | History archive |

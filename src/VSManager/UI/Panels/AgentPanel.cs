@@ -84,6 +84,8 @@ namespace VSManager
         private readonly FlowLayoutPanel _toolbar = new FlowLayoutPanel();
         private readonly Panel _transcriptHost = new Panel();
         private readonly TranscriptView _transcript = new TranscriptView { AssistantLabel = "AI 助手" };
+        /// <summary>按 VSManager 进程筛选聊天记录（笔记助手不显示）。/ Filters the chat by VSManager process (hidden for the note assistant).</summary>
+        private readonly ProcessFilterCombo _process = new ProcessFilterCombo();
         private readonly Panel _inputArea = new Panel();
         private readonly Label _inputStatus = new Label();
         private readonly Panel _inputBox = new Panel();
@@ -127,6 +129,7 @@ namespace VSManager
         {
             _noteMode = noteMode;
             if (noteMode) _transcript.AssistantLabel = AgentService.NoteAgentTitle;
+            else _transcript.AssistantLabelFor = AssistantLabelOf;
             BackColor = Theme.Background;
             DoubleBuffered = true;
 
@@ -188,6 +191,17 @@ namespace VSManager
                 _toolbar.Controls.Add(_btnInsert);
             }
             _toolbarRow.Controls.Add(_toolbar);
+            if (!noteMode)
+            {
+                var processHost = new Panel { Dock = DockStyle.Right, Width = Dpi.S(300), BackColor = Theme.Background, Padding = new Padding(Dpi.S(8), Dpi.S(14), 0, 0) };
+                _process.Dock = DockStyle.Top;
+                _process.DropDownWidth = Dpi.S(360);
+                _process.FilterChanged += () => { _transcript.ResetView(); RenderNow(); };
+                _tips.SetToolTip(_process, "只显示所选 VSManager 进程的聊天记录（重启后为新进程），选「全部进程」显示全部\n"
+                    + "Show only the chat records of the chosen VSManager process (a restart starts a new process); choose \"All processes\" to show everything");
+                processHost.Controls.Add(_process);
+                _toolbarRow.Controls.Add(processHost);
+            }
 
             // ---- 对话记录 ----
             _transcriptHost.Dock = DockStyle.Fill;
@@ -363,7 +377,9 @@ namespace VSManager
         private void RenderNow()
         {
             if (_agent == null) return;
-            if (_agent.Transcript.Messages.Count == 0)
+            var all = _agent.Transcript.Messages.ToArray();
+            if (!_noteMode) _process.SetProcesses(all.Select(ProcessOf));
+            if (all.Length == 0)
             {
                 _transcript.SetEmpty(!_agent.Configured
                     ? "尚未配置 AI 模型\n\n点击右上角「⚙ 模型设置」，选择 DeepSeek 并填写 API Key 后即可使用\n（在 platform.deepseek.com 创建 Key）"
@@ -372,8 +388,31 @@ namespace VSManager
                     : "我是 AI 总控助手，可以统一管理所有 VS：\n\n· 各个 VS 现在都在做什么？\n· 让 2 号 VS 修复编译错误，完成后告诉我\n· 给所有空闲的 VS 生成解决方案\n\n不加 @ 或输入 @小维 时消息交给我，@ 加 VS 编号则指定目标 VS / Messages without @ or with @小维 come to me; @ plus a VS number targets a VS");
                 return;
             }
-            _transcript.Render(_agent.Transcript, true);
+            string process = _noteMode ? null : _process.SelectedKey;
+            if (process == null) { _transcript.Render(_agent.Transcript, true); return; }
+            var filtered = new ChatTranscript { PaneFound = true, Title = _agent.Transcript.Title };
+            filtered.Messages.AddRange(FilterByProcess(all, process));
+            if (filtered.Messages.Count == 0)
+                _transcript.SetEmpty("所选进程没有聊天记录\nNo chat records for the selected process");
+            else
+                _transcript.Render(filtered, true);
         }
+
+        /// <summary>消息所属进程：未标记的为当前进程。/ Process of a message: unmarked messages belong to the current process.</summary>
+        private static string ProcessOf(ChatMessage m) => m?.Process ?? AgentChatLog.CurrentProcessKey;
+
+        /// <summary>「AI 助手」标题后加上产生该消息的进程名称。/ The "AI 助手" title followed by the name of the process that produced the message.</summary>
+        internal static string AssistantLabelOf(ChatMessage m) =>
+            "AI 助手 · " + AgentChatLog.ProcessTitle(m?.Process == null ? AgentChatLog.CurrentProcessName : m.ProcessName, ProcessOf(m));
+
+        /// <summary>只保留指定进程的消息；process 为 null 时全部保留。/ Keeps only the messages of a process; null keeps all.</summary>
+        internal static List<ChatMessage> FilterByProcess(IEnumerable<ChatMessage> messages, string process) =>
+            (messages ?? Enumerable.Empty<ChatMessage>()).Where(m => m != null && (process == null || ProcessOf(m) == process)).ToList();
+
+        /// <summary>进程下拉框（测试用）。/ Process dropdown (for tests).</summary>
+        internal ProcessFilterCombo ProcessFilter => _process;
+        /// <summary>对话视图（测试用）。/ Transcript view (for tests).</summary>
+        internal TranscriptView TranscriptForTests => _transcript;
 
         private void Send(string text, bool direct = false)
         {

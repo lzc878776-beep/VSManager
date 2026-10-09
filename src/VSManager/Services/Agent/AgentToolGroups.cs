@@ -47,8 +47,8 @@ namespace VSManager
             new Group
             {
                 Key = "layout", Title = "屏幕布局与 Copilot 窗格 / Screen layout and Copilot panes",
-                Tools = new[] { "close_cs_tabs", "dock_copilot_panes", "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout", "save_layout_memory", "apply_layout_memory", "list_layout_memories", "delete_layout_memory", "arrange_copilot_panes", "restore_copilot_layout", "open_copilot" },
-                Trigger = new Regex(@"布局|屏幕|显示器|多屏|窗口|排列|停靠|摆放|标签页|窗格|layout|screen|monitor|display|arrange|dock|window|\btabs?\b|pane", Opt),
+                Tools = new[] { "close_cs_tabs", "dock_copilot_panes", "get_displays", "arrange_workspace_layout", "place_workspace_windows", "restore_workspace_layout", "save_layout_memory", "apply_layout_memory", "list_layout_memories", "delete_layout_memory", "record_vs_session", "open_vs_session", "arrange_copilot_panes", "restore_copilot_layout", "open_copilot" },
+                Trigger = new Regex(@"布局|屏幕|显示器|多屏|窗口|排列|停靠|摆放|标签页|窗格|记录.{0,6}VS|打开.{0,6}VS|layout|screen|monitor|display|arrange|dock|window|\btabs?\b|pane|session", Opt),
             },
             new Group
             {
@@ -79,6 +79,12 @@ namespace VSManager
                 Key = "cad", Title = "CAD 调试与验证接口 / CAD debugging and verification",
                 Tools = new[] { "set_cad_debug_drawing", "get_cad_debug_drawing", "run_cad_actions", "list_cad_adapters", "list_verify_checks", "run_verify_check" },
                 Trigger = new Regex(@"CAD|图纸|\.dwg|\.dxf|dwg|dxf|drawing|ai\.exe|ai\.agent|验证接口|验证检查|verify[_ ]check|适配包|adapter|钢筋", Opt),
+            },
+            new Group
+            {
+                Key = "eval", Title = "Agent 自循环反馈（评测目录与问题）/ Agent self-loop feedback (evaluation folder and issues)",
+                Tools = new[] { "find_agent_eval_folder", "list_agent_eval_issues" },
+                Trigger = new Regex(@"自循环|评测|测评|自动测试|测试问题|问题清单|失败用例|agent\s*loop|self[- ]?loop|\beval(uation)?s?\b|result\.json|cases\.json", Opt),
             },
             new Group
             {

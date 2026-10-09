@@ -245,6 +245,10 @@ namespace VSManager
             AgentPowerShellEnabled = false;
         }
         [DataMember] public bool TaskPanelCollapsed;
+        /// <summary>侧边栏「Agent 自循环」读取的评测运行目录，可含环境变量；为空时不读取。/ Evaluation run folder read by the sidebar "Agent loop" section; may contain environment variables; empty disables it.</summary>
+        [DataMember] public string AgentEvalDir;
+        /// <summary>侧边栏「Agent 自循环」区是否折叠。/ Whether the sidebar "Agent loop" section is collapsed.</summary>
+        [DataMember] public bool AgentEvalCollapsed;
         /// <summary>任务清单按目标 VS 分组显示（false = 平铺列表），默认开启。/ Group the task list by target VS (false = flat list); on by default.</summary>
         [DataMember] public bool TaskListGroupByVs;
         /// <summary>分组显示排序：activity（默认活动）、number（VS 编号）、manual（手动）。/ Group display order: activity (default), number (VS number), manual.</summary>

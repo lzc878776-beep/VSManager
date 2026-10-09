@@ -40,7 +40,14 @@ namespace VSManager
         public List<AgentToolCall> Calls = new List<AgentToolCall>();
         /// <summary>会话层隔离：本条用户 / 通知消息所属项目（null 为全局，旧记录没有此项）。/ Session isolation: project of this user / notice record (null = global; absent in older records).</summary>
         public string Scope;
-
+        /// <summary>写入本条记录的 VSManager 进程 ID（0 为旧记录，未记录进程）。/ ID of the VSManager process that wrote the record (0 = older record without it).</summary>
+        public int Pid;
+        /// <summary>该进程的启动时间，与进程 ID 一起区分被重用的 PID。/ Start time of that process; with the PID it tells reused PIDs apart.</summary>
+        public DateTime? ProcessStart;
+        /// <summary>该进程的名称（如 VSManager）。/ Name of that process (e.g. VSManager).</summary>
+        public string ProcessName;
+        /// <summary>进程标识（旧记录为空字符串）。/ Process key (empty for older records).</summary>
+        public string ProcessKey => AgentChatLog.ProcessKey(Pid, ProcessStart);
         public bool IsUser => Role == AgentChatLog.RoleUser;
     }
 
@@ -91,10 +98,87 @@ namespace VSManager
         /// <summary>最近一次读写失败的原因；null 表示正常。/ Last I/O error; null when fine.</summary>
         public static string LastError { get; private set; }
 
+        /// <summary>
+        /// 记录文件路径；未单独指定（null）时跟随数据目录。注意：读取得到的是解析后的路径，把它再赋回会把路径固定下来，
+        /// 测试请改用 <see cref="OverrideFilePath"/>。
+        /// Path of the record file; follows the data folder when not set (null). Reading returns the resolved path, so assigning it back
+        /// pins that path; tests should use <see cref="OverrideFilePath"/> instead.
+        /// </summary>
         public static string FilePath
         {
             get => _path ?? Path.Combine(Path.GetDirectoryName(AppSettings.FilePath), FileName);
             set => _path = value;
+        }
+
+        /// <summary>
+        /// 仅供测试：临时改用 <paramref name="path"/>，释放返回值后恢复原设置（包括「跟随数据目录」），不会把真实路径固定下来。
+        /// Test only: temporarily uses <paramref name="path"/>; disposing the result restores the previous setting (including
+        /// "follow the data folder") without pinning the real path.
+        /// </summary>
+        internal static IDisposable OverrideFilePath(string path)
+        {
+            string previous = _path;
+            _path = path;
+            return new RestorePath(previous);
+        }
+
+        private sealed class RestorePath : IDisposable
+        {
+            private readonly string _previous;
+            private bool _done;
+            public RestorePath(string previous) { _previous = previous; }
+            public void Dispose() { if (_done) return; _done = true; _path = _previous; }
+        }
+
+        private static readonly Lazy<Tuple<int, DateTime?, string>> Self = new Lazy<Tuple<int, DateTime?, string>>(() =>
+        {
+            try
+            {
+                using (var p = System.Diagnostics.Process.GetCurrentProcess())
+                {
+                    var t = p.StartTime;
+                    return Tuple.Create(p.Id, (DateTime?)new DateTime(t.Year, t.Month, t.Day, t.Hour, t.Minute, t.Second), p.ProcessName);
+                }
+            }
+            catch { return Tuple.Create(0, (DateTime?)null, (string)null); }
+        });
+
+        /// <summary>当前 VSManager 进程 ID。/ ID of the current VSManager process.</summary>
+        public static int CurrentPid => Self.Value.Item1;
+        /// <summary>当前进程启动时间（精确到秒）。/ Start time of the current process (to the second).</summary>
+        public static DateTime? CurrentProcessStart => Self.Value.Item2;
+        /// <summary>当前进程名称（如 VSManager）。/ Name of the current process (e.g. VSManager).</summary>
+        public static string CurrentProcessName => Self.Value.Item3;
+        /// <summary>当前进程标识。/ Key of the current process.</summary>
+        public static string CurrentProcessKey => ProcessKey(CurrentPid, CurrentProcessStart);
+
+        /// <summary>
+        /// 显示在「AI 助手」标题后的进程名称，如「VSManager · PID 1234」；未记录进程的旧记录显示「未记录进程」。
+        /// Process name shown after the "AI 助手" title, e.g. "VSManager · PID 1234"; older records without a process show "no process".
+        /// </summary>
+        public static string ProcessTitle(string name, string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "未记录进程 / no process";
+            int at = key.IndexOf('@');
+            string pid = at < 0 ? key : key.Substring(0, at);
+            return (string.IsNullOrWhiteSpace(name) ? "VSManager" : name.Trim()) + " · PID " + pid;
+        }
+
+        /// <summary>进程标识：PID@启动时间；未记录进程时为空字符串。/ Process key: PID@start time; empty when no process was recorded.</summary>
+        public static string ProcessKey(int pid, DateTime? start) =>
+            pid <= 0 ? "" : pid.ToString(CultureInfo.InvariantCulture) + "@" + (start?.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture) ?? "");
+
+        /// <summary>下拉框中显示的进程名称。/ Process label shown in the dropdown.</summary>
+        public static string DescribeProcess(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return "未记录进程的旧记录 / Older records (no process)";
+            int at = key.IndexOf('@');
+            string pid = at < 0 ? key : key.Substring(0, at);
+            string text = "进程 / PID " + pid;
+            if (at >= 0 && DateTime.TryParseExact(key.Substring(at + 1), "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var start))
+                text += " · " + start.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture) + " 启动 / started";
+            if (key == CurrentProcessKey) text += "（当前 / current）";
+            return text;
         }
 
         /// <summary>从文本中提取「任务 #12」形式的任务编号。/ Extracts task ids written as "任务 #12" / "task #12".</summary>
@@ -129,6 +213,7 @@ namespace VSManager
         public static void Append(AgentChatRecord r)
         {
             if (r == null) return;
+            if (r.Pid <= 0) { r.Pid = CurrentPid; r.ProcessStart = CurrentProcessStart; r.ProcessName = CurrentProcessName; }
             string line = Json.Serialize(ToDict(r));
             bool trim;
             lock (Gate)
@@ -271,6 +356,9 @@ namespace VSManager
             if (r.Local) d["local"] = true;
             if (r.Reset) d["reset"] = true;
             if (!string.IsNullOrEmpty(r.Scope)) d["scope"] = r.Scope;
+            if (r.Pid > 0) d["pid"] = r.Pid;
+            if (r.Pid > 0 && r.ProcessStart.HasValue) d["pstart"] = r.ProcessStart.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
+            if (r.Pid > 0 && !string.IsNullOrEmpty(r.ProcessName)) d["pname"] = r.ProcessName;
             if (r.Calls != null && r.Calls.Count > 0)
                 d["calls"] = r.Calls.Select(c => new Dictionary<string, object> { ["name"] = c.Name, ["args"] = c.Args ?? "{}", ["result"] = c.Result ?? "" }).ToArray();
             return d;
@@ -295,6 +383,13 @@ namespace VSManager
                 };
                 string time = Str(d, "time");
                 if (time == null || !DateTime.TryParse(time, CultureInfo.InvariantCulture, DateTimeStyles.None, out r.Time)) return null;
+                if (d.TryGetValue("pid", out var pid) && pid != null)
+                {
+                    try { r.Pid = Convert.ToInt32(pid, CultureInfo.InvariantCulture); } catch { }
+                    if (Str(d, "pstart") is string ps && DateTime.TryParseExact(ps, "yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out var started))
+                        r.ProcessStart = started;
+                    r.ProcessName = Str(d, "pname");
+                }
                 if (d.TryGetValue("steps", out var s) && s is System.Collections.IEnumerable steps && !(s is string))
                     foreach (var x in steps) if (x is string t) r.Steps.Add(t);
                 if (d.TryGetValue("tasks", out var k) && k is System.Collections.IEnumerable ids && !(k is string))

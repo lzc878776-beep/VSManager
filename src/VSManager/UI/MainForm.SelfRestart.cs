@@ -95,6 +95,7 @@ namespace VSManager
                 X = b.X, Y = b.Y, Width = b.Width, Height = b.Height,
                 Maximized = WindowState == FormWindowState.Maximized,
                 Hidden = !Visible || WindowState == FormWindowState.Minimized,
+                Minimized = Visible && WindowState == FormWindowState.Minimized,
                 Foreground = Visible && fgPid == (uint)me,
                 AgentPage = _agentMode,
                 SelectedVsPid = Selected?.Pid ?? 0,
@@ -150,7 +151,8 @@ namespace VSManager
             if (ui == null) return;
             PrepareRestoredPage(ui);
             bool wantAgent = RestartUi.WantsAgentPage(ui, _settings.AgentEnabled);
-            if (ui.Hidden && _settings.MinimizeToTray) Hide();
+            // 重启前只是最小化时保持最小化（保留任务栏图标），隐藏到托盘时才隐藏 / Stay minimized (taskbar button kept) when it was only minimized; hide only when it was in the tray
+            if (ui.Hidden && !ui.Minimized && _settings.MinimizeToTray) Hide();
             var started = _restoreStartedAt;
             var rendering = Stopwatch.StartNew();
             var timer = new System.Windows.Forms.Timer { Interval = 100 };
@@ -163,7 +165,7 @@ namespace VSManager
                 bool expired = DateTime.Now - started > RestoreSettle;
                 if (!userMoved && !expired)
                 {
-                    if (_agentMode != wantAgent && !_notebookMode)
+                    if (_agentMode != wantAgent && !_notebookMode && !_evalMode)
                     {
                         AppLog.Write(ProcessWatchdog.LogFile, "重启恢复：页面被改动，恢复为保存值 / Restart restore: page was changed, reverting to the saved value (" + _pageChange + ")");
                         ShowAgent(wantAgent, RestoreSource);

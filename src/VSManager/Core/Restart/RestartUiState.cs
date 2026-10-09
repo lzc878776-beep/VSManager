@@ -28,6 +28,8 @@ namespace VSManager
         [DataMember] public bool Maximized;
         /// <summary>重启前窗口已最小化或隐藏到托盘。/ The window was minimized or hidden to the tray.</summary>
         [DataMember] public bool Hidden;
+        /// <summary>重启前窗口只是最小化（仍在任务栏上），不是隐藏到托盘。/ The window was only minimized (still on the taskbar), not hidden to the tray.</summary>
+        [DataMember(EmitDefaultValue = false)] public bool Minimized;
         /// <summary>重启前窗口在前台（用户正在看）。/ The window was in the foreground (the user was looking at it).</summary>
         [DataMember] public bool Foreground;
         [DataMember] public bool AgentPage;

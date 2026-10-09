@@ -26,9 +26,10 @@ namespace VSManager
                 int extra = 0;
                 foreach (Control c in vsBody.Controls) if (c != _list) extra += c.Height;
                 return extra + Math.Max(_list.Items.Count * _list.ItemHeight, Dpi.S(160)) + Dpi.S(6);
-            }) { Dock = DockStyle.Fill };
+            }, _evalCard) { Dock = DockStyle.Fill };
             _workspaceSidebar.NotebookRequested += OpenNotebooks;
             _sidebar.Controls.Add(_workspaceSidebar);
+            InitAgentEval();
             InitializeNotebook();
         }
 

@@ -544,7 +544,10 @@ namespace VSManager
                                 if (line.IndexOf("\"kind\":\"manual\"", StringComparison.Ordinal) < 0) continue;
                                 try
                                 {
-                                    if (Json.DeserializeObject(line) is Dictionary<string, object> rec && rec.TryGetValue("entry", out var e) && e is string id)
+                                    // 按记录时间取最新：分卷（.2.jsonl）按文件名排在主文件之前，不能依赖读取顺序
+                                    // Keep the newest record by its time: volumes (.2.jsonl) sort before the main file, so read order is unreliable
+                                    if (Json.DeserializeObject(line) is Dictionary<string, object> rec && rec.TryGetValue("entry", out var e) && e is string id
+                                        && (!latest.TryGetValue(id, out var prev) || string.CompareOrdinal(RecordTime(prev), RecordTime(rec)) <= 0))
                                         latest[id] = rec;
                                 }
                                 catch { }
@@ -581,6 +584,8 @@ namespace VSManager
         }
 
         #endregion
+
+        private static string RecordTime(Dictionary<string, object> rec) => rec.TryGetValue("time", out var v) ? v as string ?? "" : "";
 
         private static string Squash(string s) => new string((s ?? "").Where(c => !char.IsWhiteSpace(c)).ToArray());
 

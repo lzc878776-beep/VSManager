@@ -33,5 +33,23 @@ namespace VSManager.Tests
             Assert.AreEqual(ImagePasteState.Confirmed, ImagePasteCheck.Evaluate(1, 0, 2));
             Assert.AreEqual(ImagePasteState.Pending, ImagePasteCheck.Evaluate(1, 0, 1));
         }
+
+        [TestMethod]
+        public void CollapsedImageChips_AreCountedThroughSizeOfSet()
+        {
+            // 「添加引用」+「活动文档」+ 2 张图片：UI 自动化只显示 1 个图片项，SizeOfSet=4
+            // Add-reference + active document + 2 images: UIA shows a single image item, SizeOfSet=4
+            Assert.AreEqual(2, ImagePasteCheck.CountAttachments(1, 2, 4));
+            Assert.AreEqual(ImagePasteState.Confirmed, ImagePasteCheck.Evaluate(0, 1, ImagePasteCheck.CountAttachments(1, 2, 4)));
+            Assert.AreEqual(0, ImagePasteCheck.CountAttachments(0, 2, 2));
+        }
+
+        [TestMethod]
+        public void MissingOrInconsistentSizeOfSet_FallsBackToVisibleCount()
+        {
+            Assert.AreEqual(1, ImagePasteCheck.CountAttachments(1, 2, null));
+            Assert.AreEqual(3, ImagePasteCheck.CountAttachments(3, 1, 2));
+            Assert.AreEqual(0, ImagePasteCheck.CountAttachments(0, 0, null));
+        }
     }
 }

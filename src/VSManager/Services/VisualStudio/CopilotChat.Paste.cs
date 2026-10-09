@@ -212,7 +212,7 @@ namespace VSManager
 
         private static int SafeAttachmentCount(AutomationElement pane)
         {
-            try { return AttachmentIds(pane).Count; } catch { return -1; }
+            try { return AttachmentCount(pane); } catch { return -1; }
         }
 
         /// <summary>VS 主窗口状态（最小化 / 最大化 / 可见 / 前台 / 所在屏幕与位置）。/ State of the VS main window.</summary>

@@ -5,8 +5,29 @@ using System.Windows.Forms;
 
 namespace VSManager
 {
-    public partial class MainForm : IAgentWorkspaceLayoutHost
+    public partial class MainForm : IAgentWorkspaceLayoutHost, IAgentPageHost
     {
+        private const string LayoutPageSource = "一键布局 / one-click layout";
+
+        /// <summary>
+        /// 一键布局前切到 AI 总控页（与 prepare_restart_scenario 的 page=agent 同一切换逻辑），只切页面，不还原或前置主窗口。
+        /// Switches to the AI assistant page before a one-click layout (same switch as prepare_restart_scenario page=agent); only the page changes, the main window is not restored or brought to the front.
+        /// </summary>
+        Task<AgentPageSwitch> IAgentPageHost.EnsureAgentPage() => OnUi(() =>
+        {
+            if (!_settings.AgentEnabled) return AgentPageSwitch.Disabled;
+            if (_agentMode) return AgentPageSwitch.AlreadyOn;
+            // 切页会把焦点给 AI 输入框；若因此改变了前台窗口就还回去，避免抢焦点
+            // Switching focuses the AI input; hand the foreground back if that changed it, so no focus is stolen
+            var foreground = Native.GetForegroundWindow();
+            bool ok = ShowAgent(true, LayoutPageSource) && _agentMode;
+            if (foreground != IntPtr.Zero && Native.IsWindow(foreground) && !Native.IsIconic(foreground) && Native.GetForegroundWindow() != foreground) Native.Activate(foreground);
+            AppLog.Write(ProcessWatchdog.LogFile, ok
+                ? "一键布局前已切到 AI 总控页 / Switched to the AI page before a one-click layout"
+                : "一键布局前未能切到 AI 总控页 / Could not switch to the AI page before a one-click layout");
+            return ok ? AgentPageSwitch.Switched : AgentPageSwitch.Failed;
+        });
+
         Task<WorkspaceDisplaySnapshot> IAgentWorkspaceLayoutHost.GetDisplays() => OnUi(ReadWorkspaceDisplays);
 
         private WorkspaceDisplaySnapshot ReadWorkspaceDisplays()

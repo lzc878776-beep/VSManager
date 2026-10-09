@@ -196,7 +196,7 @@ hr { border: 0; border-top: 1px solid {{border}}; margin: 16px 0; }
                 root.appendChild(node);
             }
             node.className = message.user ? 'user' : 'assistant';
-            node.firstChild.textContent = message.user ? '●  你' : '◆  ' + (typeof data.bot === 'string' && data.bot ? data.bot : 'Copilot');
+            node.firstChild.textContent = message.user ? '●  你' : '◆  ' + (typeof message.label === 'string' && message.label ? message.label : typeof data.bot === 'string' && data.bot ? data.bot : 'Copilot');
             node.lastChild.replaceChildren(content(message.html));
             node._user = message.user;
         }

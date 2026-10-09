@@ -22,10 +22,11 @@ namespace VSManager
         /// <summary>单次最多渲染的条数（超出时显示最新的部分并提示缩小范围）。/ Max records rendered at once.</summary>
         public const int MaxShown = 1000;
 
-        private readonly TranscriptView _view = new TranscriptView { Dock = DockStyle.Fill, AssistantLabel = "AI 助手" };
+        private readonly TranscriptView _view = new TranscriptView { Dock = DockStyle.Fill, AssistantLabel = "AI 助手", AssistantLabelFor = AgentPanel.AssistantLabelOf };
         private readonly TextBox _search;
         private readonly DarkCombo _date = new DarkCombo();
         private readonly DarkCombo _order = new DarkCombo();
+        private readonly ProcessFilterCombo _process = new ProcessFilterCombo();
         private readonly FlatButton _btnSteps, _btnRefresh, _btnFolder;
         private readonly Label _count = new Label();
         private readonly Timer _debounce = new Timer { Interval = 300 };
@@ -77,6 +78,11 @@ namespace VSManager
             _order.SelectedIndex = 0;
             _order.SelectedIndexChanged += (s, e) => { if (!_loading) Apply(true); };
 
+            _process.Dock = DockStyle.Right;
+            _process.Width = Dpi.S(260);
+            _process.DropDownWidth = Dpi.S(360);
+            _process.FilterChanged += () => { if (!_loading) Apply(true); };
+
             _btnSteps = new FlatButton { Text = "显示步骤", Ghost = true, Dock = DockStyle.Right, Width = Dpi.S(92) };
             _btnSteps.Click += (s, e) =>
             {
@@ -93,6 +99,7 @@ namespace VSManager
             tips.SetToolTip(_search, "按关键词筛选（不区分大小写；多个词需同时出现），也可输入「#12」查找关联任务\nFilter by keywords (case-insensitive, all words must match), or \"#12\" for a task");
             tips.SetToolTip(_date, "按日期筛选 / Filter by date");
             tips.SetToolTip(_order, "排序方式 / Sort order");
+            tips.SetToolTip(_process, "只显示所选 VSManager 进程的聊天记录 / Show only the chosen VSManager process's chat records");
             tips.SetToolTip(_btnSteps, "显示 / 隐藏 AI 的工具调用步骤与通知详情\nShow / hide tool-call steps and notice details");
             tips.SetToolTip(_btnRefresh, "重新读取对话记录文件 / Reload the history file");
             tips.SetToolTip(_btnFolder, "打开对话记录所在目录（仅本机）\nOpen the folder that contains the history file (local only)");
@@ -100,6 +107,8 @@ namespace VSManager
             bar.Controls.Add(searchHost);
             bar.Controls.Add(Gap());
             bar.Controls.Add(_date);
+            bar.Controls.Add(Gap());
+            bar.Controls.Add(_process);
             bar.Controls.Add(Gap());
             bar.Controls.Add(_order);
             bar.Controls.Add(Gap());
@@ -181,6 +190,9 @@ namespace VSManager
             if (IsDisposed || version != _loadVersion) return;
             _all = list;
             RebuildDates();
+            _loading = true;
+            try { _process.SetProcesses(_all.Select(r => r.ProcessKey)); }
+            finally { _loading = false; }
             Apply(reset);
         }
 
@@ -214,8 +226,10 @@ namespace VSManager
         private void Apply(bool reset)
         {
             var filter = _date.SelectedItem as DateFilter;
+            string process = _process.SelectedKey;
             var words = (_search.Text ?? "").Split(new[] { ' ', '\t', '　' }, StringSplitOptions.RemoveEmptyEntries);
             var matched = _all.Where(r =>
+                (process == null || r.ProcessKey == process) &&
                 (filter?.From == null || r.Time >= filter.From.Value) &&
                 (filter?.To == null || r.Time < filter.To.Value) &&
                 Matches(r, words)).ToList();
@@ -263,10 +277,11 @@ namespace VSManager
 
         private ChatMessage ToMessage(AgentChatRecord r)
         {
-            var m = new ChatMessage { Role = r.IsUser ? ChatRole.User : ChatRole.Assistant };
+            var m = new ChatMessage { Role = r.IsUser ? ChatRole.User : ChatRole.Assistant, Process = r.ProcessKey, ProcessName = r.ProcessName };
             string kind = r.Role == AgentChatLog.RoleNotice ? " · 📋 通知" : "";
             string tasks = r.Tasks.Count > 0 ? " · 任务 " + string.Join(", ", r.Tasks.Select(id => "#" + id)) : "";
-            m.Parts.Add(new ChatPart { IsStep = true, Text = "🕒 " + r.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + kind + tasks });
+            string pid = r.Pid > 0 ? " · PID " + r.Pid : "";
+            m.Parts.Add(new ChatPart { IsStep = true, Text = "🕒 " + r.Time.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + kind + tasks + pid });
             if (!string.IsNullOrWhiteSpace(r.Text)) m.Parts.Add(new ChatPart { Text = r.Text });
             if (_showSteps)
             {
