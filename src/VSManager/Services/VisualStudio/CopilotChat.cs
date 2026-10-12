@@ -28,6 +28,10 @@ namespace VSManager
         public string Process;
         /// <summary>产生该消息的进程名称；null 表示当前进程。/ Name of the process that produced the message; null means the current process.</summary>
         public string ProcessName;
+        /// <summary>AI 助手对话：本条消息实际发布任务到的 VS 名称。/ AI assistant chat: names of the VS this message actually published tasks to.</summary>
+        public List<string> Targets = new List<string>();
+        /// <summary>AI 助手对话：本条消息反馈的结果来自的 VS 名称。/ AI assistant chat: names of the VS the reported results came from.</summary>
+        public List<string> Sources = new List<string>();
     }
 
     public class ChatTranscript

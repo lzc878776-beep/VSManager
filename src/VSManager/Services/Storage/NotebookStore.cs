@@ -17,6 +17,8 @@ namespace VSManager
         public string Name { get; set; }
         public bool HasChildren => Children.Count > 0;
         public List<NotebookEntry> Children { get; } = new List<NotebookEntry>();
+        /// <summary>直接子页面总数（不受搜索过滤影响）。/ Total number of direct subpages, unaffected by search filtering.</summary>
+        public int ChildCount { get; set; }
     }
 
     internal sealed class NotebookDocument
@@ -82,25 +84,53 @@ namespace VSManager
             string q = (query ?? "").Trim();
             var rows = Run(c =>
             {
-                var list = new List<(string Id, string Parent, string Title, int Sort, string Body)>();
-                using var cmd = Command(c, "SELECT id, parent_id, title, sort, " + (q.Length > 0 ? "body" : "''") + " FROM pages WHERE deleted_at IS NULL");
+                var list = new List<PageRow>();
+                using var cmd = Command(c, "SELECT id, parent_id, title, sort, " + (q.Length > 0 ? "body" : "''") + ", created FROM pages WHERE deleted_at IS NULL");
                 using var r = cmd.ExecuteReader();
-                while (r.Read()) list.Add((r.GetString(0), r.IsDBNull(1) ? null : r.GetString(1), r.GetString(2), r.GetInt32(3), r.GetString(4)));
+                while (r.Read())
+                    list.Add(new PageRow { Id = r.GetString(0), Parent = r.IsDBNull(1) ? null : r.GetString(1), Title = r.GetString(2), Sort = r.GetInt32(3), Body = r.GetString(4), Created = r.GetString(5) });
                 return list;
             });
-            var ids = new HashSet<string>(rows.Select(r => r.Id));
-            var byParent = rows.GroupBy(r => r.Parent != null && ids.Contains(r.Parent) ? r.Parent : "")
-                .ToDictionary(g => g.Key, g => g.OrderBy(r => r.Sort).ThenBy(r => r.Title, StringComparer.CurrentCultureIgnoreCase).ToList());
+            var titles = rows.ToDictionary(r => r.Id, r => r.Title);
+            var byParent = rows.GroupBy(r => r.Parent != null && titles.ContainsKey(r.Parent) ? r.Parent : "")
+                .ToDictionary(g => g.Key, g => Order(g.Key.Length == 0 ? null : titles[g.Key], g));
             return Build("", q, byParent, 0);
         }
 
-        private static List<NotebookEntry> Build(string parent, string query, Dictionary<string, List<(string Id, string Parent, string Title, int Sort, string Body)>> byParent, int depth)
+        private sealed class PageRow
+        {
+            public string Id, Parent, Title, Body, Created;
+            public int Sort;
+        }
+
+        /// <summary>
+        /// 同级页面的显示顺序。只有任务记录按时间排序（最新在前）：每日记录页排在普通页面之前并按日期排序，记录页下的详情按创建时间排序；
+        /// 其他页面仍按手动顺序与标题排序。
+        /// Display order of sibling pages. Only task journals are ordered by time (newest first): daily journal pages come before ordinary pages
+        /// sorted by date, and the details under a journal page are sorted by creation time; other pages keep the manual order and titles.
+        /// </summary>
+        private static List<PageRow> Order(string parentTitle, IEnumerable<PageRow> rows)
+        {
+            if (parentTitle != null && NotebookTaskTable.IsJournal(parentTitle))
+                return rows.OrderByDescending(r => r.Created, StringComparer.Ordinal).ThenBy(r => r.Title, StringComparer.CurrentCultureIgnoreCase).ToList();
+            var journals = new List<(PageRow Row, DateTime Day)>();
+            var ordinary = new List<PageRow>();
+            foreach (var row in rows)
+            {
+                if (NotebookTaskTable.TryJournalDay(row.Title, out var day)) journals.Add((row, day));
+                else ordinary.Add(row);
+            }
+            return journals.OrderByDescending(j => j.Day).Select(j => j.Row)
+                .Concat(ordinary.OrderBy(r => r.Sort).ThenBy(r => r.Title, StringComparer.CurrentCultureIgnoreCase)).ToList();
+        }
+
+        private static List<NotebookEntry> Build(string parent, string query, Dictionary<string, List<PageRow>> byParent, int depth)
         {
             var result = new List<NotebookEntry>();
             if (depth > 64 || !byParent.TryGetValue(parent, out var children)) return result;
             foreach (var row in children)
             {
-                var entry = new NotebookEntry { Path = row.Id, Name = row.Title };
+                var entry = new NotebookEntry { Path = row.Id, Name = row.Title, ChildCount = byParent.TryGetValue(row.Id, out var all) ? all.Count : 0 };
                 bool titleMatch = query.Length == 0 || row.Title.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
                 entry.Children.AddRange(Build(row.Id, titleMatch ? "" : query, byParent, depth + 1));
                 bool matches = titleMatch || row.Body.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;

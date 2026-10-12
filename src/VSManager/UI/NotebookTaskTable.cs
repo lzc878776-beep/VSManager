@@ -17,8 +17,14 @@ namespace VSManager
         private static readonly Regex EntryLine = new Regex(@"^- \*\*(?<time>(?:[01]\d|2[0-3]):[0-5]\d)\*\* \[(?<title>(?:\\.|[^\]\\])*)\]\(page:(?<id>[0-9a-f]{32})\)(?: · (?<project>.*?))?(?: · 手动对话 / Manual chat)?\r?$", RegexOptions.Multiline);
         private static readonly Regex TaskId = new Regex(@"^# 任务 #(?<id>\d+)\b");
 
-        internal static bool IsJournal(string title) => DateTime.TryParseExact(title,
-            "yyyy.M.d '任务记录'", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
+        internal static bool IsJournal(string title) => TryJournalDay(title, out _);
+
+        /// <summary>解析每日任务记录页标题中的日期。/ Parses the date from a daily task journal title.</summary>
+        internal static bool TryJournalDay(string title, out DateTime day) => DateTime.TryParseExact(title,
+            "yyyy.M.d '任务记录'", CultureInfo.InvariantCulture, DateTimeStyles.None, out day);
+
+        /// <summary>是否为任务记录页或其详情页（标题链中含每日记录页），这些页面只读。/ Whether a title chain belongs to a task journal or one of its details; these pages are read-only.</summary>
+        internal static bool IsJournalPath(IEnumerable<string> titlePath) => titlePath != null && titlePath.Any(IsJournal);
 
         private sealed class Entry
         {

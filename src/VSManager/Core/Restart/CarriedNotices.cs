@@ -19,6 +19,8 @@ namespace VSManager
         [DataMember] public string Display;
         [DataMember] public string Content;
         [DataMember] public string Scope;
+        /// <summary>通知结果来自哪个 VS（可选，旧文件没有）。/ VS the notice's result came from (optional; absent in older files).</summary>
+        [DataMember] public string Source;
     }
 
     [DataContract]

@@ -44,7 +44,7 @@ namespace VSManager
                 AppLog.Write(AppLog.TasksFile, "手动对话已写入笔记本 / Manual chat recorded in notebook: " + path);
                 _notebook?.ReloadIfClean();
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is System.Security.SecurityException)
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException || ex is System.Security.SecurityException || ex is Microsoft.Data.Sqlite.SqliteException)
             {
                 AppLog.Write(AppLog.TasksFile, "手动对话写入笔记本失败 / Manual chat notebook record failed: " + ex.Message);
                 SetStatus("任务记录写入笔记本失败 / Notebook record failed: " + ex.Message);

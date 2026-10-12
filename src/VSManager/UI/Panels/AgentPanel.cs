@@ -401,9 +401,36 @@ namespace VSManager
         /// <summary>消息所属进程：未标记的为当前进程。/ Process of a message: unmarked messages belong to the current process.</summary>
         private static string ProcessOf(ChatMessage m) => m?.Process ?? AgentChatLog.CurrentProcessKey;
 
-        /// <summary>「AI 助手」标题后加上产生该消息的进程名称。/ The "AI 助手" title followed by the name of the process that produced the message.</summary>
-        internal static string AssistantLabelOf(ChatMessage m) =>
-            "AI 助手 · " + AgentChatLog.ProcessTitle(m?.Process == null ? AgentChatLog.CurrentProcessName : m.ProcessName, ProcessOf(m));
+        /// <summary>
+        /// 「AI 助手」标题：消息发布了任务或反馈了某个 VS 的结果时，显示「发布到 X」「结果来自 Y」；与 VS 无关时显示产生该消息的 VSManager 进程。
+        /// The "AI 助手" title: when the message published tasks or reports results of a VS it shows "发布到 X" (published to) / "结果来自 Y" (results from);
+        /// otherwise it shows the VSManager process that produced the message.
+        /// </summary>
+        internal static string AssistantLabelOf(ChatMessage m)
+        {
+            string route = RouteText(m?.Targets, m?.Sources);
+            if (route.Length > 0) return "AI 助手 · " + route;
+            return "AI 助手 · " + AgentChatLog.ProcessTitle(m?.Process == null ? AgentChatLog.CurrentProcessName : m.ProcessName, ProcessOf(m));
+        }
+
+        /// <summary>最多列出的 VS 名称数，其余写「等 N 个」。/ At most this many VS names are listed; the rest become "等 N 个" (N in total).</summary>
+        private const int MaxRouteNames = 3;
+
+        /// <summary>「发布到 A、B · 结果来自 C」；都没有时为空串。/ "发布到 A、B · 结果来自 C"; empty when there is neither.</summary>
+        internal static string RouteText(IEnumerable<string> targets, IEnumerable<string> sources)
+        {
+            string Names(IEnumerable<string> names)
+            {
+                var list = AgentChatLog.CleanNames(names);
+                if (list.Count == 0) return "";
+                return string.Join("、", list.Take(MaxRouteNames)) + (list.Count > MaxRouteNames ? " 等 " + list.Count + " 个" : "");
+            }
+            string to = Names(targets), from = Names(sources);
+            var parts = new List<string>();
+            if (to.Length > 0) parts.Add("发布到 " + to);
+            if (from.Length > 0) parts.Add("结果来自 " + from);
+            return string.Join(" · ", parts);
+        }
 
         /// <summary>只保留指定进程的消息；process 为 null 时全部保留。/ Keeps only the messages of a process; null keeps all.</summary>
         internal static List<ChatMessage> FilterByProcess(IEnumerable<ChatMessage> messages, string process) =>

@@ -44,10 +44,26 @@ namespace VSManager
             if (chat == null) throw new ArgumentNullException(nameof(chat));
             DateTime finished = chat.Finished ?? DateTime.Now;
             string day = Day(finished);
-            string summary = Summary(chat.Question);
+            string summary = ManualTitle(chat);
             string detail = CreateDetail(day, "手动 - " + TitleSafe(summary), ManualDetail(chat, summary, day));
             Append(day, Line(finished, summary, detail, chat.VsName, true));
             return detail;
+        }
+
+        /// <summary>
+        /// 手动对话题目，与 AI 任务一致写成「项目名 · 事项」：事项去掉 @ 引用与【标签】段落（如末尾附加的【执行方式】说明），取首句并截断到 20 字。
+        /// Manual chat title in the same "Project · item" form as AI tasks: the item drops @ references and 【tag】 sections
+        /// (such as an appended 【执行方式】 instruction), keeps the first sentence and is at most 20 characters.
+        /// </summary>
+        internal static string ManualTitle(ExternalChat chat)
+        {
+            string text = Regex.Replace(chat?.Question ?? "", @"@\[[^\]\r\n]*\]", " ").Trim();
+            while (text.StartsWith("【", StringComparison.Ordinal) && text.IndexOf('】') > 0) text = text.Substring(text.IndexOf('】') + 1).TrimStart();
+            int tag = text.IndexOf('【');
+            if (tag > 0) text = text.Substring(0, tag);
+            string item = TaskTitle.FromText(text) ?? Summary(chat?.Question);
+            string project = TaskTitle.Normalize(chat?.VsName, TaskTitle.MaxStoredLength);
+            return project == null ? item : TaskTitle.Normalize(project + " · " + item, TaskTitle.MaxStoredLength);
         }
 
         private string Day(DateTime finished)

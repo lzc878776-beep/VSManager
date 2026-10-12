@@ -1234,8 +1234,12 @@ namespace VSManager.Tests
             public void Dispose() { Disposed = true; }
         }
 
-        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost, IAgentCadDebugHost, IAgentMcpHost, IAgentCadActionHost, IAgentVerifyHost, IAgentPageHost
+        internal sealed class DesktopHost : IAgentHost, IAgentDesktopHost, IAgentCopilotPaneHost, IAgentAttachmentHost, IAgentTitledTaskHost, IAgentDocumentHost, IAgentScreenshotHost, IAgentWorkspaceLayoutHost, IAgentCadDebugHost, IAgentMcpHost, IAgentCadActionHost, IAgentVerifyHost, IAgentPageHost, IAgentTaskVsHost
         {
+            // 按任务编号查目标 VS（消息标题的发布到 / 结果来自）/ Task id -> target VS (for the message title's published-to / results-from)
+            internal readonly Dictionary<int, string> TaskVs = new Dictionary<int, string>();
+            public string TaskVsName(int id) => TaskVs.TryGetValue(id, out var name) ? name : null;
+
             // 一键布局前切到 AI 总控页的模拟结果与调用记录 / Simulated result and call record of switching to the AI page before a layout
             internal AgentPageSwitch PageResult = AgentPageSwitch.AlreadyOn;
             internal int PageChecks;

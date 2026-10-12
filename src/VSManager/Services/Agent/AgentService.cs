@@ -461,7 +461,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             Changed?.Invoke();
         }
 
-        private readonly Queue<Tuple<string, string, string>> _notices = new Queue<Tuple<string, string, string>>();
+        // 排队的通知：显示文字、完整内容、所属项目、结果来源 VS / Queued notices: display text, full content, project, source VS
+        private readonly Queue<Tuple<string, string, string, string>> _notices = new Queue<Tuple<string, string, string, string>>();
 
         /// <summary>是否还有排队未处理的系统通知。/ Whether system notices are still queued.</summary>
         public bool HasPendingNotices => _notices.Count > 0;
@@ -485,7 +486,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
 
         /// <summary>复制当前排队的通知（不出队），用于重启前保存。/ Copies the queued notices (without dequeuing) so they can be saved before a restart.</summary>
         public List<CarriedNotice> PendingNotices() =>
-            _notices.Select(n => new CarriedNotice { Display = n.Item1, Content = n.Item2, Scope = n.Item3 }).ToList();
+            _notices.Select(n => new CarriedNotice { Display = n.Item1, Content = n.Item2, Scope = n.Item3, Source = n.Item4 }).ToList();
 
         /// <summary>
         /// 界面对话最多保留的消息条数（完整记录已写入归档 chat\ai-*.jsonl，不受影响）。
@@ -505,10 +506,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// 必须在界面线程调用；助手正在运行时排队，结束后依次处理。
         /// </summary>
         /// <param name="scope">通知所属项目（会话隔离用），null 表示全局。/ Project the notice belongs to (for session isolation); null = global.</param>
-        public void Notify(string display, string content, string scope = null)
+        /// <param name="source">通知中的结果来自哪个 VS（如任务所在 VS），null 表示来自 VSManager 自身。/ VS the notice's result came from (e.g. the task's VS); null means VSManager itself.</param>
+        public void Notify(string display, string content, string scope = null, string source = null)
         {
             if (_disposed) return;
-            _notices.Enqueue(Tuple.Create(display, content, scope));
+            _notices.Enqueue(Tuple.Create(display, content, scope, string.IsNullOrWhiteSpace(source) ? null : source.Trim()));
             if (!Running) ProcessNotices();
         }
 
@@ -532,13 +534,14 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                 while (!_disposed && !Running && !_holdNotices && _notices.Count > 0)
                 {
                     var n = _notices.Dequeue();
-                    if (Configured && _settings().AgentAutoFollowUp) { await RunAsync(n.Item2, n.Item1, null, n.Item3 ?? ""); continue; }
+                    if (Configured && _settings().AgentAutoFollowUp) { await RunAsync(n.Item2, n.Item1, null, n.Item3 ?? "", n.Item4); continue; }
                     var m = new ChatMessage { Role = ChatRole.Assistant };
+                    if (n.Item4 != null) m.Sources.Add(n.Item4);
                     m.Parts.Add(new ChatPart { Text = n.Item1 });
                     Transcript.Messages.Add(m);
                     TrimTranscript();
                     string noticeScope = SessionIsolation ? AgentSessionScopes.Key(n.Item3) : null;
-                    Record("notice", n.Item1, n.Item2, scope: noticeScope);
+                    Record("notice", n.Item1, n.Item2, scope: noticeScope, from: m.Sources);
                     var noticeMessage = new AIMessage(AIRole.User, n.Item2);
                     SetScope(noticeMessage, noticeScope);
                     _history.Add(noticeMessage);
@@ -558,10 +561,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// Runs one round. Internal unhandled exceptions are not thrown: they are logged, the state is reset and <see cref="Faulted"/> is raised.
         /// </summary>
         /// <param name="scope">本轮所属项目（会话隔离）：null 时按文字推断，空字符串表示全局。/ Project of this round (session isolation): null infers it from the text, empty means global.</param>
-        public async Task RunAsync(string text, string display = null, IReadOnlyList<AttachmentRef> attachments = null, string scope = null)
+        /// <param name="source">通知轮的结果来源 VS（可选）。/ Source VS of a notice round (optional).</param>
+        public async Task RunAsync(string text, string display = null, IReadOnlyList<AttachmentRef> attachments = null, string scope = null, string source = null)
         {
             int gen = _generation;
-            try { await RunCoreAsync(text, display, gen, attachments, scope); }
+            try { await RunCoreAsync(text, display, gen, attachments, scope, source); }
             catch (Exception ex)
             {
                 AppLog.Error(LogFile, "对话内部异常 / Internal error in a round", ex);
@@ -573,7 +577,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             }
         }
 
-        private async Task RunCoreAsync(string text, string display, int gen, IReadOnlyList<AttachmentRef> attachments = null, string scope = null)
+        private async Task RunCoreAsync(string text, string display, int gen, IReadOnlyList<AttachmentRef> attachments = null, string scope = null, string source = null)
         {
             text = (text ?? "").Trim();
             var files = (attachments ?? new AttachmentRef[0]).Where(a => a != null).ToArray();
@@ -587,18 +591,20 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             var user = new ChatMessage { Role = ChatRole.User };
             user.Parts.Add(new ChatPart { Text = (string.IsNullOrWhiteSpace(display) ? text : display) + links });
             var reply = new ChatMessage { Role = ChatRole.Assistant };
+            // 通知轮的回复反馈的是通知来源 VS 的结果 / A notice round's reply reports the result of the notice's source VS
+            if (!string.IsNullOrWhiteSpace(source)) reply.Sources.Add(source.Trim());
             Transcript.Messages.Add(user);
             Transcript.Messages.Add(reply);
             TrimTranscript();
             if (string.IsNullOrWhiteSpace(display)) Record("user", text + links, scope: scope);
-            else Record("notice", display, text, scope: scope);
+            else Record("notice", display, text, scope: scope, from: reply.Sources);
 
             IChatClient client;
             try { client = Client(); }
             catch (Exception ex)
             {
                 AddText(reply, "⚠ " + ex.Message);
-                Record("assistant", "", null, null, ex.Message);
+                Record("assistant", "", null, null, ex.Message, from: reply.Sources);
                 Changed?.Invoke();
                 return;
             }
@@ -623,6 +629,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
             // 本轮工具返回（工具名, 文字），用于核对「已入队」说法 / This round's tool results (name, text), used to check enqueue claims
             var callNames = new Dictionary<string, string>();
             var toolResults = new List<KeyValuePair<string, string>>();
+            // 本轮工具调用对应的 VS（按 CallId），结果返回后计入「发布到 / 结果来自」/ VS of this round's tool calls (by CallId), counted as "published to / results from" once the result arrives
+            var routes = new Dictionary<string, VsRoute>();
             ClaimCheckResult claim = null;
             // 自动更正的一轮不再触发更正，避免循环 / A correction round never triggers another correction (no loops)
             bool correctionRound = text.StartsWith(ToolClaimCheck.Marker, StringComparison.Ordinal);
@@ -669,6 +677,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                                 var logged = new AgentToolCall { Name = fc.Name, Args = ArgsJson(fc.Arguments) };
                                 toolLog.Add(logged);
                                 if (!string.IsNullOrEmpty(fc.CallId)) { toolLogById[fc.CallId] = logged; callNames[fc.CallId] = fc.Name; }
+                                var route = RouteOf(fc.Name, fc.Arguments);
+                                if (route != null && !string.IsNullOrEmpty(fc.CallId)) routes[fc.CallId] = route;
                             }
                             AddStep(reply, "⚙ " + step);
                             Activity = step + "…";
@@ -680,6 +690,8 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                                 toolResults.Add(new KeyValuePair<string, string>(calledName, full));
                             if (!string.IsNullOrEmpty(fr.CallId) && toolLogById.TryGetValue(fr.CallId, out var logged))
                                 logged.Result = Clip(full, MaxRecordedToolResult);
+                            if (!string.IsNullOrEmpty(fr.CallId) && routes.TryGetValue(fr.CallId, out var routed))
+                                ApplyRoute(reply, routed, fr.Exception == null ? full : null);
                             string result = OneLine(full, 160);
                             AddStep(reply, "↳ " + (result.Length == 0 ? "完成" : result));
                             Activity = "思考中…";
@@ -737,7 +749,7 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
                     Record("assistant",
                         string.Join("\n\n", reply.Parts.Where(p => !p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim())), null,
                         reply.Parts.Where(p => p.IsStep && !string.IsNullOrWhiteSpace(p.Text)).Select(p => p.Text.Trim()).ToList(), error,
-                        calls: toolLog.Where(c => c.Result != null).ToList());
+                        calls: toolLog.Where(c => c.Result != null).ToList(), to: reply.Targets, from: reply.Sources);
                 }
                 catch { }
                 Running = false;
@@ -774,11 +786,11 @@ AIFunctionFactory.Create((Func<string, Task<string>>)OpenCopilot, "open_copilot"
         /// 笔记助手的对话只保留在内存中，不写入总控助手的记录。/ Note-assistant conversations stay in memory and never go into the manager's records.
         /// </summary>
         private void Record(string role, string content, string detail = null, IList<string> steps = null, string error = null,
-            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null)
+            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null, IList<string> to = null, IList<string> from = null)
         {
             if (Profile == AgentProfile.Notes) return;
             try { Archive.Ai(role, content, detail, steps, error); } catch { }
-            try { AgentChatLog.Append(role, content, detail, steps, error, local, reset, calls, scope); } catch { }
+            try { AgentChatLog.Append(role, content, detail, steps, error, local, reset, calls, scope, to, from); } catch { }
         }
 
         /// <summary>对话记录中每条工具结果保留的最大字符数。/ Max characters kept per tool result in the chat record.</summary>

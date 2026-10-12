@@ -43,6 +43,8 @@ namespace VSManager
         private bool _editing;
         // 光标位置是否来自用户在本页的编辑；否则插入内容追加到末尾。/ Whether the caret comes from editing this page; otherwise inserted text is appended.
         private bool _caretValid;
+        // 当前页是任务记录或其详情：由程序写入，只读。/ The current page is a task journal or one of its details: written by the app, read-only.
+        private bool _readOnly;
         private string _treeSignature;
 
         public NotebookWorkspace(NotebookStore store = null)
@@ -160,6 +162,7 @@ namespace VSManager
             _icons.ColorDepth = ColorDepth.Depth32Bit;
             _icons.Images.Add(DrawIcon(true));
             _icons.Images.Add(DrawIcon(false));
+            _icons.Images.Add(DrawJournalIcon());
             _tree.Dock = DockStyle.Fill;
             _tree.BorderStyle = BorderStyle.None;
             _tree.BackColor = Theme.Sidebar;
@@ -211,8 +214,21 @@ namespace VSManager
                     }
                 }
                 var textBounds = new Rectangle(textLeft, bounds.Y, Math.Max(0, bounds.Width - textLeft), bounds.Height);
-                TextRenderer.DrawText(e.Graphics, e.Node.Text, _tree.Font, textBounds, prompt ? Theme.PromptText : selected ? Theme.AccentText : Theme.Text,
-                    TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
+                const TextFormatFlags flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix;
+                // 每日任务记录在标题后以弱化颜色显示任务总数。/ Daily task journals show their task total after the title in a muted color.
+                string count = JournalCountSuffix(e.Node.Tag as NotebookEntry);
+                // 测量时不能带 EndEllipsis：配合 Size.Empty 会按省略后的极窄宽度返回，导致总数画到标题开头并被截掉。
+                // Measure without EndEllipsis: combined with Size.Empty it returns the ellipsized (tiny) width, which drew the total over the start of the title and clipped it.
+                const TextFormatFlags measure = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+                int countWidth = count == null ? 0 : TextRenderer.MeasureText(e.Graphics, count, _tree.Font, Size.Empty, measure).Width;
+                var titleBounds = new Rectangle(textBounds.X, textBounds.Y, Math.Max(0, textBounds.Width - countWidth), textBounds.Height);
+                TextRenderer.DrawText(e.Graphics, e.Node.Text, _tree.Font, titleBounds, prompt ? Theme.PromptText : selected ? Theme.AccentText : Theme.Text, flags);
+                if (count != null)
+                {
+                    int titleWidth = Math.Min(titleBounds.Width, TextRenderer.MeasureText(e.Graphics, e.Node.Text, _tree.Font, Size.Empty, measure).Width);
+                    TextRenderer.DrawText(e.Graphics, count, _tree.Font, new Rectangle(textBounds.X + titleWidth, textBounds.Y, countWidth, textBounds.Height),
+                        Theme.TextMuted, TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                }
             };
             _tree.BeforeSelect += BeforeSelect;
             _tree.AfterSelect += (s, e) =>
@@ -233,8 +249,8 @@ namespace VSManager
             _tree.DragDrop += (s, e) => TreeDragDrop(e);
             var menu = new GroupedContextMenuStrip();
             menu.AddGroup("新建 / Create");
-            MenuItem(menu, "新建子页面 / New subpage", MenuGlyph.Note, "Ctrl+N", () => Create(true));
-            MenuItem(menu, "新建同级页面 / New sibling page", MenuGlyph.Folder, null, () => Create(false));
+            var newChild = MenuItem(menu, "新建子页面 / New subpage", MenuGlyph.Note, "Ctrl+N", () => Create(true));
+            var newSibling = MenuItem(menu, "新建同级页面 / New sibling page", MenuGlyph.Folder, null, () => Create(false));
             menu.AddGroup("整理 / Organize");
             var rename = MenuItem(menu, "重命名 / Rename", MenuGlyph.Rename, "F2", RenameSelected);
             var trash = MenuItem(menu, "移入废纸篓 / Move to trash", MenuGlyph.Trash, "Del", DeleteSelected);
@@ -242,7 +258,11 @@ namespace VSManager
             menu.Opening += (s, e) =>
             {
                 bool entry = Selected != null && Selected.Path.Length > 0;
-                rename.Enabled = trash.Enabled = entry;
+                bool journal = IsJournalNode(_tree.SelectedNode);
+                rename.Enabled = entry && !journal;
+                trash.Enabled = entry && (!journal || IsJournalDay(Selected));
+                newChild.Enabled = !journal;
+                newSibling.Enabled = !journal || IsJournalDay(Selected);
             };
             Theme.Apply(menu);
             _tree.ContextMenuStrip = menu;
@@ -319,11 +339,11 @@ namespace VSManager
                 }
             };
             _editor.AllowDrop = true;
-            _editor.DragEnter += (s, e) => e.Effect = _document != null && DroppedImages(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
+            _editor.DragEnter += (s, e) => e.Effect = _document != null && !_readOnly && DroppedImages(e.Data).Length > 0 ? DragDropEffects.Copy : DragDropEffects.None;
             _editor.DragDrop += (s, e) =>
             {
                 var files = DroppedImages(e.Data);
-                if (_document == null || files.Length == 0) return;
+                if (_document == null || _readOnly || files.Length == 0) return;
                 BeginEdit();
                 _editor.SelectionStart = _editor.GetCharIndexFromPosition(_editor.PointToClient(new Point(e.X, e.Y)));
                 _editor.SelectionLength = 0;
@@ -365,6 +385,21 @@ namespace VSManager
             {
                 if (folder) { g.DrawRectangle(pen, 2, 5, 12, 8); g.DrawRectangle(pen, 2, 3, 5, 2); }
                 else { g.DrawRectangle(pen, 4, 2, 8, 12); g.DrawLine(pen, 6, 6, 10, 6); g.DrawLine(pen, 6, 9, 10, 9); }
+            }
+            return bitmap;
+        }
+
+        /// <summary>任务记录页图标：时钟，与普通笔记区分。/ Task journal icon: a clock, distinct from ordinary notes.</summary>
+        private static Bitmap DrawJournalIcon()
+        {
+            var bitmap = new Bitmap(16, 16);
+            using (var g = Graphics.FromImage(bitmap))
+            using (var pen = new Pen(Theme.IdleDot, 1.3f))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.DrawEllipse(pen, 2, 2, 12, 12);
+                g.DrawLine(pen, 8, 8, 8, 4.5f);
+                g.DrawLine(pen, 8, 8, 10.5f, 9.5f);
             }
             return bitmap;
         }
@@ -468,14 +503,17 @@ namespace VSManager
             if (!samePage) { _editing = false; _caretValid = false; }
             _editor.Text = document == null ? "" : NotebookStore.NormalizeNewLines(document.Text, "\r\n");
             _editor.Enabled = document != null;
+            var titlePath = document == null ? new string[0] : SafeTitlePath(document.Path).ToArray();
+            _readOnly = NotebookTaskTable.IsJournalPath(titlePath);
+            _editor.ReadOnly = _readOnly;
             _loading = false;
             _empty.Visible = document == null;
             _split.Visible = document != null;
             if (document == null) _empty.BringToFront();
-            _breadcrumb.Text = "笔记本 / Notebooks" + (document == null ? "" : "  /  " + string.Join("  /  ", SafeTitlePath(document.Path)));
+            _breadcrumb.Text = "笔记本 / Notebooks" + (document == null ? "" : "  /  " + string.Join("  /  ", titlePath));
             Text = (document == null ? "" : document.Title + " — ") + "笔记本 / Notebooks";
             SetStatus(document == null ? "仅本地存储，不自动上传 / Local only · No automatic upload"
-                : NotebookTaskTable.IsJournal(document.Title) ? "已读取 · 任务记录页只读，可点右上角查看源码 / Loaded · Task journal pages are read-only; use Source at the top right"
+                : _readOnly ? "已读取 · 任务记录由程序自动写入，不可编辑，可点右上角查看源码 / Loaded · Task records are written automatically and cannot be edited; use Source at the top right to view"
                 : "已读取 · 直接在页面上编辑，Ctrl+单击打开网页链接 / Loaded · Edit right on the page; Ctrl+Click opens web links");
             UpdateLayout();
             RenderPreview(!samePage);
@@ -500,6 +538,7 @@ namespace VSManager
         internal string InsertIntoCurrent(string text)
         {
             if (_document == null) return "请先在笔记本中打开一篇笔记 / Open a note first";
+            if (_readOnly) return "任务记录不可编辑，请打开普通笔记 / Task records cannot be edited; open an ordinary note";
             text = NotebookStore.NormalizeNewLines((text ?? "").Trim(), "\r\n");
             if (text.Length == 0) return "没有可插入的内容 / Nothing to insert";
             if (_editor.TextLength + text.Length + 4 > _editor.MaxLength) return "笔记已达长度上限 / The note is at its size limit";
@@ -525,6 +564,7 @@ namespace VSManager
         {
             _saveTimer.Stop();
             if (!_dirty || _document == null) return true;
+            if (_readOnly) { _dirty = false; return true; }
             try
             {
                 _store.Save(_document, _editor.Text);
@@ -581,6 +621,11 @@ namespace VSManager
                     html = NotebookTaskTable.Render(_document.Path, _document.Title, _editor.Text, _store.ReadChildHeaders(_document.Path), ImageData);
                     _preview.Render(html, scrollTop, _document.Path, null, null);
                 }
+                else if (_readOnly)
+                {
+                    html = NotebookMarkdown.Render(_editor.Text, ImageData);
+                    _preview.Render(html, scrollTop, _document.Path, null, null);
+                }
                 else
                 {
                     html = NotebookMarkdown.RenderEditable(_editor.Text, ImageData, out var spans);
@@ -601,13 +646,14 @@ namespace VSManager
             else { _split.Panel2Collapsed = false; _split.Panel1Collapsed = true; }
             if (_sourceToggle != null)
             {
-                _sourceToggle.Text = _editing && _document != null ? RenderedLabel : SourceLabel;
+                _sourceToggle.Text = _editing && _document != null ? (_readOnly ? RenderedReadOnlyLabel : RenderedLabel) : SourceLabel;
                 _sourceToggle.Visible = _document != null;
             }
         }
 
         private const string SourceLabel = "Markdown 源码 / Source";
         private const string RenderedLabel = "返回页面编辑 / Back to page";
+        private const string RenderedReadOnlyLabel = "返回页面 / Back to page";
 
         private void ToggleSource()
         {
@@ -640,7 +686,7 @@ namespace VSManager
         {
             if (_document != null && string.Equals(key, _document.Path, StringComparison.OrdinalIgnoreCase))
             {
-                if (_editing && _dirty) return;
+                if (_readOnly || (_editing && _dirty)) return;
                 string text = NotebookStore.NormalizeNewLines(markdown ?? "", "\r\n");
                 if (text == _editor.Text) return;
                 _editor.Text = text;
@@ -713,13 +759,29 @@ namespace VSManager
         private static bool IsAgentPrompt(NotebookEntry entry) =>
             entry != null && entry.Path.Length > 0 && entry.Name == NotebookAgentPrompt.PageTitle;
 
+        /// <summary>每日任务记录页本身。/ A daily task journal page itself.</summary>
+        private static bool IsJournalDay(NotebookEntry entry) =>
+            entry != null && entry.Path.Length > 0 && NotebookTaskTable.IsJournal(entry.Name);
+
+        /// <summary>节点是任务记录页或其详情页（只读，不可重命名、拖动或新建子页）。/ The node is a task journal or one of its details (read-only: no rename, drag or new subpages).</summary>
+        internal static bool IsJournalNode(TreeNode node)
+        {
+            for (var n = node; n != null; n = n.Parent)
+                if (IsJournalDay(n.Tag as NotebookEntry)) return true;
+            return false;
+        }
+
+        /// <summary>每日任务记录节点的任务总数后缀（如「（12）」）；其他页面返回 null。/ Task-total suffix for daily journal nodes (e.g. "（12）"); null for other pages.</summary>
+        internal static string JournalCountSuffix(NotebookEntry entry) =>
+            entry != null && entry.Path.Length > 0 && NotebookTaskTable.IsJournal(entry.Name) ? "（" + entry.ChildCount + "）" : null;
+
         /// <summary>目录结构与搜索词的签名
         private string TreeSignature(IEnumerable<NotebookEntry> entries)
         {
             var sb = new StringBuilder(_search.Text).Append('\u0002');
             void Append(NotebookEntry e)
             {
-                sb.Append(e.Path).Append('\u0001').Append(e.Name).Append('(');
+                sb.Append(e.Path).Append('\u0001').Append(e.Name).Append('\u0001').Append(e.ChildCount).Append('(');
                 foreach (var child in e.Children) Append(child);
                 sb.Append(')');
             }
@@ -748,6 +810,8 @@ namespace VSManager
         internal static DropPlan PlanDrop(TreeNode dragged, TreeNode target, int y, int iconWidth)
         {
             if (dragged == null || target == null || !(target.Tag is NotebookEntry entry)) return null;
+            // 任务记录按时间自动排序且只读：不能拖动，也不能放到其中或其旁。/ Task journals are time-ordered and read-only: they cannot be dragged, nor receive or neighbour a drop.
+            if (IsJournalNode(dragged) || IsJournalNode(target)) return null;
             for (var n = target; n != null; n = n.Parent) if (n == dragged) return null;
             string Path(TreeNode n) => ((NotebookEntry)n.Tag).Path;
             int Left(TreeNode n) => n.Bounds.X - iconWidth;
@@ -768,6 +832,7 @@ namespace VSManager
         private void BeginTreeDrag(TreeNode node)
         {
             if (node?.Tag is not NotebookEntry entry || entry.Path.Length == 0 || node.Parent == null) return;
+            if (IsJournalNode(node)) { SetStatus("任务记录按时间自动排序，不能拖动 / Task records are ordered by time and cannot be dragged"); return; }
             if (_search.Text.Length > 0) { SetStatus("搜索时不能拖动排序，请先清空搜索 / Clear the search before dragging to reorder"); return; }
             _dragNode = node;
             _dragHover = null;
@@ -894,7 +959,8 @@ namespace VSManager
 
         private static TreeNode Node(NotebookEntry entry)
         {
-            var node = new TreeNode(entry.Name) { Tag = entry, ToolTipText = entry.Path, ImageIndex = entry.HasChildren || entry.Path.Length == 0 ? 0 : 1, SelectedImageIndex = entry.HasChildren || entry.Path.Length == 0 ? 0 : 1 };
+            int image = IsJournalDay(entry) ? 2 : entry.HasChildren || entry.Path.Length == 0 ? 0 : 1;
+            var node = new TreeNode(entry.Name) { Tag = entry, ToolTipText = entry.Path, ImageIndex = image, SelectedImageIndex = image };
             foreach (var child in entry.Children) node.Nodes.Add(Node(child));
             return node;
         }
@@ -912,6 +978,11 @@ namespace VSManager
         private void Create(bool child)
         {
             if (!TrySave()) return;
+            if (IsJournalNode(_tree.SelectedNode) && (child || !IsJournalDay(Selected)))
+            {
+                SetStatus("任务记录不可编辑，不能在其中新建页面 / Task records cannot be edited; pages cannot be created inside them");
+                return;
+            }
             string name = AskName(child && HasPage ? "新建子页面 / New subpage" : "新建页面 / New page", "");
             if (name == null) return;
             try
@@ -929,6 +1000,7 @@ namespace VSManager
         private void RenameSelected()
         {
             if (!HasPage) { SetStatus("请先选择页面 / Select a page first"); return; }
+            if (IsJournalNode(_tree.SelectedNode)) { SetStatus("任务记录不可重命名 / Task records cannot be renamed"); return; }
             if (!TrySave()) return;
             string name = AskName("重命名 / Rename", Selected.Name);
             if (name == null) return;
@@ -939,6 +1011,11 @@ namespace VSManager
         private void DeleteSelected()
         {
             if (!HasPage) { SetStatus("请先选择页面 / Select a page first"); return; }
+            if (IsJournalNode(_tree.SelectedNode) && !IsJournalDay(Selected))
+            {
+                SetStatus("任务记录详情不能单独删除，可将整天记录移入废纸篓 / Task record details cannot be deleted individually; move the whole day to the trash instead");
+                return;
+            }
             if (!TrySave()) return;
             if (MessageBox.Show(this, "连同子页面一起移入废纸篓；数据仍保留在本地笔记数据库中。\r\nMove to trash together with subpages; the data stays in the local notebook database.\r\n\r\n" + Selected.Name,
                 "移入废纸篓 / Move to trash", MessageBoxButtons.OKCancel, MessageBoxIcon.Question) != DialogResult.OK) return;
@@ -966,7 +1043,7 @@ namespace VSManager
         private void PasteImagesIntoPreview()
         {
             var imports = ClipboardImageImports();
-            if (imports == null || _document == null) return;
+            if (imports == null || _document == null || _readOnly) return;
             var images = new List<KeyValuePair<string, string>>();
             foreach (var import in imports)
             {
@@ -984,7 +1061,7 @@ namespace VSManager
         /// <summary>剪贴板中图片的导入操作；没有图片时返回 null。/ Import actions for clipboard images; null when there are none.</summary>
         private Func<string>[] ClipboardImageImports()
         {
-            if (_document == null) return null;
+            if (_document == null || _readOnly) return null;
             try
             {
                 var files = Clipboard.ContainsFileDropList() ? DroppedImages(Clipboard.GetDataObject()) : new string[0];

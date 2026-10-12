@@ -22,6 +22,8 @@ namespace VSManager
 		private bool _sending;
 
 		private readonly VsListBox _list = new VsListBox();
+		/// <summary>鼠标悬停在行内调试按钮上的行号，-1 表示无。/ Row whose in-row debug button is hovered; -1 for none.</summary>
+		private int _debugButtonHover = -1;
 		private readonly ChatPanel _chat = new ChatPanel();
 		private readonly Dictionary<string, FlatButton> _dbgButtons = new Dictionary<string, FlatButton>();
 		private readonly Panel _header = new Panel();
@@ -272,14 +274,32 @@ namespace VSManager
 			_list.Dock = DockStyle.Fill;
 			_list.ItemHeight = Dpi.S(38);
 			int tipIndex = -1;
+			bool tipOnButton = false;
+			_list.ItemButtonHit = DebugButtonHit;
+			_list.ItemButtonClicked += RowDebugClicked;
 			_list.MouseMove += (s, e) =>
 			{
 				int index = _list.IndexFromPoint(e.Location);
-				if (index == tipIndex) return;
+				bool onButton = DebugButtonHit(index, e.Location);
+				int buttonHover = onButton ? index : -1;
+				if (buttonHover != _debugButtonHover)
+				{
+					if (_debugButtonHover >= 0 && _debugButtonHover < _list.Items.Count) _list.Invalidate(_list.GetItemRectangle(_debugButtonHover));
+					_debugButtonHover = buttonHover;
+					if (buttonHover >= 0) _list.Invalidate(_list.GetItemRectangle(buttonHover));
+					_list.Cursor = onButton ? Cursors.Hand : Cursors.Default;
+				}
+				if (index == tipIndex && onButton == tipOnButton) return;
 				tipIndex = index;
-				_tips.SetToolTip(_list, ListTip(index));
+				tipOnButton = onButton;
+				_tips.SetToolTip(_list, ListTip(index, onButton));
 			};
-			_list.MouseLeave += (s, e) => { tipIndex = -1; _tips.SetToolTip(_list, null); };
+			_list.MouseLeave += (s, e) =>
+			{
+				tipIndex = -1;
+				_tips.SetToolTip(_list, null);
+				if (_debugButtonHover >= 0) { _debugButtonHover = -1; _list.Cursor = Cursors.Default; _list.Invalidate(); }
+			};
 			_list.EmptyText = "未发现正在运行的 Visual Studio\r\n启动 VS 后会自动出现在这里";
 			_list.DrawItem += List_DrawItem;
 			_list.SelectedIndexChanged += (s, e) => BeginInvoke(new Action(OnSelectionChanged));
@@ -785,8 +805,8 @@ namespace VSManager
 			return i >= 0 && _list.GetItemRectangle(i).Contains(p) ? _list.Items[i] : null;
 		}
 
-		/// <summary>紧凑行：只显示名称；左侧圆点颜色表示 Copilot 状态，右侧圆点表示调试 / 生成状态，详情见悬停提示。
-		/// / Compact row: name only; the left dot colour shows the Copilot state, the right dot the debug / build state, details in the tooltip.</summary>
+		/// <summary>紧凑行：只显示名称；左侧圆点颜色表示 Copilot 状态，右侧为调试按钮（启动 / 继续 / 停止 / 取消生成），详情见悬停提示。
+		/// / Compact row: name only; the left dot colour shows the Copilot state, the right side holds a debug button (start / continue / stop / cancel build), details in the tooltip.</summary>
 		private void List_DrawItem(object sender, DrawItemEventArgs e)
 		{
 			var g = e.Graphics;
@@ -821,14 +841,11 @@ namespace VSManager
 				using (var pen = new Pen(Color.FromArgb(90, dot), Dpi.S(2))) g.DrawEllipse(pen, cx - Dpi.S(7), cy - Dpi.S(7), Dpi.S(14), Dpi.S(14));
 
 			int right = (int)card.Right - Dpi.S(12);
-			bool debugActive = v.Dte != null && (v.Building || v.DebugMode == 2 || v.DebugMode == 3);
-			if (debugActive)
+			if (RowDebugAction(v) is string action)
 			{
-				GetDebugColors(v, out _, out var dbg, out var ddot);
-				float dx = right - Dpi.S(5);
-				Theme.FillCircle(g, dbg, dx, cy, Dpi.S(7));
-				Theme.FillCircle(g, ddot, dx, cy, Dpi.S(3));
-				right -= Dpi.S(20);
+				var button = DebugButtonRect(e.Bounds);
+				DrawDebugButton(g, v, action, button, _debugButtonHover == e.Index);
+				right = button.Left - Dpi.S(6);
 			}
 			g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.None;
 
@@ -838,10 +855,72 @@ namespace VSManager
 				selected ? Color.White : Theme.Text, flags);
 		}
 
+		/// <summary>行内调试按钮的动作：生成中取消生成、运行中停止、中断时继续、空闲时启动调试；状态未知时不显示按钮。
+		/// / In-row debug button action: cancel a build, stop a running session, continue when broken, start debugging when idle; no button when the state is unknown.</summary>
+		private static string RowDebugAction(VsInstance v)
+		{
+			if (v?.Dte == null) return null;
+			if (v.Building) return "cancelbuild";
+			switch (v.DebugMode)
+			{
+				case 3: return "stop";
+				case 2:
+				case 1: return "go";
+				default: return null;
+			}
+		}
+
+		private static string RowDebugTip(VsInstance v, string action) =>
+			action == "cancelbuild" ? "取消生成 / Cancel build"
+			: action == "stop" ? "停止调试 (Shift+F5) / Stop debugging"
+			: v.DebugMode == 2 ? "继续 (F5) / Continue" : "启动调试 (F5) / Start debugging";
+
+		/// <summary>行内调试按钮区域（位于卡片右侧）。/ In-row debug button bounds at the right of the card.</summary>
+		private static Rectangle DebugButtonRect(Rectangle row)
+		{
+			int size = Dpi.S(26), cardRight = row.Right - Dpi.S(10);
+			return new Rectangle(cardRight - Dpi.S(8) - size, row.Y + (row.Height - size) / 2, size, size);
+		}
+
+		private bool DebugButtonHit(int index, Point p) =>
+			index >= 0 && index < _list.Items.Count && _list.Items[index] is VsInstance v && RowDebugAction(v) != null
+			&& DebugButtonRect(_list.GetItemRectangle(index)).Contains(p);
+
+		/// <summary>绘制行内调试按钮：继续或启动为三角，停止或取消生成为方块。/ Draws the in-row debug button: a triangle to start / continue, a square to stop / cancel the build.</summary>
+		private static void DrawDebugButton(Graphics g, VsInstance v, string action, Rectangle r, bool hot)
+		{
+			Color tint = action == "cancelbuild" ? Theme.Accent : action == "stop" ? Theme.Danger : v.DebugMode == 2 ? Theme.Warning : Theme.Success;
+			float cx = r.X + r.Width / 2f, cy = r.Y + r.Height / 2f;
+			Theme.FillCircle(g, Color.FromArgb(hot ? 80 : 34, tint), cx, cy, r.Width / 2f);
+			using (var brush = new SolidBrush(tint))
+			{
+				if (action == "go")
+				{
+					float h = Dpi.S(5);
+					g.FillPolygon(brush, new[] { new PointF(cx - h * 0.7f, cy - h), new PointF(cx + h * 1.0f, cy), new PointF(cx - h * 0.7f, cy + h) });
+				}
+				else
+				{
+					float s = Dpi.S(8);
+					g.FillRectangle(brush, cx - s / 2, cy - s / 2, s, s);
+				}
+			}
+		}
+
+		/// <summary>点击行内调试按钮：对该行的 VS 执行，不改变选中项。/ In-row debug button click: acts on that row's VS without changing the selection.</summary>
+		private async void RowDebugClicked(int index)
+		{
+			if (index < 0 || index >= _list.Items.Count || !(_list.Items[index] is VsInstance v) || !(RowDebugAction(v) is string action)) return;
+			bool reclaim = action == "stop" && Form.ActiveForm == this;
+			await RunDebug(v, action);
+			if (reclaim) ReclaimFocusFrom(v);
+		}
+
 		/// <summary>VS 行悬停提示：路径、状态与快捷键。/ VS row tooltip: path, state and hotkey.</summary>
-		private string ListTip(int index)
+		private string ListTip(int index, bool onButton = false)
 		{
 			if (index < 0 || index >= _list.Items.Count || !(_list.Items[index] is VsInstance v)) return null;
+			if (onButton && RowDebugAction(v) is string action) return RowDebugTip(v, action) + "\r\n" + NameOf(v) + " · " + DebugText(v);
 			string tip = NameOf(v) + "\r\n" + (string.IsNullOrEmpty(v.SolutionPath) ? "未获取到解决方案路径" : v.SolutionPath) +
 				"\r\nCopilot：" + StateText(v);
 			if (v.Dte != null) tip += " · " + DebugText(v);
@@ -852,14 +931,6 @@ namespace VSManager
 		{
 			if (v != null && _settings.MonitorCopilot && v.Copilot == CopilotState.Busy) { fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; }
 			else if (v != null && _settings.MonitorCopilot && v.Copilot == CopilotState.Idle) { fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; }
-			else { fg = Theme.NoneFg; bg = Theme.NoneBg; dot = Theme.NoneDot; }
-		}
-
-		private static void GetDebugColors(VsInstance v, out Color fg, out Color bg, out Color dot)
-		{
-			if (v != null && v.Building) { fg = Theme.AccentText; bg = Theme.AccentLight; dot = Theme.Accent; }
-			else if (v != null && v.DebugMode == 3) { fg = Theme.IdleFg; bg = Theme.IdleBg; dot = Theme.IdleDot; }
-			else if (v != null && v.DebugMode == 2) { fg = Theme.BusyFg; bg = Theme.BusyBg; dot = Theme.BusyDot; }
 			else { fg = Theme.NoneFg; bg = Theme.NoneBg; dot = Theme.NoneDot; }
 		}
 
@@ -2446,6 +2517,7 @@ namespace VSManager
 			string answer = MessageText(t.Messages.Skip(ui + 1).FirstOrDefault(m => m.Role == ChatRole.Assistant));
 
 			var entry = _externals.LastOrDefault(c => c.Pid == v.Pid);
+			bool resumedDone = false;
 			if (entry == null || entry.Key != key)
 			{
 				// 重启后从归档恢复的同一轮对话：关联到当前 VS 进程，不再重复新增
@@ -2455,15 +2527,17 @@ namespace VSManager
 					restored.Pid = v.Pid;
 					_lastQuestion[v.Pid] = key;
 					if (busy && !restored.Stopped) { restored.Generating = true; restored.Interrupted = false; restored.Finished = null; }
-					else if (!busy && restored.Interrupted && answer.Length > 0) restored.Interrupted = false;  // VS 中已生成完毕
+					// VS 中已生成完毕：重启前未记录，现在补写任务记录。/ Finished in VS while VSManager was restarting: record it now.
+					else if (!busy && restored.Interrupted && answer.Length > 0) { restored.Interrupted = false; restored.Finished = DateTime.Now; resumedDone = true; }
 					entry = restored;
 				}
 			}
 			if (entry != null && entry.Key == key)
 			{
-				bool changed = false;
+				bool changed = resumedDone;
 				if (answer.Length > 0 && answer != entry.Answer) { entry.Answer = answer; changed = true; }
 				if (entry.Generating && !busy) { entry.Generating = false; entry.Interrupted = false; entry.Finished = DateTime.Now; changed = true; RecordManualChatInNotebook(entry); }
+				else if (resumedDone) RecordManualChatInNotebook(entry);
 				Archive.ManualChat(entry);
 				if (changed) _taskPanel.RefreshItems();
 				return;

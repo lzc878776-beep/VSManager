@@ -48,6 +48,10 @@ namespace VSManager
         public string ProcessName;
         /// <summary>进程标识（旧记录为空字符串）。/ Process key (empty for older records).</summary>
         public string ProcessKey => AgentChatLog.ProcessKey(Pid, ProcessStart);
+        /// <summary>本条消息实际发布任务到的 VS（可选，旧记录没有）。/ VS the message actually published tasks to (optional; absent in older records).</summary>
+        public List<string> To = new List<string>();
+        /// <summary>本条消息反馈的结果来自哪些 VS（可选，旧记录没有）。/ VS the results reported in the message came from (optional; absent in older records).</summary>
+        public List<string> From = new List<string>();
         public bool IsUser => Role == AgentChatLog.RoleUser;
     }
 
@@ -199,7 +203,7 @@ namespace VSManager
         /// Appends a record (called on the UI thread; the write is small and synchronous). Failures are recorded, never thrown.
         /// </summary>
         public static void Append(string role, string text, string detail = null, IList<string> steps = null, string error = null,
-            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null)
+            bool local = false, bool reset = false, IList<AgentToolCall> calls = null, string scope = null, IList<string> to = null, IList<string> from = null)
         {
             if (string.IsNullOrWhiteSpace(text) && string.IsNullOrWhiteSpace(error) && (calls == null || calls.Count == 0)) return;
             var r = new AgentChatRecord { Time = DateTime.Now, Role = role, Text = text ?? "", Error = string.IsNullOrEmpty(error) ? null : error, Local = local, Reset = reset, Scope = string.IsNullOrWhiteSpace(scope) ? null : scope.Trim() };
@@ -207,6 +211,8 @@ namespace VSManager
             if (steps != null) r.Steps = steps.Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
             if (calls != null) r.Calls = calls.Where(c => c != null && !string.IsNullOrEmpty(c.Name)).ToList();
             r.Tasks = FindTaskIds(new[] { r.Text, r.Detail }.Concat(r.Steps).ToArray());
+            r.To = CleanNames(to);
+            r.From = CleanNames(from);
             Append(r);
         }
 
@@ -359,6 +365,8 @@ namespace VSManager
             if (r.Pid > 0) d["pid"] = r.Pid;
             if (r.Pid > 0 && r.ProcessStart.HasValue) d["pstart"] = r.ProcessStart.Value.ToString("yyyy-MM-dd'T'HH:mm:ss", CultureInfo.InvariantCulture);
             if (r.Pid > 0 && !string.IsNullOrEmpty(r.ProcessName)) d["pname"] = r.ProcessName;
+            if (r.To != null && r.To.Count > 0) d["to"] = r.To.ToArray();
+            if (r.From != null && r.From.Count > 0) d["from"] = r.From.ToArray();
             if (r.Calls != null && r.Calls.Count > 0)
                 d["calls"] = r.Calls.Select(c => new Dictionary<string, object> { ["name"] = c.Name, ["args"] = c.Args ?? "{}", ["result"] = c.Result ?? "" }).ToArray();
             return d;
@@ -392,6 +400,8 @@ namespace VSManager
                 }
                 if (d.TryGetValue("steps", out var s) && s is System.Collections.IEnumerable steps && !(s is string))
                     foreach (var x in steps) if (x is string t) r.Steps.Add(t);
+                r.To = Strings(d, "to");
+                r.From = Strings(d, "from");
                 if (d.TryGetValue("tasks", out var k) && k is System.Collections.IEnumerable ids && !(k is string))
                     foreach (var x in ids) { try { r.Tasks.Add(Convert.ToInt32(x, CultureInfo.InvariantCulture)); } catch { } }
                 if (d.TryGetValue("calls", out var c) && c is System.Collections.IEnumerable calls && !(c is string))
@@ -404,5 +414,25 @@ namespace VSManager
         }
 
         private static string Str(Dictionary<string, object> d, string key) => d.TryGetValue(key, out var v) ? v as string : null;
+
+        private static List<string> Strings(Dictionary<string, object> d, string key)
+        {
+            var list = new List<string>();
+            if (d.TryGetValue(key, out var v) && v is System.Collections.IEnumerable items && !(v is string))
+                foreach (var x in items) if (x is string s) list.Add(s);
+            return CleanNames(list);
+        }
+
+        /// <summary>去掉空白与重复的 VS 名称（不区分大小写），保持顺序。/ Drops blank and duplicate VS names (case-insensitive), keeping the order.</summary>
+        internal static List<string> CleanNames(IEnumerable<string> names)
+        {
+            var list = new List<string>();
+            foreach (var n in names ?? Enumerable.Empty<string>())
+            {
+                string t = (n ?? "").Trim();
+                if (t.Length > 0 && !list.Contains(t, StringComparer.OrdinalIgnoreCase)) list.Add(t);
+            }
+            return list;
+        }
     }
 }

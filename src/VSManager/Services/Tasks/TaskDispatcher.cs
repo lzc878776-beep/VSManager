@@ -97,6 +97,16 @@ namespace VSManager
         void NotifyAgent(string scope, string title, string body);
     }
 
+    /// <summary>
+    /// 可选宿主能力：助手通知同时带上项目归属与结果来源 VS（任务所在 VS），用于在「AI 助手」标题上显示结果来自哪个 VS；未实现时退回 <see cref="IScopedAgentNotifyHost"/>。
+    /// Optional host capability: assistant notices carrying both the project scope and the source VS (the task's VS), so the "AI 助手" title can show where
+    /// the result came from; falls back to <see cref="IScopedAgentNotifyHost"/> when absent.
+    /// </summary>
+    public interface ISourcedAgentNotifyHost
+    {
+        void NotifyAgent(string scope, string source, string title, string body);
+    }
+
     public interface ITaskProjectContextHost
     {
         string ProjectContext(QueuedTask t);
@@ -369,7 +379,8 @@ Fail(t, (t.Worktree == null ? ManualChatProtection.UncertainPrefix + "发送异�
         /// <summary>按任务所属项目通知助手（会话层隔离）。/ Notifies the assistant under the task's project (session isolation).</summary>
         private void NotifyAgentFor(QueuedTask t, string title, string body)
         {
-            if (_host is IScopedAgentNotifyHost scoped) scoped.NotifyAgent(TaskProjectContext.ProjectName(t.VsKey, t.VsName), title, body);
+            if (_host is ISourcedAgentNotifyHost sourced) sourced.NotifyAgent(TaskProjectContext.ProjectName(t.VsKey, t.VsName), t.VsName, title, body);
+            else if (_host is IScopedAgentNotifyHost scoped) scoped.NotifyAgent(TaskProjectContext.ProjectName(t.VsKey, t.VsName), title, body);
             else _host.NotifyAgent(title, body);
         }
 

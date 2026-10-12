@@ -104,13 +104,25 @@ namespace VSManager.Tests
                 Started = new DateTime(2026, 9, 27, 16, 0, 0), Finished = new DateTime(2026, 9, 27, 16, 2, 0) };
             string detail = journal.RecordManual(chat);
             string day = store.FindChild("", "2026.9.27 任务记录");
-            CollectionAssert.AreEqual(new[] { "2026.9.27 任务记录", "手动 - 为什么构建失败？" }, store.TitlePath(detail).ToArray());
-            StringAssert.Contains(store.Read(day).Text, "- **16:02** [为什么构建失败？](page:" + detail + ") · Demo · 手动对话 / Manual chat");
+            CollectionAssert.AreEqual(new[] { "2026.9.27 任务记录", "手动 - Demo · 为什么构建失败" }, store.TitlePath(detail).ToArray());
+            StringAssert.Contains(store.Read(day).Text, "- **16:02** [Demo · 为什么构建失败](page:" + detail + ") · Demo · 手动对话 / Manual chat");
             string text = store.Read(detail).Text;
-            StringAssert.Contains(text, "# 手动对话 · 为什么构建失败？");
+            StringAssert.Contains(text, "# 手动对话 · Demo · 为什么构建失败");
             StringAssert.Contains(text, "附日志");
             StringAssert.Contains(text, "缺少引用 ```x```");
             StringAssert.Contains(text, "(page:" + day + ")");
+        }
+
+        [TestMethod]
+        public void ManualTitle_MatchesAiTaskForm_ProjectAndFirstSentence()
+        {
+            Assert.AreEqual("Pipe · 右键菜单还是卡，继续优化", NotebookTaskJournal.ManualTitle(new ExternalChat { VsName = "Pipe", Question = "右键菜单还是卡，继续优化。日志可以记录性能" }));
+            Assert.AreEqual("Pipe · 界面优化", NotebookTaskJournal.ManualTitle(new ExternalChat { VsName = "Pipe", Question = "界面优化 【执行方式】请按自动推荐的提示词执行：过程中出现…" }));
+            Assert.AreEqual("Pipe · 旧版", NotebookTaskJournal.ManualTitle(new ExternalChat { VsName = "Pipe", Question = "【背景】旧版\r\n修复登录" }));
+            Assert.AreEqual("Pipe · 继续", NotebookTaskJournal.ManualTitle(new ExternalChat { VsName = "Pipe", Question = "@[file.cs] 继续" }));
+            Assert.AreEqual("同步一下", NotebookTaskJournal.ManualTitle(new ExternalChat { Question = "同步一下" }));
+            Assert.AreEqual("Pipe · （无内容）/ (empty)", NotebookTaskJournal.ManualTitle(new ExternalChat { VsName = "Pipe", Question = "  " }));
+            Assert.AreEqual(20, NotebookTaskJournal.ManualTitle(new ExternalChat { Question = new string('字', 40) }).Length);
         }
 
         [TestMethod]

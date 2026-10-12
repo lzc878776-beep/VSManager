@@ -278,6 +278,8 @@ namespace VSManager
         private ChatMessage ToMessage(AgentChatRecord r)
         {
             var m = new ChatMessage { Role = r.IsUser ? ChatRole.User : ChatRole.Assistant, Process = r.ProcessKey, ProcessName = r.ProcessName };
+            m.Targets.AddRange(r.To ?? new List<string>());
+            m.Sources.AddRange(r.From ?? new List<string>());
             string kind = r.Role == AgentChatLog.RoleNotice ? " · 📋 通知" : "";
             string tasks = r.Tasks.Count > 0 ? " · 任务 " + string.Join(", ", r.Tasks.Select(id => "#" + id)) : "";
             string pid = r.Pid > 0 ? " · PID " + r.Pid : "";

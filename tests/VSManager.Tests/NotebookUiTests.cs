@@ -305,6 +305,34 @@ namespace VSManager.Tests
             });
         }
 
+        [TestMethod]
+        public void Notebook_TaskJournal_IsReadOnlyAndCannotBeDragged()
+        {
+            RunUi((form, store) =>
+            {
+                string day = store.CreatePage("", "2026.9.28 任务记录");
+                string detail = store.CreatePage(day, "任务 1 - 示例", "# 任务 #1 · 示例\n");
+                var refresh = typeof(NotebookWorkspace).GetMethod("RefreshTree", BindingFlags.NonPublic | BindingFlags.Instance);
+                refresh.Invoke(form.Workspace, new object[] { detail, false });
+                var tree = Field<TreeView>(form, "_tree");
+                var root = tree.Nodes[0];
+                var dayNode = root.Nodes.Cast<TreeNode>().Single(n => n.Text == "2026.9.28 任务记录");
+                var project = root.Nodes.Cast<TreeNode>().Single(n => n.Text == "Project");
+                Assert.AreSame(dayNode, root.Nodes[0], "任务记录排在普通笔记之前 / Journals come before ordinary notes");
+                Assert.IsTrue(NotebookWorkspace.IsJournalNode(dayNode.Nodes[0]));
+                Assert.IsFalse(NotebookWorkspace.IsJournalNode(project));
+                Assert.IsNull(NotebookWorkspace.PlanDrop(dayNode, project, project.Bounds.Top + 1, 0), "任务记录不能拖动 / Journals cannot be dragged");
+                Assert.IsNull(NotebookWorkspace.PlanDrop(project, dayNode, dayNode.Bounds.Bottom - 1, 0), "不能放入任务记录 / Cannot drop into journals");
+                Assert.IsTrue(Field<TextBox>(form, "_editor").ReadOnly, "详情页只读 / Detail page is read-only");
+                Assert.IsTrue(Field<bool>(form, "_readOnly"));
+                StringAssert.Contains((string)typeof(NotebookWorkspace).GetMethod("InsertIntoCurrent", BindingFlags.NonPublic | BindingFlags.Instance)
+                    .Invoke(form.Workspace, new object[] { "x" }), "不可编辑");
+                Assert.AreEqual("# 任务 #1 · 示例\n", store.Read(detail).Text);
+                refresh.Invoke(form.Workspace, new object[] { ((NotebookEntry)project.Tag).Path, false });
+                Assert.IsFalse(Field<TextBox>(form, "_editor").ReadOnly, "普通笔记可编辑 / Ordinary notes stay editable");
+            });
+        }
+
         private static T Field<T>(object value, string name)
         {
             if (value is NotebookForm form) value = form.Workspace;

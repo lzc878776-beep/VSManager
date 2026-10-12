@@ -560,6 +560,28 @@ namespace VSManager
             return idx >= 0 && idx < Items.Count && GetItemRectangle(idx).Contains(p) ? idx : -1;
         }
 
+        /// <summary>
+        /// 行内按钮命中测试（行号、客户区坐标）；命中时左键按下不改变选中项、不触发行点击，而是触发 <see cref="ItemButtonClicked"/>。
+        /// Hit test for an in-row button (index, client point); when it hits, a left press neither changes the selection nor
+        /// raises row clicks, and <see cref="ItemButtonClicked"/> is raised instead.
+        /// </summary>
+        public Func<int, Point, bool> ItemButtonHit { get; set; }
+
+        /// <summary>行内按钮被左键单击（行号）。/ An in-row button was left-clicked (index).</summary>
+        public event Action<int> ItemButtonClicked;
+
+        private bool HandleItemButton(ref Message m)
+        {
+            if (ItemButtonHit == null || (m.Msg != 0x0201 && m.Msg != 0x0203)) return false;
+            var p = new Point(unchecked((short)(long)m.LParam), unchecked((short)((long)m.LParam >> 16)));
+            int idx = ItemIndexAt(p);
+            if (idx < 0 || !ItemButtonHit(idx, p)) return false;
+            // 双击的第二下只吞掉，避免连点把「启动」变成「停止」。/ Swallow the second press of a double click so a quick double click does not start then stop.
+            if (m.Msg == 0x0201) ItemButtonClicked?.Invoke(idx);
+            m.Result = IntPtr.Zero;
+            return true;
+        }
+
         private bool HandleInertClick(ref Message m)
         {
             if (IsItemSelectable == null) return false;
@@ -663,7 +685,7 @@ namespace VSManager
         {
             if (m.Msg == 0x0014) { m.Result = (IntPtr)1; return; } // WM_ERASEBKGND
             // WM_LBUTTONDOWN / WM_LBUTTONDBLCLK / WM_RBUTTONDOWN / WM_RBUTTONDBLCLK 落在不可选行上 / on a non-selectable row
-            if ((m.Msg == 0x0201 || m.Msg == 0x0203 || m.Msg == 0x0204 || m.Msg == 0x0206) && (HandleBlankClick(ref m) || HandleInertClick(ref m))) return;
+            if ((m.Msg == 0x0201 || m.Msg == 0x0203 || m.Msg == 0x0204 || m.Msg == 0x0206) && (HandleBlankClick(ref m) || HandleItemButton(ref m) || HandleInertClick(ref m))) return;
             if (m.Msg == 0x020A && WheelItemsPerNotch > 0)        // WM_MOUSEWHEEL
             {
                 ScrollByWheel(unchecked((short)((long)m.WParam >> 16)));

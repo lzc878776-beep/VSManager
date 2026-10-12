@@ -654,7 +654,7 @@ namespace VSManager
             _carriedNotices = null;
             if (list == null || list.Count == 0) return;
             AppLog.Write(ProcessWatchdog.LogFile, "补发重启前的待处理通知 / Re-delivering notices carried over the restart: " + list.Count);
-            foreach (var n in list) _agent.Notify(n.Display, n.Content, n.Scope);
+            foreach (var n in list) _agent.Notify(n.Display, n.Content, n.Scope, n.Source);
         }
 
         private List<CarriedNotice> _carriedNotices;

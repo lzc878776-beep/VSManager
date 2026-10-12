@@ -71,7 +71,7 @@ namespace VSManager.Tests
     }
 
     /// <summary>任务调度器的模拟宿主。/ Fake host for the task dispatcher.</summary>
-    internal sealed class FakeDispatchHost : ITaskDispatchHost, IManualChatDispatchHost, IManualChatRefreshHost, ITaskCompletionHost, ITaskRoundHost, ITaskProjectContextHost
+    internal sealed class FakeDispatchHost : ITaskDispatchHost, IManualChatDispatchHost, IManualChatRefreshHost, ITaskCompletionHost, ITaskRoundHost, ITaskProjectContextHost, ISourcedAgentNotifyHost
     {
         public Func<QueuedTask, string> ProjectContextReader;
         public string ProjectContext(QueuedTask t) => ProjectContextReader?.Invoke(t);
@@ -138,6 +138,13 @@ namespace VSManager.Tests
         {
             Notices.Add(title);
             NoticeBodies.Add(body);
+        }
+        // 带结果来源 VS 的通知：同样记入 Notices，另记来源 / Notices with a source VS: recorded in Notices as well, plus the source
+        public readonly List<string> NoticeSources = new List<string>();
+        public void NotifyAgent(string scope, string source, string title, string body)
+        {
+            NoticeSources.Add(source);
+            NotifyAgent(title, body);
         }
         public void QueueActivityChanged(bool anyActive) => LastActivity = anyActive;
         public TimeSpan Settle = TimeSpan.Zero;

@@ -105,6 +105,38 @@ namespace VSManager.Tests
         }
 
         [TestMethod]
+        public void Tree_OrdersOnlyTaskJournalsByTime_NewestFirst()
+        {
+            _store.CreatePage("", "B 笔记");
+            _store.CreatePage("", "A 笔记");
+            foreach (var title in new[] { "2026.10.1 任务记录", "2026.9.27 任务记录", "2026.10.10 任务记录", "2026.10.2 任务记录" }) _store.CreatePage("", title);
+            CollectionAssert.AreEqual(new[] { "2026.10.10 任务记录", "2026.10.2 任务记录", "2026.10.1 任务记录", "2026.9.27 任务记录", "A 笔记", "B 笔记" },
+                _store.LoadTree().Select(e => e.Name).ToArray());
+
+            _journal.Record(Item(1, "Zeta", QueueStatus.Done, 9));
+            System.Threading.Thread.Sleep(20);
+            _journal.Record(Item(2, "Alpha", QueueStatus.Done, 10));
+            var details = _store.LoadTree().Single(e => e.Name == "2026.9.28 任务记录").Children.Select(c => c.Name).ToArray();
+            Assert.IsTrue(details[0].StartsWith("任务 2", StringComparison.Ordinal), "详情按创建时间倒序 / Details newest first: " + string.Join(", ", details));
+        }
+
+        [TestMethod]
+        public void TreeNode_ShowsJournalTaskTotal_EvenWhenSearchFiltersChildren()
+        {
+            _journal.Record(Item(1, "Alpha", QueueStatus.Done, 9));
+            _journal.Record(Item(2, "Beta", QueueStatus.Failed, 10));
+            _store.CreatePage("", "工作笔记");
+            var day = _store.LoadTree().Single(e => e.Name == "2026.9.28 任务记录");
+            Assert.AreEqual("（2）", NotebookWorkspace.JournalCountSuffix(day));
+            Assert.IsNull(NotebookWorkspace.JournalCountSuffix(_store.LoadTree().Single(e => e.Name == "工作笔记")));
+            var filtered = _store.LoadTree("Alpha").Single(e => e.Name == "2026.9.28 任务记录");
+            Assert.AreEqual(1, filtered.Children.Count);
+            Assert.AreEqual("（2）", NotebookWorkspace.JournalCountSuffix(filtered));
+            _store.CreatePage("", "2026.9.29 任务记录");
+            Assert.AreEqual("（0）", NotebookWorkspace.JournalCountSuffix(_store.LoadTree().Single(e => e.Name == "2026.9.29 任务记录")));
+        }
+
+        [TestMethod]
         public void EmptyDay_HasFiltersSummaryAndTitle_OrdinaryNotesAreNotJournals()
         {
             Assert.IsFalse(NotebookTaskTable.IsJournal("工作笔记"));
